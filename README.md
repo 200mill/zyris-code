@@ -213,6 +213,10 @@ since the record outlives the process.
 
 ## Project instructions
 
+USE ENGLISH IN COMMIT MESSAGE AND COMMENTS
+DO NOT USE OTHER LANGUAGES
+
+
 `CLAUDE.md` and `AGENTS.md` are loaded into the session, walking **up** from the
 working directory so both a repository's own conventions and any broader rules
 above it apply. Files closer to the working directory come last and win. If both
