@@ -49,6 +49,10 @@ struct Inner {
     /// **Failures are kept too.** Right now a `Frame::Notice` shows for 6 seconds and disappears, so there's no way to ask later
     /// "why isn't that server here".
     mcp: Mutex<Vec<(String, Result<usize, String>)>>,
+    /// What is running in the background. **The tool, the screen, and `/jobs` must see the same
+    /// thing** — with two copies, fixing one silently diverges from the other. Same wiring as
+    /// `undo` right below.
+    jobs: Mutex<Option<crate::tools::jobs::Jobs>>,
     /// The undo log the edit tool uses. `/undo` must use the **same handle** so there's a single lock.
     undo: Mutex<Option<crate::undo::Undo>>,
     /// A handle for dropping credentials and getting re-approved.
@@ -101,6 +105,16 @@ impl Bridge {
 
     pub fn root(&self) -> PathBuf {
         self.0.root.lock().unwrap().clone()
+    }
+
+    /// 배경 작업 레지스트리를 알려 둔다. `tools::announce`가 한 번 부른다.
+    pub fn set_jobs(&self, jobs: crate::tools::jobs::Jobs) {
+        *self.0.jobs.lock().unwrap() = Some(jobs);
+    }
+
+    /// `/jobs`와 나가는 자리가 쓴다. announce 전에는 `None`이다.
+    pub fn jobs(&self) -> Option<crate::tools::jobs::Jobs> {
+        self.0.jobs.lock().unwrap().clone()
     }
 
     pub fn decide(&self, call: &Call) -> Decision {

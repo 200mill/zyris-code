@@ -56,6 +56,11 @@ pub fn announce(
     // **The reference for what counts as going outside.** Without this, the gate wouldn't see anything as outside.
     bridge.set_root(cwd.clone());
 
+    // The background-job registry. **The tool and the screen must see the same one** so that
+    // `/jobs` sees what the tool started and the exit path can kill it.
+    let jobs = jobs::Jobs::new(cwd.clone());
+    bridge.set_jobs(jobs.clone());
+
     // Skills are this node's plus the plugins'. The list goes once in the session preamble and
     // bodies go through `skill.load` — loading everything would eat context every turn.
     let mut skill_dirs = vec![cwd.join(".zyris-code/skills")];
@@ -78,6 +83,14 @@ pub fn announce(
         .capability(Gate::new(search::SearchServer(search::LocalSearch::new(cwd)), bridge.clone()))
         .capability(Gate::new(TerminalServer(PtyTerminal::default()), bridge.clone()))
         .capability(Gate::new(CodeEditServer(edit), bridge.clone()))
+        // **This is where the long-running work goes.** `exec` gets cut at the wire deadline and
+        // the process dies with it, whereas `until` answers **with success** even when it hasn't
+        // finished, so the agent doesn't read it as a failure. It lives here rather than upstream
+        // because one of its branches waits on a work.
+        .capability(Gate::new(
+            wait::WaitServer(wait::Waits::new(jobs, api.clone())),
+            bridge.clone(),
+        ))
         // **Only this one reaches outside this computer.** Big jobs are handed to attacca so a
         // subagent runs them (`work.rs`). The handle arrives after we attach, so we receive it via `watch`.
         .capability(Gate::new(work::WorkServer(work::Works::new(api)), bridge))

@@ -259,12 +259,7 @@ impl Jobs {
 
     pub fn tail(&self, id: &str, bytes: usize) -> String {
         let inner = self.inner.lock().unwrap();
-        inner
-            .jobs
-            .iter()
-            .find(|(k, _)| k == id)
-            .map(|(_, j)| j.out.tail(bytes))
-            .unwrap_or_default()
+        inner.jobs.iter().find(|(k, _)| k == id).map(|(_, j)| j.out.tail(bytes)).unwrap_or_default()
     }
 
     /// 끝났음을 기다릴 손잡이. **이미 끝났으면 처음부터 참이다.**

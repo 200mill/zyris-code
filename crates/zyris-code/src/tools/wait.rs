@@ -265,9 +265,7 @@ impl Wait for Waits {
     ) -> zyris::Result<Outcome> {
         let chosen = [job.is_some(), command.is_some(), work.is_some()];
         if chosen.iter().filter(|c| **c).count() != 1 {
-            return Err(WireError::invalid_params(
-                "job·command·work 중 정확히 하나를 주세요.",
-            ));
+            return Err(WireError::invalid_params("job·command·work 중 정확히 하나를 주세요."));
         }
         let budget = budget(crate::tools::guard::wire_deadline(), timeout_ms);
         let at = std::time::Instant::now();
@@ -473,7 +471,11 @@ fn job_ref(s: Snapshot) -> JobRef {
 
 /// 되묻기 한 회차. **작업 목록에 남기지 않는다** — 되물을 때마다 줄이 쌓이면
 /// `/jobs`가 못 쓰게 되고, 되묻기는 작업이 아니라 질문이다.
-async fn probe_once(command: &str, root: &std::path::Path, limit: std::time::Duration) -> (bool, String) {
+async fn probe_once(
+    command: &str,
+    root: &std::path::Path,
+    limit: std::time::Duration,
+) -> (bool, String) {
     let mut cmd = tokio::process::Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
     cmd.current_dir(root);
@@ -758,6 +760,39 @@ mod tests {
             .until(None, Some("true".into()), None, Some("[".into()), None, Some(1000))
             .await
             .is_err());
+    }
+
+    /// **와이어 이름은 정확히 넷으로 갈라져야 한다.** 이 리포에서 두 번 틀렸고,
+    /// 두 번 다 로컬 테스트는 초록인 채로 라이브에서 드러났다.
+    #[test]
+    fn the_wire_name_splits_into_exactly_four() {
+        use zyris::ServeCapability;
+        let d = WaitServer(waits()).descriptor();
+        assert!(!d.name.contains("__") && !d.name.ends_with('_'), "{}", d.name);
+        for tool in ["start", "until", "list", "logs", "stop"] {
+            assert!(d.tools.iter().any(|t| t.name == tool), "{tool}이 없다");
+            let wire = format!("zyris__arch__{}__{tool}", d.name);
+            assert_eq!(wire.split("__").count(), 4, "{wire}");
+        }
+    }
+
+    /// 설명이 예산 안에 들어오는가. `trim.rs`의 file_io 테스트와 짝이다.
+    #[test]
+    fn the_announced_wait_fits_the_budget() {
+        use zyris::ServeCapability;
+        let gate = crate::tools::guard::Gate::new(
+            WaitServer(waits()),
+            crate::tools::bridge::Bridge::new(),
+        );
+        for tool in gate.descriptor().tools {
+            assert!(
+                tool.description.len() <= crate::tools::trim::DESCRIPTION_LIMIT,
+                "{}: {} 바이트\n{}",
+                tool.name,
+                tool.description.len(),
+                tool.description
+            );
+        }
     }
 
     /// **관문·멈춤·끝에서만 깨운다.** 저쪽이 도는 중에 돌려보내면 에이전트는 할 일이

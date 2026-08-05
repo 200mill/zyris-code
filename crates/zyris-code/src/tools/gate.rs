@@ -288,7 +288,8 @@ mod tests {
     fn starting_a_job_outside_the_working_dir_asks_the_human() {
         let args = json!({ "command": "cat /etc/shadow" });
         assert!(escaping_path(root(), "wait", "start", &args).is_some());
-        assert_eq!(escaping_path(root(), "wait", "start", &json!({ "command": "cargo build" })), None);
+        let inside = json!({ "command": "cargo build" });
+        assert_eq!(escaping_path(root(), "wait", "start", &inside), None);
         // Leaving through `cwd` is the same.
         assert!(escaping_path(root(), "wait", "start", &json!({ "cwd": "/etc" })).is_some());
     }
@@ -296,7 +297,8 @@ mod tests {
     /// A probe runs a command too. Waiting on a background job does not.
     #[test]
     fn a_probe_command_gets_the_same_fence() {
-        assert!(escaping_path(root(), "wait", "until", &json!({ "command": "ls /etc/ssh" })).is_some());
+        let probe = json!({ "command": "ls /etc/ssh" });
+        assert!(escaping_path(root(), "wait", "until", &probe).is_some());
         assert_eq!(escaping_path(root(), "wait", "until", &json!({ "job": "b1" })), None);
         assert_eq!(escaping_path(root(), "wait", "until", &json!({ "work": "w_1" })), None);
     }
