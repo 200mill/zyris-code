@@ -246,7 +246,10 @@ const EXEC_HEADROOM: Duration = Duration::from_secs(5);
 ///
 /// **When the other side is fixed, turn it off with `ZYRIS_CODE_WIRE_DEADLINE_SECS=0`** — then we
 /// don't answer first and just wait for the human. No code to change.
-fn wire_deadline() -> Option<Duration> {
+///
+/// `wait.until` reads the same value. **Only one place may know the deadline** — with two, fixing
+/// one of them leaves one tool answering while the other gets cut off.
+pub(crate) fn wire_deadline() -> Option<Duration> {
     let secs: u64 = std::env::var("ZYRIS_CODE_WIRE_DEADLINE_SECS")
         .ok()
         .and_then(|v| v.parse().ok())

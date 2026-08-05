@@ -21,6 +21,13 @@ use crate::tools::jobs::{Chunk, Jobs, Snapshot, Spec};
 
 /// 한 번의 `logs`가 주는 최대 크기. 남은 것은 `more`로 말한다.
 const LOGS_BYTES: usize = 16_000;
+/// 결과에 싣는 출력 꼬리. **매번 전문을 실으면 컨텍스트가 남아나지 않는다** —
+/// 20분 빌드면 확인이 25번쯤 오간다. 전문은 `wait.logs`로 가져간다.
+const TAIL_BYTES: usize = 2000;
+/// 우리가 답을 만들어 보낼 여유. 마감에서 이만큼 뺀 것이 한 번의 예산이다.
+const HEADROOM: std::time::Duration = std::time::Duration::from_secs(5);
+/// 마감이 꺼져 있을 때의 상한. 그때는 저쪽이 안 끊는다는 뜻이지만 영원히 잡고 있을 수는 없다.
+const NO_DEADLINE_CAP: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Started {
@@ -79,8 +86,57 @@ pub trait Wait {
     /// job has ended, so you can read the whole thing once `until` says it is done.
     async fn logs(&self, job: String, offset: Option<u64>) -> zyris::Result<Logs>;
 
+    /// Wait until something finishes, answering within the call deadline. **Not finishing is
+    /// not an error** — when `done` is false, call again with the same arguments.
+    ///
+    /// Give exactly one of: `job` (a background job from `start`), `command` (re-run it until
+    /// it exits 0, or until its output matches `matches`), or `work` (an attacca work id).
+    /// `every_ms` is the gap between re-runs of `command`, at least 2000. `timeout_ms` caps
+    /// this one call; it is trimmed to the deadline, never past it.
+    async fn until(
+        &self,
+        job: Option<String>,
+        command: Option<String>,
+        work: Option<String>,
+        matches: Option<String>,
+        every_ms: Option<u64>,
+        timeout_ms: Option<u64>,
+    ) -> zyris::Result<Outcome>;
+
     /// Kill a background job and everything it started. A job that already ended is fine.
     async fn stop(&self, job: String) -> zyris::Result<()>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Outcome {
+    /// True when the thing you waited for has finished. **False is not a failure** — it
+    /// means not yet.
+    pub done: bool,
+    /// What happened, in one line.
+    pub why: String,
+    /// What to do next. When `done` is false this tells you to call again.
+    pub next: String,
+    pub elapsed_ms: u64,
+    /// The last few lines of output, when there are any. Read it all with `logs`.
+    pub tail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+}
+
+/// 이 한 번의 호출이 쓸 수 있는 시간.
+///
+/// **attacca가 노드 호출을 60초에 오류로 끊는다.** 그 전에 우리가 성공으로 답해야
+/// 에이전트가 실패로 읽지 않는다. 마감은 상한이지 기본값이 아니라, 에이전트가 짧게
+/// 잡았으면 그쪽이 이긴다.
+fn budget(deadline: Option<std::time::Duration>, timeout_ms: Option<u64>) -> std::time::Duration {
+    let asked = timeout_ms.map(std::time::Duration::from_millis);
+    match deadline {
+        Some(d) => {
+            let room = d.saturating_sub(HEADROOM).max(std::time::Duration::from_secs(1));
+            asked.map(|a| a.min(room)).unwrap_or(room)
+        }
+        None => asked.unwrap_or(NO_DEADLINE_CAP),
+    }
 }
 
 /// `Jobs`와 attacca 손잡이를 들고 있는 구현.
@@ -169,10 +225,102 @@ impl Wait for Waits {
         Ok(Logs { text, next_offset, more, dropped: chunk.dropped, exit_code: snap.exit_code })
     }
 
+    async fn until(
+        &self,
+        job: Option<String>,
+        command: Option<String>,
+        work: Option<String>,
+        matches: Option<String>,
+        every_ms: Option<u64>,
+        timeout_ms: Option<u64>,
+    ) -> zyris::Result<Outcome> {
+        let chosen = [job.is_some(), command.is_some(), work.is_some()];
+        if chosen.iter().filter(|c| **c).count() != 1 {
+            return Err(WireError::invalid_params(
+                "job·command·work 중 정확히 하나를 주세요.",
+            ));
+        }
+        let budget = budget(crate::tools::guard::wire_deadline(), timeout_ms);
+        let at = std::time::Instant::now();
+
+        if let Some(id) = job {
+            return self.until_job(&id, budget, at).await;
+        }
+        // command·work 갈래는 뒤이어 온다.
+        let _ = (command, work, matches, every_ms);
+        Err(WireError::invalid_params("아직 지원하지 않습니다."))
+    }
+
     async fn stop(&self, job: String) -> zyris::Result<()> {
         self.known(&job)?;
         self.jobs.stop(&job);
         Ok(())
+    }
+}
+
+impl Waits {
+    /// 배경 작업이 끝나기를 기다린다. **끝나면 그 즉시 돌아온다.**
+    async fn until_job(
+        &self,
+        id: &str,
+        budget: std::time::Duration,
+        at: std::time::Instant,
+    ) -> zyris::Result<Outcome> {
+        let snap = self.known(id)?;
+        if !snap.running {
+            return Ok(self.finished(id, snap, at));
+        }
+        let Some(mut ended) = self.jobs.ended(id) else {
+            return Ok(self.finished(id, self.known(id)?, at));
+        };
+        let waited = tokio::time::timeout(budget, async {
+            while !*ended.borrow() {
+                if ended.changed().await.is_err() {
+                    break;
+                }
+            }
+        })
+        .await;
+
+        let snap = self.known(id)?;
+        if waited.is_ok() && !snap.running {
+            return Ok(self.finished(id, snap, at));
+        }
+        // **여기가 이 파일의 요점이다.** 안 끝났어도 오류가 아니다 — 오류로 주면
+        // 에이전트는 빌드가 실패한 줄 알고 멈춘다.
+        Ok(Outcome {
+            done: false,
+            why: format!(
+                "`{id}`({})이 아직 돌고 있습니다. {}초째입니다.",
+                snap.label,
+                snap.elapsed_ms / 1000
+            ),
+            next: format!("같은 인자로 `wait.until`을 다시 부르세요 — `job: \"{id}\"`."),
+            elapsed_ms: at.elapsed().as_millis() as u64,
+            tail: self.jobs.tail(id, TAIL_BYTES),
+            exit_code: None,
+        })
+    }
+
+    fn finished(&self, id: &str, snap: Snapshot, at: std::time::Instant) -> Outcome {
+        let ok = snap.exit_code == Some(0);
+        Outcome {
+            done: true,
+            why: format!(
+                "`{id}`({})이 {}초 만에 끝났습니다. 종료 코드 {}.",
+                snap.label,
+                snap.elapsed_ms / 1000,
+                snap.exit_code.unwrap_or(-1)
+            ),
+            next: if ok {
+                "끝났습니다. 전문이 필요하면 `wait.logs`로 가져오세요.".into()
+            } else {
+                format!("실패했습니다. `wait.logs`로 `job: \"{id}\"`의 출력을 읽어 원인을 보세요.")
+            },
+            elapsed_ms: at.elapsed().as_millis() as u64,
+            tail: self.jobs.tail(id, TAIL_BYTES),
+            exit_code: snap.exit_code,
+        }
     }
 }
 
@@ -275,6 +423,87 @@ mod tests {
     async fn starting_with_neither_command_nor_argv_is_an_error() {
         let w = waits();
         assert!(w.start(None, None, None, None, None).await.is_err());
+    }
+
+    /// **예산은 마감을 넘지 않는다.** attacca가 60초에 오류로 끊으므로 그 전에 우리가
+    /// 성공으로 답해야 한다. 순수 함수로 재는 이유는 환경 변수를 흔들면 같이 도는
+    /// 다른 테스트를 밟기 때문이다.
+    #[test]
+    fn the_budget_never_outlives_the_wire_deadline() {
+        let deadline = Some(std::time::Duration::from_secs(55));
+        // 10분을 달라고 해도 마감 안쪽으로 자른다.
+        assert_eq!(budget(deadline, Some(600_000)), std::time::Duration::from_secs(50));
+        // 짧게 잡았으면 그쪽이 이긴다 — **마감은 상한이지 기본값이 아니다.**
+        assert_eq!(budget(deadline, Some(3_000)), std::time::Duration::from_millis(3_000));
+        assert_eq!(budget(deadline, None), std::time::Duration::from_secs(50));
+        // 마감이 꺼져 있으면(저쪽이 고쳐지면) 에이전트가 준 값만 본다.
+        assert_eq!(budget(None, Some(600_000)), std::time::Duration::from_secs(600));
+    }
+
+    /// **지금 버그의 정본이다.** 안 끝난 것은 실패가 아니다 — `exec`이 주는
+    /// `timed_out: true, exit_code: -1`을 에이전트가 실패로 읽는 것이 이 작업의 이유다.
+    #[tokio::test]
+    async fn an_unfinished_wait_answers_success_not_an_error() {
+        let w = waits();
+        let id = w.start(Some("sleep 30".into()), None, None, None, None).await.unwrap().id;
+        let out = w
+            .until(Some(id.clone()), None, None, None, None, Some(1500))
+            .await
+            .expect("안 끝났다고 오류를 내면 안 된다");
+        assert!(!out.done);
+        assert_eq!(out.exit_code, None);
+        // 다시 부르라고 말해야 한다. 안 그러면 에이전트가 "멈췄다"로 읽고 포기한다.
+        assert!(out.next.contains("wait.until"), "{}", out.next);
+        assert!(out.why.contains(&id), "{}", out.why);
+        w.stop(id).await.unwrap();
+    }
+
+    /// 마감 안쪽에 돌아온다.
+    #[tokio::test]
+    async fn a_wait_answers_before_its_budget_runs_out() {
+        let w = waits();
+        let id = w.start(Some("sleep 30".into()), None, None, None, None).await.unwrap().id;
+        let at = std::time::Instant::now();
+        let _ = w.until(Some(id.clone()), None, None, None, None, Some(1000)).await.unwrap();
+        assert!(at.elapsed() < std::time::Duration::from_secs(3), "{:?}", at.elapsed());
+        w.stop(id).await.unwrap();
+    }
+
+    /// 끝나면 기다리지 않고 그 자리에서 돌아온다.
+    #[tokio::test]
+    async fn a_wait_returns_the_moment_the_job_ends() {
+        let w = waits();
+        let id = w.start(Some("sleep 1; echo 끝".into()), None, None, None, None).await.unwrap().id;
+        let at = std::time::Instant::now();
+        let out = w.until(Some(id), None, None, None, None, Some(20_000)).await.unwrap();
+        assert!(out.done, "{}", out.why);
+        assert_eq!(out.exit_code, Some(0));
+        assert!(out.tail.contains("끝"), "{}", out.tail);
+        assert!(at.elapsed() < std::time::Duration::from_secs(5), "{:?}", at.elapsed());
+    }
+
+    /// 이미 끝난 것을 기다리라고 하면 곧바로 끝났다고 답한다.
+    #[tokio::test]
+    async fn waiting_on_an_already_finished_job_answers_at_once() {
+        let w = waits();
+        let id = w.start(Some("exit 7".into()), None, None, None, None).await.unwrap().id;
+        wait_for(&w, &id).await;
+        let out = w.until(Some(id), None, None, None, None, Some(20_000)).await.unwrap();
+        assert!(out.done);
+        assert_eq!(out.exit_code, Some(7));
+        // 실패한 작업은 **어디를 보라고** 말한다.
+        assert!(out.next.contains("wait.logs"), "{}", out.next);
+    }
+
+    /// 무엇을 기다릴지 정확히 하나여야 한다.
+    #[tokio::test]
+    async fn until_needs_exactly_one_thing_to_wait_for() {
+        let w = waits();
+        assert!(w.until(None, None, None, None, None, None).await.is_err());
+        assert!(w
+            .until(Some("b1".into()), Some("true".into()), None, None, None, None)
+            .await
+            .is_err());
     }
 
     /// `KEY=VALUE` 줄이 그대로 환경이 된다.
