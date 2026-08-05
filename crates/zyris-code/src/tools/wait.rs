@@ -15,7 +15,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use zyris::WireError;
-use zyris_attacca::AttaccaApiClient;
+// `AttaccaApi`는 트레이트다. 클라이언트만 임포트하면 메서드가 전부 "method not found"다.
+use zyris_attacca::{AttaccaApi, AttaccaApiClient};
 
 use crate::tools::jobs::{Chunk, Jobs, Snapshot, Spec};
 
@@ -35,8 +36,27 @@ const PROBE_FLOOR_MS: u64 = 2_000;
 /// 되묻는 명령 하나의 제한. 넘으면 그 회차는 거짓으로 친다.
 const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// attacca work를 되묻는 간격. **저쪽은 알림이 없어 폴링뿐이다.**
+const WORK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn probe_gap(every_ms: Option<u64>) -> std::time::Duration {
     std::time::Duration::from_millis(every_ms.unwrap_or(PROBE_EVERY_MS).max(PROBE_FLOOR_MS))
+}
+
+/// work가 **사람이나 에이전트가 움직여야 하는 자리**에 닿았는가.
+///
+/// 관문 둘·멈춤·끝이다. `Planning`·`Executing`은 아직 저쪽이 도는 중이라, 그때
+/// 깨우면 에이전트는 할 일이 없는데 돌아와 확인만 되풀이한다.
+///
+/// **일부러 남김없이 적는다** — 상류에 상태가 하나 늘면 여기서 컴파일이 막혀야
+/// 새 상태를 어느 쪽으로 볼지 정하게 된다.
+fn work_needs_someone(state: zyris_attacca::ZWorkState) -> bool {
+    use zyris_attacca::ZWorkState::*;
+    match state {
+        CheckingRequirements | Planning | Executing | Verifying => false,
+        Draft | AwaitingGoalApproval | AwaitingPlanApproval | Halted | Done | Failed
+        | Cancelled => true,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -164,7 +184,6 @@ impl Waits {
         Waits { jobs, api }
     }
 
-    #[allow(dead_code)] // `until`의 work 갈래가 쓴다.
     pub(crate) fn api(&self) -> Result<Arc<AttaccaApiClient>, WireError> {
         self.api.borrow().clone().ok_or_else(|| {
             WireError::internal("아직 attacca에 붙지 않았습니다. 잠시 뒤에 다시 불러 주세요.")
@@ -260,9 +279,8 @@ impl Wait for Waits {
             let gap = probe_gap(every_ms);
             return self.until_probe(&line, matches.as_deref(), gap, budget, at).await;
         }
-        // work 갈래는 뒤이어 온다.
-        let _ = work;
-        Err(WireError::invalid_params("아직 지원하지 않습니다."))
+        let work = work.expect("셋 중 하나는 있다");
+        self.until_work(&work, budget, at).await
     }
 
     async fn stop(&self, job: String) -> zyris::Result<()> {
@@ -371,6 +389,52 @@ impl Waits {
             next: "같은 인자로 `wait.until`을 다시 부르세요.".into(),
             elapsed_ms: at.elapsed().as_millis() as u64,
             tail: tail_of(&last),
+            exit_code: None,
+        })
+    }
+
+    /// attacca work가 **사람이나 에이전트가 움직여야 하는 자리**에 닿기를 기다린다.
+    ///
+    /// 저쪽은 알림이 없어 폴링뿐이다. 그래도 이 갈래가 여기 있어야 하는 이유는
+    /// 하나다 — **상류 zyris는 attacca를 모른다.** 셋을 한 도구로 묶을 수 있는 곳이
+    /// 이 리포뿐이다.
+    async fn until_work(
+        &self,
+        work_id: &str,
+        budget: std::time::Duration,
+        at: std::time::Instant,
+    ) -> zyris::Result<Outcome> {
+        let api = self.api()?;
+        let mut state;
+        loop {
+            let work = api.get_work(work_id.to_string()).await?;
+            state = work.state;
+            if work_needs_someone(state) {
+                let name = crate::tools::work::state_name(format!("{state:?}"));
+                return Ok(Outcome {
+                    done: true,
+                    why: format!("work `{work_id}`이 `{name}`에 닿았습니다."),
+                    next: format!(
+                        "`work.status`로 `work_id: \"{work_id}\"`를 읽고 다음에 무엇이 \
+                         필요한지 사람에게 말하세요."
+                    ),
+                    elapsed_ms: at.elapsed().as_millis() as u64,
+                    tail: String::new(),
+                    exit_code: None,
+                });
+            }
+            if budget.saturating_sub(at.elapsed()) <= WORK_EVERY {
+                break;
+            }
+            tokio::time::sleep(WORK_EVERY).await;
+        }
+        let name = crate::tools::work::state_name(format!("{state:?}"));
+        Ok(Outcome {
+            done: false,
+            why: format!("work `{work_id}`이 아직 `{name}`입니다."),
+            next: format!("같은 인자로 `wait.until`을 다시 부르세요 — `work: \"{work_id}\"`."),
+            elapsed_ms: at.elapsed().as_millis() as u64,
+            tail: String::new(),
             exit_code: None,
         })
     }
@@ -687,6 +751,29 @@ mod tests {
             .until(None, Some("true".into()), None, Some("[".into()), None, Some(1000))
             .await
             .is_err());
+    }
+
+    /// **관문·멈춤·끝에서만 깨운다.** 저쪽이 도는 중에 돌려보내면 에이전트는 할 일이
+    /// 없는데 깨어나고, 그러면 확인만 되풀이한다.
+    #[test]
+    fn a_work_only_wakes_the_agent_where_someone_must_move() {
+        use zyris_attacca::ZWorkState::*;
+        for state in [CheckingRequirements, Planning, Executing, Verifying] {
+            assert!(!work_needs_someone(state), "{state:?}");
+        }
+        for state in
+            [Draft, AwaitingGoalApproval, AwaitingPlanApproval, Halted, Done, Failed, Cancelled]
+        {
+            assert!(work_needs_someone(state), "{state:?}");
+        }
+    }
+
+    /// 안 붙었으면 그렇게 말한다. **조용히 실패하면 원인을 못 찾는다.**
+    #[tokio::test]
+    async fn waiting_on_a_work_before_attacca_is_up_says_so() {
+        let w = waits();
+        let err = w.until(None, None, Some("w_1".into()), None, None, Some(1000)).await;
+        assert!(err.is_err());
     }
 
     /// `KEY=VALUE` 줄이 그대로 환경이 된다.

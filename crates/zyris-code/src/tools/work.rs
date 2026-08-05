@@ -217,7 +217,7 @@ fn view(work: &ZWork) -> WorkView {
 }
 
 /// `AwaitingGoalApproval` → `awaiting_goal_approval`. Matches the name that goes on the wire.
-fn state_name(debug: String) -> String {
+pub(crate) fn state_name(debug: String) -> String {
     let mut out = String::with_capacity(debug.len() + 4);
     for (i, ch) in debug.chars().enumerate() {
         if ch.is_uppercase() {
