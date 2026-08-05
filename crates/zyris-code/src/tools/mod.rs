@@ -15,6 +15,7 @@ pub mod readonly;
 pub mod search;
 pub mod skill;
 pub mod trim;
+pub mod wait;
 pub mod work;
 
 use std::path::PathBuf;
