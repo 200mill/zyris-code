@@ -146,10 +146,10 @@ impl<C: ServeCapability> Gate<C> {
 
     /// **When the wire deadline is on, `exec`'s `timeout_ms` is clamped inside it.**
     ///
-    /// This isn't the tool's deadline but the other side's situation. attacca cuts node calls at 60 seconds
-    /// (`ZYRIS_CALL_TIMEOUT_SECS`), and a command running longer becomes a Timeout
+    /// This isn't the tool's deadline but the other side's situation. attacca cuts node calls at 60
+    /// seconds (`ZYRIS_CALL_TIMEOUT_SECS`), and a command running longer becomes a Timeout
     /// **error** over there, leaving the agent not knowing what happened. We finish first and
-    /// note that it was cut, so the agent can switch to `terminal.open`.
+    /// note that it was cut, so the agent can switch to `wait.start`.
     fn clamp_exec(
         &self,
         call: IncomingCall,
@@ -227,9 +227,12 @@ fn note_the_cut(out: Outgoing, deadline: Duration) -> Outgoing {
     }
     let Some(obj) = v.as_object_mut() else { return Outgoing::Response(payload) };
     let mut stderr = obj.get("stderr").and_then(Value::as_str).unwrap_or_default().to_string();
+    // **어디로 가라고 말한다.** 예전에는 `terminal.open`+`read`를 가리켰는데 그 길에는
+    // "명령이 끝났는가"를 알려 주는 신호가 없어 에이전트가 프롬프트를 눈치로 읽어야 했다.
     stderr.push_str(&format!(
-        "\n\n이 배포는 노드 호출을 {}초에 끊습니다. 더 긴 명령은 terminal.open으로 열고 \
-         terminal.read로 나눠 받으세요.",
+        "\n\n이 배포는 노드 호출을 {}초에 끊습니다. **명령은 실패한 것이 아니라 시간에 \
+         잘린 것입니다.** 오래 걸리는 것은 wait.start로 배경에 걸고 wait.until로 \
+         기다리세요 — 그쪽은 끝날 때까지 나눠서 기다릴 수 있습니다.",
         deadline.as_secs()
     ));
     obj.insert("stderr".into(), Value::from(stderr));
@@ -511,7 +514,10 @@ mod tests {
         let v = p.to_json().unwrap();
         let stderr = v["stderr"].as_str().unwrap();
         assert!(stderr.starts_with("앞선 오류"), "원래 있던 것을 지우면 안 된다: {stderr}");
-        assert!(stderr.contains("terminal.open"), "무엇을 하라는지 말해야 한다: {stderr}");
+        // **무엇을 하라는지 말해야 한다.** 그리고 실패가 아니라는 것도 —
+        // 그것이 없으면 에이전트는 빌드가 깨진 줄 알고 멈춘다.
+        assert!(stderr.contains("wait.start"), "무엇을 하라는지 말해야 한다: {stderr}");
+        assert!(stderr.contains("실패한 것이 아니라"), "{stderr}");
     }
 
     /// A command that finished in time gets nothing appended.

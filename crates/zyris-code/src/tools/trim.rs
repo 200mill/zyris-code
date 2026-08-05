@@ -53,10 +53,23 @@ pub fn clip_schema(value: &mut Value) {
     }
 }
 
+/// The one line appended to `terminal.exec`'s description. **It sits outside the budget** — it is
+/// added after trimming.
+///
+/// As it stands the agent only learns there is another way **after** being cut at 50 seconds. It
+/// needs to know **while choosing** the tool to take the right path first time. `exec`'s description
+/// is upstream's and we can't edit it, and trimming is the only place that touches that description,
+/// so this is where it gets attached.
+pub const LONG_HINT: &str = " For anything that may take over a minute, use wait.start instead.";
+
 /// Fits one capability descriptor to the budget.
 pub fn trim_descriptor(descriptor: &mut CapabilityDescriptor) {
+    let terminal = descriptor.name == "terminal";
     for tool in &mut descriptor.tools {
         tool.description = clip(&tool.description, DESCRIPTION_LIMIT);
+        if terminal && tool.name == "exec" {
+            tool.description.push_str(LONG_HINT);
+        }
         clip_schema(&mut tool.request_schema);
         if let Some(schema) = &mut tool.response_schema {
             clip_schema(schema);
@@ -107,6 +120,22 @@ mod tests {
         // `…` is 3 bytes, so allow budget + 3.
         assert!(desc.len() <= PARAM_LIMIT + 3, "{desc}");
         assert_eq!(schema["properties"]["path"]["type"], "string");
+    }
+
+    /// **Learning about it after being cut is too late. The agent must know while choosing.**
+    #[test]
+    fn the_exec_description_points_at_wait_for_long_commands() {
+        let mut d = zyris::ServeCapability::descriptor(&zyris_caps::TerminalServer(
+            zyris_capkit::PtyTerminal::default(),
+        ));
+        trim_descriptor(&mut d);
+        let exec = d.tools.iter().find(|t| t.name == "exec").expect("exec must exist");
+        assert!(exec.description.contains("wait.start"), "{}", exec.description);
+        // The budget applies to the trimming side, and this one line is appended after it.
+        assert!(exec.description.len() <= DESCRIPTION_LIMIT + LONG_HINT.len());
+        // It isn't attached to other tools — putting it on ones that finish quickly is just noise.
+        let read = d.tools.iter().find(|t| t.name == "read").expect("read must exist");
+        assert!(!read.description.contains("wait.start"), "{}", read.description);
     }
 
     /// Does the actually-announced file_io description fit the budget? Gate calls this function,
