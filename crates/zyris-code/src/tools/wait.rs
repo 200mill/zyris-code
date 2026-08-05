@@ -518,6 +518,14 @@ mod tests {
         Waits::new(Jobs::new(std::env::temp_dir()), rx)
     }
 
+    /// 예산을 **환경에서 읽지 않는다.** `guard`의 테스트가 같이 도는 동안
+    /// `ZYRIS_CODE_WIRE_DEADLINE_SECS`를 세웠다 지우므로, 공개 경로로 예산을 재면
+    /// 실행마다 값이 달라진다. 예산 계산 자체는 `the_budget_never_outlives_the_wire_deadline`이
+    /// 순수하게 잠근다.
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
     async fn wait_for(w: &Waits, id: &str) {
         let mut ended = w.jobs.ended(id).expect("작업이 있어야 한다");
         while !*ended.borrow() {
@@ -615,7 +623,7 @@ mod tests {
         let w = waits();
         let id = w.start(Some("sleep 30".into()), None, None, None, None).await.unwrap().id;
         let out = w
-            .until(Some(id.clone()), None, None, None, None, Some(1500))
+            .until_job(&id, ms(1500), std::time::Instant::now())
             .await
             .expect("안 끝났다고 오류를 내면 안 된다");
         assert!(!out.done);
@@ -626,13 +634,13 @@ mod tests {
         w.stop(id).await.unwrap();
     }
 
-    /// 마감 안쪽에 돌아온다.
+    /// 예산 안쪽에 돌아온다.
     #[tokio::test]
     async fn a_wait_answers_before_its_budget_runs_out() {
         let w = waits();
         let id = w.start(Some("sleep 30".into()), None, None, None, None).await.unwrap().id;
         let at = std::time::Instant::now();
-        let _ = w.until(Some(id.clone()), None, None, None, None, Some(1000)).await.unwrap();
+        let _ = w.until_job(&id, ms(1000), at).await.unwrap();
         assert!(at.elapsed() < std::time::Duration::from_secs(3), "{:?}", at.elapsed());
         w.stop(id).await.unwrap();
     }
@@ -643,20 +651,21 @@ mod tests {
         let w = waits();
         let id = w.start(Some("sleep 1; echo 끝".into()), None, None, None, None).await.unwrap().id;
         let at = std::time::Instant::now();
-        let out = w.until(Some(id), None, None, None, None, Some(20_000)).await.unwrap();
+        let out = w.until_job(&id, ms(20_000), at).await.unwrap();
         assert!(out.done, "{}", out.why);
         assert_eq!(out.exit_code, Some(0));
         assert!(out.tail.contains("끝"), "{}", out.tail);
         assert!(at.elapsed() < std::time::Duration::from_secs(5), "{:?}", at.elapsed());
     }
 
-    /// 이미 끝난 것을 기다리라고 하면 곧바로 끝났다고 답한다.
+    /// 이미 끝난 것을 기다리라고 하면 곧바로 끝났다고 답한다. **예산과 무관하므로**
+    /// 여기서는 공개 경로로 부른다 — 갈래 배선까지 같이 잠근다.
     #[tokio::test]
     async fn waiting_on_an_already_finished_job_answers_at_once() {
         let w = waits();
         let id = w.start(Some("exit 7".into()), None, None, None, None).await.unwrap().id;
         wait_for(&w, &id).await;
-        let out = w.until(Some(id), None, None, None, None, Some(20_000)).await.unwrap();
+        let out = w.until(Some(id), None, None, None, None, None).await.unwrap();
         assert!(out.done);
         assert_eq!(out.exit_code, Some(7));
         // 실패한 작업은 **어디를 보라고** 말한다.
@@ -674,11 +683,11 @@ mod tests {
             .is_err());
     }
 
-    /// 참이 되면 그 자리에서 끝난다.
+    /// 참이 되면 그 자리에서 끝난다. **예산과 무관하므로** 공개 경로로 부른다.
     #[tokio::test]
     async fn a_probe_that_succeeds_ends_the_wait() {
         let w = waits();
-        let out = w.until(None, Some("true".into()), None, None, None, Some(20_000)).await.unwrap();
+        let out = w.until(None, Some("true".into()), None, None, None, None).await.unwrap();
         assert!(out.done, "{}", out.why);
     }
 
@@ -688,13 +697,12 @@ mod tests {
     async fn a_probe_can_match_on_output_instead_of_exit_code() {
         let w = waits();
         let out = w
-            .until(
-                None,
-                Some("echo status=queued".into()),
-                None,
-                Some("completed".into()),
-                None,
-                Some(1500),
+            .until_probe(
+                "echo status=queued",
+                Some("completed"),
+                probe_gap(None),
+                ms(1500),
+                std::time::Instant::now(),
             )
             .await
             .unwrap();
@@ -717,13 +725,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let n = dir.path().join("n").display().to_string();
         let out = w
-            .until(
+            .until_probe(
+                &format!("echo x >> {n}; test $(wc -c < {n}) -ge 3"),
                 None,
-                Some(format!("echo x >> {n}; test $(wc -c < {n}) -ge 3")),
-                None,
-                None,
-                Some(0), // 바닥(2초)으로 올라간다
-                Some(20_000),
+                probe_gap(Some(0)), // 바닥(2초)으로 올라간다
+                ms(20_000),
+                std::time::Instant::now(),
             )
             .await
             .unwrap();
@@ -737,7 +744,7 @@ mod tests {
     async fn a_probe_that_never_succeeds_still_answers_success() {
         let w = waits();
         let at = std::time::Instant::now();
-        let out = w.until(None, Some("false".into()), None, None, None, Some(1500)).await.unwrap();
+        let out = w.until_probe("false", None, probe_gap(None), ms(1500), at).await.unwrap();
         assert!(!out.done);
         assert!(out.next.contains("wait.until"), "{}", out.next);
         assert!(at.elapsed() < std::time::Duration::from_secs(4), "{:?}", at.elapsed());

@@ -100,22 +100,37 @@ impl Grants {
     }
 }
 
+/// The target that marks a `wait.until` call as a probe.
+///
+/// **The plan-mode decision reads this.** `until` splits on its arguments — asking about something
+/// already running is a read, but a probe runs a command. `decide` never looks at arguments, so
+/// `target_of` carries that fact in the target instead.
+pub const PROBE_TARGET: &str = "probe";
+
 /// Read-only capabilities. They pass even in plan mode — **you must see before you can plan.**
-fn only_reads(capability: &str, tool: &str) -> bool {
-    match capability {
+fn only_reads(call: &Call) -> bool {
+    let tool = call.tool.as_str();
+    match call.capability.as_str() {
         "file_io" | "skill" | "search" => true,
         // Peeking at a PTY is reading. Opening and writing are not.
         "terminal" => matches!(tool, "read" | "screen"),
         // work creates work on the **server**, not this computer. Only the two that look are reads —
         // waking a sub-agent is exactly what plan mode is meant to stop.
         "work" => matches!(tool, "status" | "list"),
+        // Only looking passes. `start` runs a command, and `stop` kills a running build — an
+        // **irreversible write**. `until` runs a command only when it is a probe.
+        "wait" => match tool {
+            "list" | "logs" => true,
+            "until" => call.target != PROBE_TARGET,
+            _ => false,
+        },
         _ => false,
     }
 }
 
 pub fn decide(mode: Mode, grants: &Grants, call: &Call) -> Decision {
     // Plan mode comes first. Asking for approval over something immutable is wasted effort.
-    if mode == Mode::Plan && !only_reads(&call.capability, &call.tool) {
+    if mode == Mode::Plan && !only_reads(call) {
         return Decision::Refuse(
             "계획 모드입니다. 지금은 파일을 바꾸거나 명령을 돌릴 수 없습니다. \
              무엇을 할지 먼저 말해 주세요."
@@ -157,7 +172,14 @@ pub fn escaping_path(root: &Path, capability: &str, tool: &str, args: &Value) ->
         }
     }
     // Visible paths inside a shell command. Looks after stripping quotes and common separators.
-    if (capability, tool) == ("terminal", "exec") {
+    //
+    // **`wait` takes the same command text.** `wait.start` only puts it in the background — what
+    // runs is the very same shell, and so is `wait.until`'s probe. Leaving those two out here makes
+    // them a back door around the whole fence — wrapping a capability in `Gate` is not enough,
+    // because **the gate only sees the tools it knows about**.
+    let runs_a_shell =
+        matches!((capability, tool), ("terminal", "exec") | ("wait", "start") | ("wait", "until"));
+    if runs_a_shell {
         let command = args.get("command").and_then(Value::as_str).unwrap_or_default();
         for word in command.split_whitespace() {
             let bare = word.trim_matches(|c| matches!(c, '\'' | '"' | '(' | ')' | ';' | ',' | '`'));
@@ -203,6 +225,24 @@ pub fn target_of(capability: &str, tool: &str, args: &Value) -> String {
         }
         // Things that continue an already-open PTY target that PTY.
         ("terminal", _) => args.get("pty").and_then(Value::as_str).unwrap_or_default().to_string(),
+        // 배경에 거는 것도 명령의 첫 낱말이다 — 화면에 `cargo`라고 뜨는 편이 낫다.
+        ("wait", "start") => {
+            let first = s("command").split_whitespace().next().unwrap_or_default().to_string();
+            if first.is_empty() {
+                s("label")
+            } else {
+                first
+            }
+        }
+        // **되묻기인지가 계획 모드 판정을 가른다**(`only_reads`).
+        ("wait", "until") => {
+            if args.get("command").and_then(Value::as_str).is_some_and(|c| !c.is_empty()) {
+                PROBE_TARGET.to_string()
+            } else {
+                format!("{}{}", s("job"), s("work"))
+            }
+        }
+        ("wait", _) => s("job"),
         _ => s("path"),
     }
 }
@@ -239,6 +279,55 @@ mod tests {
             let seen = decide(Mode::Plan, &grants, &call("work", write, ""));
             assert!(matches!(seen, Decision::Refuse(_)), "계획 모드에서 통과했다: {write}");
         }
+    }
+
+    /// **`wait.start`'s command text is the very same thing `terminal.exec` takes.**
+    /// Leaving it out here makes a back door around the whole fence — wrapping the capability in
+    /// `Gate` is not enough. **The gate only sees the tools it knows about.**
+    #[test]
+    fn starting_a_job_outside_the_working_dir_asks_the_human() {
+        let args = json!({ "command": "cat /etc/shadow" });
+        assert!(escaping_path(root(), "wait", "start", &args).is_some());
+        assert_eq!(escaping_path(root(), "wait", "start", &json!({ "command": "cargo build" })), None);
+        // Leaving through `cwd` is the same.
+        assert!(escaping_path(root(), "wait", "start", &json!({ "cwd": "/etc" })).is_some());
+    }
+
+    /// A probe runs a command too. Waiting on a background job does not.
+    #[test]
+    fn a_probe_command_gets_the_same_fence() {
+        assert!(escaping_path(root(), "wait", "until", &json!({ "command": "ls /etc/ssh" })).is_some());
+        assert_eq!(escaping_path(root(), "wait", "until", &json!({ "job": "b1" })), None);
+        assert_eq!(escaping_path(root(), "wait", "until", &json!({ "work": "w_1" })), None);
+    }
+
+    /// Plan mode means "do nothing yet". **Only looking passes.**
+    #[test]
+    fn planning_mode_refuses_start_but_answers_list() {
+        let g = Grants::default();
+        let seen = |tool: &str, args: Value| {
+            decide(Mode::Plan, &g, &call("wait", tool, &target_of("wait", tool, &args)))
+        };
+        assert_eq!(seen("list", json!({})), Decision::Run);
+        assert_eq!(seen("logs", json!({ "job": "b1" })), Decision::Run);
+        assert_eq!(seen("until", json!({ "job": "b1" })), Decision::Run);
+        assert_eq!(seen("until", json!({ "work": "w_1" })), Decision::Run);
+        for refused in [
+            seen("start", json!({ "command": "ls" })),
+            seen("until", json!({ "command": "gh run view" })),
+            seen("stop", json!({ "job": "b1" })),
+        ] {
+            assert!(matches!(refused, Decision::Refuse(_)), "passed in plan mode: {refused:?}");
+        }
+    }
+
+    /// The target that says on screen what is running.
+    #[test]
+    fn the_target_of_a_job_is_its_command_or_its_id() {
+        assert_eq!(target_of("wait", "start", &json!({ "command": "cargo build" })), "cargo");
+        assert_eq!(target_of("wait", "logs", &json!({ "job": "b1" })), "b1");
+        assert_eq!(target_of("wait", "stop", &json!({ "job": "b2" })), "b2");
+        assert_eq!(target_of("wait", "until", &json!({ "job": "b1" })), "b1");
     }
 
     /// **Plan is the only blocking mode.** work·job modes only decide where my words go, and
