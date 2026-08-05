@@ -18,6 +18,7 @@ use zyris::WireError;
 // `AttaccaApi`는 트레이트다. 클라이언트만 임포트하면 메서드가 전부 "method not found"다.
 use zyris_attacca::{AttaccaApi, AttaccaApiClient};
 
+use crate::tools::bridge::Bridge;
 use crate::tools::jobs::{Chunk, Jobs, Snapshot, Spec};
 
 /// 한 번의 `logs`가 주는 최대 크기. 남은 것은 `more`로 말한다.
@@ -177,11 +178,43 @@ fn budget(deadline: Option<std::time::Duration>, timeout_ms: Option<u64>) -> std
 pub struct Waits {
     pub(crate) jobs: Jobs,
     api: watch::Receiver<Option<Arc<AttaccaApiClient>>>,
+    /// 화면에 알리는 길. **화면을 아는 곳은 여기 하나다** — `jobs.rs`는 프로세스와
+    /// 버퍼만 알아야 테스트가 화면 없이 돈다.
+    bridge: Bridge,
 }
 
 impl Waits {
-    pub fn new(jobs: Jobs, api: watch::Receiver<Option<Arc<AttaccaApiClient>>>) -> Waits {
-        Waits { jobs, api }
+    pub fn new(
+        jobs: Jobs,
+        api: watch::Receiver<Option<Arc<AttaccaApiClient>>>,
+        bridge: Bridge,
+    ) -> Waits {
+        Waits { jobs, api, bridge }
+    }
+
+    /// 걸린 작업을 화면에 띄우고, 끝나면 지운다.
+    ///
+    /// 끝나는 시점을 아는 것은 `Jobs`의 수확 태스크뿐이므로 그 신호를 여기서 기다린다.
+    /// **화면으로 가는 길을 하나로 두려고** `jobs.rs`에 콜백을 심지 않았다.
+    fn tell_the_screen(&self, id: &str, label: &str) {
+        self.bridge
+            .frame(crate::app::Frame::JobStart { id: id.to_string(), label: label.to_string() });
+        let (Some(mut ended), bridge, jobs, id) =
+            (self.jobs.ended(id), self.bridge.clone(), self.jobs.clone(), id.to_string())
+        else {
+            return;
+        };
+        tokio::spawn(async move {
+            while !*ended.borrow() {
+                if ended.changed().await.is_err() {
+                    return;
+                }
+            }
+            let snap = jobs.snapshot(&id);
+            let ok = snap.as_ref().is_some_and(|s| s.exit_code == Some(0));
+            let secs = snap.map(|s| s.elapsed_ms / 1000).unwrap_or(0);
+            bridge.frame(crate::app::Frame::JobEnded { id, ok, secs });
+        });
     }
 
     pub(crate) fn api(&self) -> Result<Arc<AttaccaApiClient>, WireError> {
@@ -226,6 +259,7 @@ impl Wait for Waits {
         };
         let id = self.jobs.start(spec).map_err(WireError::invalid_params)?;
         let snap = self.known(&id)?;
+        self.tell_the_screen(&id, &snap.label);
         Ok(Started {
             id: id.clone(),
             label: snap.label,
@@ -517,7 +551,7 @@ mod tests {
         // 보내는 쪽을 살려 둔다 — 떨어뜨리면 `borrow`가 마지막 값을 보긴 하지만
         // 테스트가 무엇을 재는지 흐려진다.
         std::mem::forget(tx);
-        Waits::new(Jobs::new(std::env::temp_dir()), rx)
+        Waits::new(Jobs::new(std::env::temp_dir()), rx, Bridge::new())
     }
 
     /// 예산을 **환경에서 읽지 않는다.** `guard`의 테스트가 같이 도는 동안

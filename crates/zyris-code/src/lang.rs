@@ -208,6 +208,61 @@ impl Lang {
             Lang::En => format!("▶ {command}  ·  {secs}s"),
         }
     }
+    /// Says once, on the status line, that a background job finished. **It says so on success
+    /// too** — not knowing it is done leaves a person waiting.
+    pub fn job_ended(self, id: &str, ok: bool, secs: u64) -> String {
+        match (self, ok) {
+            (Lang::Ko, true) => format!("배경 {id} 끝남 · 성공 · {secs}초"),
+            (Lang::Ko, false) => format!("배경 {id} 끝남 · 실패 · {secs}초"),
+            (Lang::En, true) => format!("background {id} done · ok · {secs}s"),
+            (Lang::En, false) => format!("background {id} done · failed · {secs}s"),
+        }
+    }
+    /// Background jobs on the activity line. With several, only the count and the oldest one —
+    /// they don't all fit on a single line.
+    pub fn background_job(self, count: usize, id: &str, label: &str, secs: u64) -> String {
+        let head = match (self, count) {
+            (Lang::Ko, 1) => "배경".to_string(),
+            (Lang::Ko, n) => format!("배경 {n}개"),
+            (Lang::En, 1) => "background".to_string(),
+            (Lang::En, n) => format!("background ×{n}"),
+        };
+        match self {
+            Lang::Ko => format!("{head}  {id} {label}  ·  {secs}초"),
+            Lang::En => format!("{head}  {id} {label}  ·  {secs}s"),
+        }
+    }
+    pub fn jobs_none(self) -> &'static str {
+        self.pick("배경에서 도는 것이 없습니다.", "Nothing running in the background.")
+    }
+    pub fn jobs_header(self) -> &'static str {
+        self.pick("배경에서 도는 것:", "Running in the background:")
+    }
+    pub fn jobs_hint(self) -> &'static str {
+        self.pick(
+            "\n\n/jobs stop <id> 로 멈춥니다. 앱을 끄면 전부 같이 멈춥니다.",
+            "\n\n/jobs stop <id> kills one. Quitting the app kills them all.",
+        )
+    }
+    pub fn jobs_stopped(self, id: &str) -> String {
+        match self {
+            Lang::Ko => format!("배경 {id}을 멈췄습니다."),
+            Lang::En => format!("Stopped background {id}."),
+        }
+    }
+    pub fn jobs_unknown(self, id: &str) -> String {
+        match self {
+            Lang::Ko => format!("배경 {id}이 없습니다. /jobs로 확인해 주세요."),
+            Lang::En => format!("No background job {id}. Check /jobs."),
+        }
+    }
+    /// One row of `/jobs`. The seconds suffix belongs here, not at the call site.
+    pub fn jobs_row(self, id: &str, label: &str, secs: u64) -> String {
+        match self {
+            Lang::Ko => format!("\n  {id}  {label}  ·  {secs}초"),
+            Lang::En => format!("\n  {id}  {label}  ·  {secs}s"),
+        }
+    }
     /// What to show in the activity line while waiting for a question.
     pub fn waiting_answer(self) -> &'static str {
         self.pick("대기 중 — 답을 고르세요", "Waiting — answer the question")

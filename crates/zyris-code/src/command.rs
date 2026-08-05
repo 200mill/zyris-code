@@ -35,6 +35,11 @@ pub enum Command {
     GrantsClose,
     /// What was changed in this directory.
     Changes,
+    /// Jobs running in the background. With no argument, the list; with `stop <id>`, stops that one.
+    ///
+    /// **There are no logs here** — those are what the agent reads with `wait.logs`, and covering
+    /// the transcript hides the conversation itself.
+    Jobs(Option<String>),
     /// Quits. **If a turn is running, it stops on the server too** (`turn_to_stop` in `app.rs`).
     Quit,
     /// Something unknown. **Not sent to the server; tells what's available instead.**
@@ -114,6 +119,14 @@ pub fn parse(text: &str) -> Option<Command> {
             },
         },
         "changes" | "changed" | "diff" => Command::Changes,
+        // 보는 것과 멈추는 것만이다. 여는 길은 에이전트의 `wait.start` 하나로 둔다.
+        "jobs" | "job" => match arg.split_once(' ') {
+            None if arg.is_empty() || arg == "list" => Command::Jobs(None),
+            Some(("stop" | "kill", id)) if !id.trim().is_empty() => {
+                Command::Jobs(Some(id.trim().to_string()))
+            }
+            _ => Command::Unknown(format!("jobs {arg}")),
+        },
         "quit" | "exit" | "q" => Command::Quit,
         other => Command::Unknown(other.to_string()),
     })
@@ -172,6 +185,7 @@ pub fn catalogue(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
             ("/rules", "이 쓰레드에 실린 CLAUDE.md·AGENTS.md"),
             ("/cwd", "도구가 상대경로를 푸는 자리"),
             ("/grants", "밖으로 열어 둔 디렉터리 (close로 전부 닫습니다)"),
+            ("/jobs", "배경에서 도는 작업 (stop <id>로 멈춥니다)"),
             ("/changes", "이 디렉터리에서 바꾼 파일"),
             ("/undo", "마지막 편집을 되돌립니다"),
             ("/clear", "화면의 대화를 지웁니다 (쓰레드는 그대로입니다)"),
@@ -188,6 +202,7 @@ pub fn catalogue(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
             ("/rules", "The CLAUDE.md and AGENTS.md loaded into this thread"),
             ("/cwd", "Where tools resolve relative paths"),
             ("/grants", "Directories opened outside the working directory (close shuts them all)"),
+            ("/jobs", "Background jobs (stop <id> kills one)"),
             ("/changes", "Files changed in this directory"),
             ("/undo", "Undo the last edit"),
             ("/clear", "Clear the screen (the thread itself is untouched)"),
@@ -404,6 +419,17 @@ mod tests {
         assert_eq!(parse("/grants list"), Some(Command::Grants));
         assert_eq!(parse("/grants close"), Some(Command::GrantsClose));
         assert_eq!(parse("/grants clear"), Some(Command::GrantsClose));
+    }
+
+    /// `/jobs` only looks and stops. **An argument it doesn't know never falls to the stopping side.**
+    #[test]
+    fn jobs_lists_and_stops_but_never_guesses() {
+        assert_eq!(parse("/jobs"), Some(Command::Jobs(None)));
+        assert_eq!(parse("/jobs list"), Some(Command::Jobs(None)));
+        assert_eq!(parse("/jobs stop b1"), Some(Command::Jobs(Some("b1".into()))));
+        assert_eq!(parse("/jobs kill b2"), Some(Command::Jobs(Some("b2".into()))));
+        assert_eq!(parse("/jobs stop"), Some(Command::Unknown("jobs stop".into())));
+        assert_eq!(parse("/jobs killall"), Some(Command::Unknown("jobs killall".into())));
     }
 
     /// When it's unclear what's being asked, **don't pick just anything.** Falling into the closing side would be the worst.

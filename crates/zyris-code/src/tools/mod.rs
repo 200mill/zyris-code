@@ -88,7 +88,7 @@ pub fn announce(
         // finished, so the agent doesn't read it as a failure. It lives here rather than upstream
         // because one of its branches waits on a work.
         .capability(Gate::new(
-            wait::WaitServer(wait::Waits::new(jobs, api.clone())),
+            wait::WaitServer(wait::Waits::new(jobs, api.clone(), bridge.clone())),
             bridge.clone(),
         ))
         // **Only this one reaches outside this computer.** Big jobs are handed to attacca so a

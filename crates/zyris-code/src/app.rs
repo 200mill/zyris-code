@@ -51,6 +51,18 @@ pub enum Frame {
     ExecDone {
         id: u64,
     },
+    /// 배경 작업이 걸렸다. **안 보이면 사람은 모른 채 앱을 끄고, 그때 빌드가 죽는다** —
+    /// `/grants`에서 배운 것과 같다: 보이지 않는 것은 없는 것이나 마찬가지로 위험하다.
+    JobStart {
+        id: String,
+        label: String,
+    },
+    /// 끝났다. `ok`는 종료 코드가 0이었는가다.
+    JobEnded {
+        id: String,
+        ok: bool,
+        secs: u64,
+    },
     /// **배경 폴링의 결과.** 사용량·제목은 네트워크가 필요한데, 그걸 화면 루프가
     /// 기다리면 죽은 연결 위에서 루프가 갇힌다 — 그래서 폴링은 루프 밖 태스크가
     /// 하고 결과만 프레임으로 들여보낸다. 세션 id로 태그해 갈아탄 뒤의 낡은
@@ -261,6 +273,9 @@ pub struct State {
     /// 지금 열려 있는 PTY. **안 보이면 유령 셸이 돈다** — 에이전트가 열어 둔 셸을
     /// 사람이 모른 채로 남는다.
     pub shells: Vec<Shell>,
+    /// 지금 배경에서 도는 작업. 끝나면 빠진다 — 사람이 알고 싶은 것은 **지금 도는
+    /// 것**이고, 끝난 것의 출력은 에이전트가 `wait.logs`로 읽는다.
+    pub jobs: Vec<JobRow>,
     /// 사람이 친 슬래시 명령. `run()`이 집어 가 실행한다 — `submit_now`와 같은 수법이다.
     pub command_out: Option<String>,
     /// 지금 답을 기다리는 물음. **한 번에 하나만 띄운다** — 둘이 겹치면 무엇에
@@ -305,6 +320,15 @@ pub enum Verdict {
     Deny,
     /// 이번만이 아니라 **그 디렉터리 전체**를 이 세션 동안 연다.
     AllowAlways,
+}
+
+/// 배경에서 도는 작업 한 줄.
+#[derive(Debug, Clone)]
+pub struct JobRow {
+    pub id: String,
+    pub label: String,
+    /// 시각은 프레임에 싣지 않고 **받는 자리에서 찍는다** — `running_exec`과 같은 식이다.
+    pub since: Instant,
 }
 
 /// 에이전트가 열어 둔 셸 하나.
@@ -358,6 +382,7 @@ impl Default for State {
             // 도구가 쓰는 것과 **같은 자리**여야 한다. 정의는 `tools::working_dir` 하나다.
             cwd: crate::tools::working_dir(),
             shells: Vec::new(),
+            jobs: Vec::new(),
             command_out: None,
             pending: None,
             enroll: None,
@@ -1067,6 +1092,22 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                 state.running_exec = None;
             }
         }
+        Frame::JobStart { id, label } => {
+            // 같은 id가 두 번 오면 줄이 두 벌이 된다.
+            if !state.jobs.iter().any(|j| j.id == *id) {
+                state.jobs.push(JobRow {
+                    id: id.clone(),
+                    label: label.clone(),
+                    since: Instant::now(),
+                });
+            }
+        }
+        // 끝난 것은 목록에서 빠지고 **한 번 말하고 사라진다.** 성공도 말한다 —
+        // 끝난 줄 모르면 사람은 계속 기다린다.
+        Frame::JobEnded { id, ok, secs } => {
+            state.jobs.retain(|j| j.id != *id);
+            state.set_status(state.lang.job_ended(id, *ok, *secs));
+        }
         // 등록 코드 창. 재등록이 시작되면 저절로 뜬다. 만료 뒤 새 코드가 오면
         // 내용만 갈아 끼운다 — 창은 사람이 Esc로 닫지 않는 한 유지된다.
         Frame::Enroll(view) => state.enroll = Some(view.clone()),
@@ -1166,6 +1207,11 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
             state.timeline.say(state.lang.clear_done());
         }
         Command::Grants => state.timeline.say(state.lang.grants_text(&state.grants)),
+        // **Logs are not dumped on screen** — those are for the agent to read, and covering the
+        // transcript hides the conversation itself. Here we only give what is running and how to
+        // stop it.
+        Command::Jobs(None) => state.timeline.say(jobs_text(&state.jobs, state.lang)),
+        Command::Jobs(Some(_)) => {}
         Command::GrantsClose => {
             let closed = state.grants.close_all();
             // **게이트에도 알려야 한다.** 여기서 지우고 마는 것은 화면만 닫는 것이다 —
@@ -1195,6 +1241,22 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
     }
     Some(cmd)
 }
+
+/// What `/jobs` shows.
+fn jobs_text(jobs: &[JobRow], lang: crate::lang::Lang) -> String {
+    if jobs.is_empty() {
+        return lang.jobs_none().to_string();
+    }
+    let now = Instant::now();
+    let mut out = String::from(lang.jobs_header());
+    for job in jobs {
+        let secs = now.saturating_duration_since(job.since).as_secs();
+        out.push_str(&lang.jobs_row(&job.id, &job.label, secs));
+    }
+    out.push_str(lang.jobs_hint());
+    out
+}
+
 
 // ---------------------------------------------------------------------------
 // 여기부터가 유일한 I/O 자리다. 위쪽은 전부 순수하다.
@@ -1429,7 +1491,15 @@ pub async fn run(
     // 메시지를 그냥 보내 버리게 된다.
     let kitty = probe_kitty_keyboard();
 
+    let for_exit = bridge.clone();
     let result = run_inner(&mut terminal, api_rx, bridge, die, kitty).await;
+
+    // **고아를 남기지 않는다.** 앱이 끝나면 배경 작업도 끝난다 — 살려 두면 이 머신에서
+    // cargo가 RAM을 먹은 채 남는다. `/quit`도 Ctrl+C도 같은 `break 'app`으로 모이므로
+    // 나가는 길은 여기 하나다.
+    if let Some(jobs) = for_exit.jobs() {
+        jobs.stop_all();
+    }
 
     let _ = execute!(
         io::stdout(),
@@ -2260,6 +2330,16 @@ async fn finish_command(
     let Some(cmd) = run_command(state, text) else { return };
     match cmd {
         Command::Mcp => state.timeline.say(state.lang.mcp_report_text(&bridge.mcp_report())),
+        // Stopping is I/O that touches the registry. The listing was already said by `run_command`.
+        // **We don't drop it from the list** — that it died is what the reaper's `JobEnded` says.
+        Command::Jobs(Some(id)) => {
+            let stopped = bridge.jobs().is_some_and(|jobs| jobs.stop(&id));
+            state.timeline.say(if stopped {
+                state.lang.jobs_stopped(&id)
+            } else {
+                state.lang.jobs_unknown(&id)
+            });
+        }
         Command::Skills => {
             let skills = crate::tools::skill::Skills::discover(&state.cwd);
             state.timeline.say(state.lang.skills_text(&skills.list()));
@@ -3606,6 +3686,55 @@ mod tests {
     // ── 도구 승인 ──────────────────────────────────────────────────────
 
     /// 열린 셸이 화면에 안 뜨면 유령 셸이 돈다.
+    /// 배경에서 도는 것이 화면에 있어야 한다. **안 보이면 사람은 모른 채 앱을 끈다.**
+    #[test]
+    fn a_background_job_shows_up_and_leaves_when_it_ends() {
+        let mut s = state();
+        let start =
+            Frame::JobStart { id: "b1".into(), label: "cargo build".into() };
+        apply(&mut s, &Action::Frame(start.clone()));
+        assert_eq!(s.jobs.len(), 1);
+        // 같은 id가 두 번 와도 줄이 두 벌이 되면 안 된다.
+        apply(&mut s, &Action::Frame(start));
+        assert_eq!(s.jobs.len(), 1);
+
+        apply(&mut s, &Action::Frame(Frame::JobEnded { id: "b1".into(), ok: true, secs: 252 }));
+        assert!(s.jobs.is_empty());
+        // 끝난 것은 상태 줄로 한 번 말하고 사라진다.
+        assert!(s.status().is_some_and(|t| t.contains("b1")), "{:?}", s.status());
+    }
+
+    /// 활동 줄이 **"작업 중…"보다 구체적인 것을 고른다.** 도는 턴이 있어도 그렇다 —
+    /// 그 턴은 대개 이 작업을 기다리는 중이다.
+    #[test]
+    fn the_activity_line_prefers_the_background_job_over_working() {
+        let mut s = state();
+        s.connected = true;
+        s.running = true;
+        apply(
+            &mut s,
+            &Action::Frame(Frame::JobStart { id: "b1".into(), label: "cargo build".into() }),
+        );
+        let (_, text, _) =
+            crate::widgets::activity_parts_at(&s, std::time::Instant::now());
+        assert!(text.contains("b1") && text.contains("cargo build"), "{text}");
+    }
+
+    /// `/jobs`는 **목록과 멈추는 길만** 말한다. 로그를 쏟으면 대화창이 덮인다.
+    #[test]
+    fn the_jobs_command_lists_what_runs_and_how_to_stop_it() {
+        let mut s = state();
+        // 말은 `lang`에서 온다 — 글자를 박아 두면 화면 말을 바꿀 때 여기가 깨진다.
+        assert_eq!(jobs_text(&s.jobs, s.lang), s.lang.jobs_none());
+        apply(
+            &mut s,
+            &Action::Frame(Frame::JobStart { id: "b1".into(), label: "cargo build".into() }),
+        );
+        let text = jobs_text(&s.jobs, s.lang);
+        assert!(text.contains("b1") && text.contains("cargo build"), "{text}");
+        assert!(text.contains("/jobs stop"), "{text}");
+    }
+
     #[test]
     fn opening_and_closing_a_shell_moves_the_sidebar_list() {
         let mut s = state();

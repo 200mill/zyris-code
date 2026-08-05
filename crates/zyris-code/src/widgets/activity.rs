@@ -55,6 +55,15 @@ pub fn parts_at(
         let secs = now.saturating_duration_since(*since).as_secs();
         return (theme::ACCENT, lang.running_command(command, secs), lang.esc_stops());
     }
+    // **배경에서 도는 것이 "작업 중…"보다 구체적이다.** 도는 턴이 있어도 이쪽을
+    // 보여 준다 — 그 턴은 대개 이 작업을 기다리는 중이고, 사람이 알고 싶은 것은
+    // 무엇이 얼마나 돌았는가다. 안 보여 주면 모른 채로 앱을 끄고 빌드가 죽는다.
+    if let Some(job) = state.jobs.first() {
+        let secs = now.saturating_duration_since(job.since).as_secs();
+        let text = lang.background_job(state.jobs.len(), &job.id, &job.label, secs);
+        let hint = if state.running { lang.esc_stops() } else { "" };
+        return (theme::ACCENT, text, hint);
+    }
     if state.running {
         return (theme::ACCENT, lang.working().to_string(), lang.esc_stops());
     }
