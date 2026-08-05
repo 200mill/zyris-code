@@ -172,6 +172,12 @@ impl Jobs {
         Jobs { root, inner: Arc::new(Mutex::new(Inner::default())) }
     }
 
+    /// 상대경로가 풀리는 자리. 되묻기도 여기서 돈다 — **작업과 질문이 같은 곳을 봐야
+    /// 한다.** 다르면 `ls`의 결과가 도구마다 달라진다.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// 배경에 걸고 즉시 돌아온다. **실행을 기다리지 않는다.**
     pub fn start(&self, spec: Spec) -> Result<String, String> {
         let mut cmd = build(&spec, &self.root)?;

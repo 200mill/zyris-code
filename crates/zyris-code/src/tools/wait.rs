@@ -28,6 +28,16 @@ const TAIL_BYTES: usize = 2000;
 const HEADROOM: std::time::Duration = std::time::Duration::from_secs(5);
 /// 마감이 꺼져 있을 때의 상한. 그때는 저쪽이 안 끊는다는 뜻이지만 영원히 잡고 있을 수는 없다.
 const NO_DEADLINE_CAP: std::time::Duration = std::time::Duration::from_secs(600);
+/// 되묻는 기본 간격.
+const PROBE_EVERY_MS: u64 = 5_000;
+/// 그 바닥. **되물을 명령은 싸야 한다** — `cargo build`를 되묻기로 거는 사고를 막는다.
+const PROBE_FLOOR_MS: u64 = 2_000;
+/// 되묻는 명령 하나의 제한. 넘으면 그 회차는 거짓으로 친다.
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn probe_gap(every_ms: Option<u64>) -> std::time::Duration {
+    std::time::Duration::from_millis(every_ms.unwrap_or(PROBE_EVERY_MS).max(PROBE_FLOOR_MS))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Started {
@@ -246,8 +256,12 @@ impl Wait for Waits {
         if let Some(id) = job {
             return self.until_job(&id, budget, at).await;
         }
-        // command·work 갈래는 뒤이어 온다.
-        let _ = (command, work, matches, every_ms);
+        if let Some(line) = command {
+            let gap = probe_gap(every_ms);
+            return self.until_probe(&line, matches.as_deref(), gap, budget, at).await;
+        }
+        // work 갈래는 뒤이어 온다.
+        let _ = work;
         Err(WireError::invalid_params("아직 지원하지 않습니다."))
     }
 
@@ -302,6 +316,65 @@ impl Waits {
         })
     }
 
+    /// 명령을 되물어 참이 될 때까지. **원격 빌드·CI·파일 생성·포트 열림이 전부 이 갈래다.**
+    ///
+    /// 참/거짓은 기본이 종료 코드 0이고, `matches`를 주면 출력이 그 정규식에 걸릴 때 참이다.
+    async fn until_probe(
+        &self,
+        command: &str,
+        matches: Option<&str>,
+        gap: std::time::Duration,
+        budget: std::time::Duration,
+        at: std::time::Instant,
+    ) -> zyris::Result<Outcome> {
+        let re = matches
+            .map(|p| {
+                regex::Regex::new(p).map_err(|e| {
+                    WireError::invalid_params(format!("matches가 정규식이 아닙니다: {e}"))
+                })
+            })
+            .transpose()?;
+        let root = self.jobs.root();
+        let mut last;
+        let mut rounds = 0u32;
+        loop {
+            // **적어도 한 번은 물어본다.** 예산이 짧다고 한 번도 안 보고 돌아오면
+            // 부른 쪽은 아무것도 얻지 못한다.
+            rounds += 1;
+            let left = budget.saturating_sub(at.elapsed());
+            let limit = PROBE_LIMIT.min(left.max(std::time::Duration::from_secs(1)));
+            let (ok, out) = probe_once(command, root, limit).await;
+            last = out;
+            let hit = match &re {
+                Some(re) => re.is_match(&last),
+                None => ok,
+            };
+            if hit {
+                return Ok(Outcome {
+                    done: true,
+                    why: format!("{rounds}번째 확인에서 조건이 참이 되었습니다."),
+                    next: "끝났습니다. 다음 일을 하세요.".into(),
+                    elapsed_ms: at.elapsed().as_millis() as u64,
+                    tail: tail_of(&last),
+                    exit_code: None,
+                });
+            }
+            // 다음 회차를 돌릴 시간이 없으면 여기서 답한다.
+            if budget.saturating_sub(at.elapsed()) <= gap {
+                break;
+            }
+            tokio::time::sleep(gap).await;
+        }
+        Ok(Outcome {
+            done: false,
+            why: format!("{rounds}번 확인했지만 아직 조건이 참이 아닙니다."),
+            next: "같은 인자로 `wait.until`을 다시 부르세요.".into(),
+            elapsed_ms: at.elapsed().as_millis() as u64,
+            tail: tail_of(&last),
+            exit_code: None,
+        })
+    }
+
     fn finished(&self, id: &str, snap: Snapshot, at: std::time::Instant) -> Outcome {
         let ok = snap.exit_code == Some(0);
         Outcome {
@@ -332,6 +405,37 @@ fn job_ref(s: Snapshot) -> JobRef {
         exit_code: s.exit_code,
         elapsed_ms: s.elapsed_ms,
     }
+}
+
+/// 되묻기 한 회차. **작업 목록에 남기지 않는다** — 되물을 때마다 줄이 쌓이면
+/// `/jobs`가 못 쓰게 되고, 되묻기는 작업이 아니라 질문이다.
+async fn probe_once(command: &str, root: &std::path::Path, limit: std::time::Duration) -> (bool, String) {
+    let mut cmd = tokio::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg(command);
+    cmd.current_dir(root);
+    cmd.env("TERM", "dumb").env("NO_COLOR", "1");
+    cmd.stdin(std::process::Stdio::null());
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    match tokio::time::timeout(limit, cmd.output()).await {
+        Ok(Ok(out)) => {
+            let mut strip = crate::tools::jobs::Stripper::default();
+            let mut text = strip.push(&out.stdout);
+            text.push_str(&strip.push(&out.stderr));
+            text.push_str(&strip.flush());
+            (out.status.success(), text)
+        }
+        // **시간이 넘거나 못 띄우면 그 회차는 거짓이다.** 오류로 만들지 않는다 —
+        // 아직 안 떠 있는 서버를 기다리는 것이 이 도구의 정상 쓰임이다.
+        Ok(Err(e)) => (false, format!("되묻기를 띄우지 못했습니다: {e}")),
+        Err(_) => (false, format!("되묻기가 {}초를 넘겨 끊었습니다.", limit.as_secs())),
+    }
+}
+
+fn tail_of(text: &str) -> String {
+    let from = text.floor_char_boundary(text.len().saturating_sub(TAIL_BYTES));
+    text[from..].to_string()
 }
 
 fn empty_chunk() -> Chunk {
@@ -502,6 +606,85 @@ mod tests {
         assert!(w.until(None, None, None, None, None, None).await.is_err());
         assert!(w
             .until(Some("b1".into()), Some("true".into()), None, None, None, None)
+            .await
+            .is_err());
+    }
+
+    /// 참이 되면 그 자리에서 끝난다.
+    #[tokio::test]
+    async fn a_probe_that_succeeds_ends_the_wait() {
+        let w = waits();
+        let out = w.until(None, Some("true".into()), None, None, None, Some(20_000)).await.unwrap();
+        assert!(out.done, "{}", out.why);
+    }
+
+    /// 출력이 패턴에 걸리면 참이다 — **원격 빌드 상태를 이렇게 본다.**
+    /// 종료 코드가 0이어도 패턴이 우선이다.
+    #[tokio::test]
+    async fn a_probe_can_match_on_output_instead_of_exit_code() {
+        let w = waits();
+        let out = w
+            .until(
+                None,
+                Some("echo status=queued".into()),
+                None,
+                Some("completed".into()),
+                None,
+                Some(1500),
+            )
+            .await
+            .unwrap();
+        assert!(!out.done, "{}", out.why);
+        assert!(out.tail.contains("queued"), "{}", out.tail);
+    }
+
+    /// **되물을 명령은 싸야 한다.** 간격을 바닥 밑으로 내려 달라고 해도 안 내려간다.
+    #[test]
+    fn a_probe_command_cannot_run_more_often_than_the_floor() {
+        assert_eq!(probe_gap(Some(10)), std::time::Duration::from_millis(PROBE_FLOOR_MS));
+        assert_eq!(probe_gap(None), std::time::Duration::from_millis(PROBE_EVERY_MS));
+        assert_eq!(probe_gap(Some(30_000)), std::time::Duration::from_millis(30_000));
+    }
+
+    /// **실제로 다시 돌린다.** 두 번째 회차에서야 참이 되는 명령으로 잰다.
+    #[tokio::test]
+    async fn a_probe_actually_runs_again_until_it_is_true() {
+        let w = waits();
+        let dir = tempfile::tempdir().unwrap();
+        let n = dir.path().join("n").display().to_string();
+        let out = w
+            .until(
+                None,
+                Some(format!("echo x >> {n}; test $(wc -c < {n}) -ge 3")),
+                None,
+                None,
+                Some(0), // 바닥(2초)으로 올라간다
+                Some(20_000),
+            )
+            .await
+            .unwrap();
+        assert!(out.done, "{}", out.why);
+        // 한 회차에 2바이트씩 쌓이므로 4바이트면 두 번 돌았다는 뜻이다.
+        assert_eq!(std::fs::read(&n).unwrap().len(), 4);
+    }
+
+    /// 안 걸려도 마감 안에 **성공으로** 돌아오고 다시 부르라고 말한다.
+    #[tokio::test]
+    async fn a_probe_that_never_succeeds_still_answers_success() {
+        let w = waits();
+        let at = std::time::Instant::now();
+        let out = w.until(None, Some("false".into()), None, None, None, Some(1500)).await.unwrap();
+        assert!(!out.done);
+        assert!(out.next.contains("wait.until"), "{}", out.next);
+        assert!(at.elapsed() < std::time::Duration::from_secs(4), "{:?}", at.elapsed());
+    }
+
+    /// 정규식이 아니면 인자 오류다. 이것은 진짜 오류다.
+    #[tokio::test]
+    async fn a_broken_pattern_is_an_argument_error() {
+        let w = waits();
+        assert!(w
+            .until(None, Some("true".into()), None, Some("[".into()), None, Some(1000))
             .await
             .is_err());
     }
