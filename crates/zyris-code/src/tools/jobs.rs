@@ -105,6 +105,76 @@ impl Stripper {
     }
 }
 
+/// 한 작업의 출력. **stdout과 stderr를 섞어 담는다** — cargo는 진행을 stderr로 내므로
+/// 나눠 담으면 순서가 사라지고, 순서가 곧 읽는 사람의 이해다.
+#[derive(Debug)]
+pub struct Ring {
+    buf: Vec<u8>,
+    cap: usize,
+    /// 앞에서 버린 바이트 수. **절대 위치(offset)의 기준이다.**
+    dropped: u64,
+}
+
+/// `Ring::read`가 주는 것.
+///
+/// `more`와 `dropped`를 가르는 이유는 capkit의 `PtyRead`와 같다 — 읽는 쪽에게
+/// **유일하게 중요한 질문은 "다시 불러서 받을 수 있는가"**다. 하나의 "잘림" 깃발로
+/// 뭉개면 그 질문에 답할 수 없다.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chunk {
+    pub text: String,
+    /// 다음에 이 위치를 주면 이어서 받는다.
+    pub next_offset: u64,
+    /// 아직 버퍼에 남은 것이 있다. **다시 부르면 받는다.**
+    pub more: bool,
+    /// 넘쳐서 잃은 바이트. **다시 불러도 안 돌아온다.**
+    pub dropped: u64,
+}
+
+impl Ring {
+    pub fn new(cap: usize) -> Ring {
+        Ring { buf: Vec::new(), cap, dropped: 0 }
+    }
+
+    pub fn push(&mut self, text: &str) {
+        self.buf.extend_from_slice(text.as_bytes());
+        if self.buf.len() > self.cap {
+            let cut = self.buf.len() - self.cap;
+            self.buf.drain(..cut);
+            self.dropped += cut as u64;
+        }
+    }
+
+    /// 절대 위치부터 읽는다. 이미 버려진 자리를 달라고 하면 **남아 있는 앞부터** 준다.
+    ///
+    /// `more`는 늘 거짓이다 — 남은 것을 전부 주기 때문이다. 한 번에 다 주기에 큰 경우는
+    /// 자르는 쪽(`wait.logs`)이 세운다.
+    pub fn read(&self, offset: u64) -> Chunk {
+        let dropped = self.dropped.saturating_sub(offset);
+        let from = offset.max(self.dropped) - self.dropped;
+        let from = (from as usize).min(self.buf.len());
+        Chunk {
+            text: String::from_utf8_lossy(&self.buf[from..]).into_owned(),
+            next_offset: self.dropped + self.buf.len() as u64,
+            more: false,
+            dropped,
+        }
+    }
+
+    /// 마지막 몇 바이트. **줄 경계에서 시작한다** — 반 토막 줄로 시작하면 읽는 사람이
+    /// 무슨 일인지 알 수 없다. 통째로 들어가면 첫 줄을 버리지 않는다.
+    pub fn tail(&self, bytes: usize) -> String {
+        let from = self.buf.len().saturating_sub(bytes);
+        let slice = &self.buf[from..];
+        let start = if from == 0 {
+            0
+        } else {
+            slice.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(0)
+        };
+        String::from_utf8_lossy(&slice[start..]).into_owned()
+    }
+}
+
 /// 꼬리가 안 끝난 이스케이프면 그 앞까지만 확정하고 나머지를 돌려준다.
 fn split_incomplete_escape(text: &str) -> (&str, &str) {
     let Some(at) = text.rfind('\x1b') else { return (text, "") };
@@ -113,6 +183,65 @@ fn split_incomplete_escape(text: &str) -> (&str, &str) {
         return (text, "");
     }
     text.split_at(at)
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+
+    #[test]
+    fn reading_from_the_start_gives_everything_once() {
+        let mut r = Ring::new(64);
+        r.push("hello\n");
+        let c = r.read(0);
+        assert_eq!(c.text, "hello\n");
+        assert_eq!(c.next_offset, 6);
+        assert_eq!(c.dropped, 0);
+        // 이어 읽으면 빈 것이 온다 — 같은 것을 두 번 주면 안 된다.
+        assert_eq!(r.read(c.next_offset).text, "");
+    }
+
+    /// 넘치면 앞이 사라지고 **사라진 양을 말한다.** 다시 불러도 안 돌아온다.
+    #[test]
+    fn overflow_drops_the_front_and_says_how_much() {
+        let mut r = Ring::new(8);
+        r.push("0123456789");
+        let c = r.read(0);
+        assert_eq!(c.text, "23456789");
+        assert_eq!(c.dropped, 2);
+        assert_eq!(c.next_offset, 10);
+    }
+
+    /// 이미 읽은 자리를 다시 달라고 하면 잃은 것은 없다.
+    #[test]
+    fn reading_on_from_a_live_offset_loses_nothing() {
+        let mut r = Ring::new(8);
+        r.push("01234567");
+        let first = r.read(0);
+        r.push("89");
+        let next = r.read(first.next_offset);
+        assert_eq!(next.text, "89");
+        assert_eq!(next.dropped, 0);
+    }
+
+    /// 꼬리는 마지막 몇 바이트다. **줄 가운데서 자르지 않는다** — 반 토막 줄은
+    /// 읽는 사람을 헷갈리게 한다.
+    #[test]
+    fn the_tail_starts_at_a_line_boundary() {
+        let mut r = Ring::new(1024);
+        r.push("첫 줄\n둘째 줄\n셋째 줄\n");
+        let tail = r.tail(20);
+        assert!(tail.starts_with("둘째") || tail.starts_with("셋째"), "{tail}");
+        assert!(tail.ends_with('\n'));
+    }
+
+    /// 통째로 들어가면 앞부터 다 준다 — 줄 경계를 찾겠다고 첫 줄을 버리면 안 된다.
+    #[test]
+    fn a_tail_that_covers_everything_keeps_the_first_line() {
+        let mut r = Ring::new(1024);
+        r.push("하나\n둘\n");
+        assert_eq!(r.tail(1024), "하나\n둘\n");
+    }
 }
 
 #[cfg(test)]
