@@ -1310,6 +1310,85 @@ fn title_for_osc(title: &str) -> String {
     title.chars().filter(|c| !c.is_control()).take(120).collect()
 }
 
+/// 키티 키보드 프로토콜 지원 여부를 묻는 응답 대기 시간.
+///
+/// 모르는 터미널은 질문에 답하지 않으므로, 이 시간만큼 조용하면 지원이 없는 것이다.
+/// 느린 SSH 링크에서 응답이 이보다 늦게 오면 남은 바이트는 crossterm이 조용히 건너뛴다
+/// (공개 `Event`에 키보드 플래그 variant가 없다) — 앱이 망가지지 않는다.
+const KITTY_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// 터미널이 키티 키보드 프로토콜을 지원하는지 **시작할 때** 묻는다.
+///
+/// Shift+Enter는 프로토콜을 켠 터미널에서만 Enter와 구별되어 온다(CSI-u). 지원하지
+/// 않는 터미널은 Shift+Enter를 Enter와 똑같은 `\r` 한 바이트로 보내므로, 앱이 받은
+/// 바이트만으로는 갈라 놓을 방법이 없다. `CSI ? u`를 보내고 `CSI ? <flags> u` 응답이
+/// 오면 지원 터미널이다 — 이 질문에 답할 수 있는 터미널은 프로토콜을 아는 터미널뿐이다.
+///
+/// **crossterm을 거치지 않고 stdin을 직접 읽는다.** 이 시점에는 아직 이벤트 원이
+/// 열리지 않았으므로(`EventStream`은 `run_inner`에서 생긴다) 경쟁자가 없다. 응답이
+/// 늦게라도 도착하면 crossterm이 조용히 건너뛰므로 안전하다.
+fn probe_kitty_keyboard() -> bool {
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+
+        let mut out = io::stdout();
+        if write!(out, "\x1b[?u").is_err() || out.flush().is_err() {
+            return false;
+        }
+
+        let fd = io::stdin().as_raw_fd();
+        let deadline = Instant::now() + KITTY_PROBE_TIMEOUT;
+        let mut resp = Vec::with_capacity(16);
+        let mut byte = [0u8; 1];
+        while Instant::now() < deadline && resp.len() < 32 {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            // 0 = 시간 초과, <0 = 오류. 어느 쪽이든 "지원 터미널이 아니다"다.
+            if unsafe { libc::poll(&mut pfd, 1, left.as_millis() as libc::c_int) } <= 0 {
+                break;
+            }
+            match io::stdin().read(&mut byte) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    resp.push(byte[0]);
+                    // 응답은 `u`로 끝난다. 끊어 읽더라도 마지막 바이트로 판정한다.
+                    if resp.ends_with(b"u") {
+                        break;
+                    }
+                }
+            }
+        }
+        kitty_probe_ok(&resp)
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows 콘솔은 입력 레코드에 modifier를 그대로 실어 보내므로, 프로토콜 없이도
+        // Shift+Enter가 Enter+SHIFT로 온다 — 지원으로 본다. (질문을 보내면 응답이
+        // 입력으로 새어 들어올 수 있어 보내지 않는다.)
+        true
+    }
+}
+
+/// `CSI ? u`에 대한 응답이 지원 터미널의 것인가. 응답 형식은 `CSI ? <flags> u`다.
+///
+/// flags 값까지는 보지 않는다 — 우리가 방금 flag 1을 밀어 넣었고, 응답은 그 현재
+/// 상태를 되돌려 주므로, 형식만 맞으면 받아들여도 오탐이 없다. 형식 판정에 어긋나도
+/// "응답이 왔다는 것" 자체가 지원의 증거다. (모르는 터미널은 답하지 않는다.)
+fn kitty_probe_ok(resp: &[u8]) -> bool {
+    // 앞에 사람이 친 글자가 섞여 있어도 찾는다 — 시작하자마자 치는 경우는 드물지 않다.
+    let i = resp.windows(3).position(|w| w == b"\x1b[?");
+    i.is_some_and(|i| {
+        let tail = &resp[i + 3..];
+        !tail.is_empty()
+            && tail.ends_with(b"u")
+            && tail[..tail.len() - 1]
+                .iter()
+                .all(|b| b.is_ascii_digit() || *b == b';' || *b == b':')
+    })
+}
+
 /// 유일한 I/O 자리.
 ///
 /// `ratatui::init()`이 raw 모드와 대체 화면을 함께 잡는다 — 직접 또 잡지 않는다.
@@ -1345,7 +1424,12 @@ pub async fn run(
         crossterm::terminal::DisableLineWrap,
     )?;
 
-    let result = run_inner(&mut terminal, api_rx, bridge, die).await;
+    // **Shift+Enter가 줄바꿈으로 먹히는 터미널인지 지금 알아 둔다.** 지원하지 않는
+    // 터미널에서는 시작부터 Alt+Enter를 안내한다 — 아니면 사람은 줄바꿈을 몰라서
+    // 메시지를 그냥 보내 버리게 된다.
+    let kitty = probe_kitty_keyboard();
+
+    let result = run_inner(&mut terminal, api_rx, bridge, die, kitty).await;
 
     let _ = execute!(
         io::stdout(),
@@ -1408,6 +1492,7 @@ async fn run_inner(
     mut api_rx: ApiRx,
     bridge: crate::tools::bridge::Bridge,
     mut die: tokio::sync::watch::Receiver<bool>,
+    kitty: bool,
 ) -> anyhow::Result<()> {
     let mut state = State::new();
 
@@ -1497,9 +1582,15 @@ async fn run_inner(
     // **"연결 중…"이 화면에 얼어붙지 않게 한다.** 붙은 것을 반드시 다시 그린다 —
     // wait 루프가 마지막에 그린 프레임은 아직 연결 전이고, `dirty`가 그대로 꺼져
     // 있으면 아무 키나 누르기 전까지 "연결 중…"이 남는다(실제로 그렇게 남았다).
-    // "연결됨"을 잠깐 보여 준 뒤 6초 후 `쉬는 중`으로 내려간다.
+    // "연결됨"을 잠깐 보여 준 뒤 6초 후 `쉬는 중`으로 내려간다. Shift+Enter를 못
+    // 받는 터미널에서는 연결 안내 대신 대안을 알린다 — 조용히 보내 버리면 사람은 왜
+    // 줄바꿈이 안 되는지 모른 채 메시지를 날린다.
     dirty = true;
-    state.set_status(state.lang.connected());
+    state.set_status(if kitty {
+        state.lang.connected()
+    } else {
+        state.lang.kitty_shift_enter_hint()
+    });
 
     // 승인한 사람이 요청보다 적게 줬을 수 있다. **그러면 목록이 조용히 빈 채로 돌아온다** —
     // 오류가 아니라 빈 결과라, 사람은 자기 계정에 에이전트가 없는 줄 안다.
@@ -2518,6 +2609,19 @@ mod tests {
             on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)),
             vec![Action::Submit("a".into())]
         );
+    }
+
+    /// `CSI ? u`에 대한 응답 판정. 형식은 `CSI ? <flags> u` — 답할 수 있는 터미널은
+    /// 프로토콜을 아는 터미널뿐이므로 형식만 보면 된다.
+    #[test]
+    fn kitty_probe_ok_accepts_flag_responses() {
+        assert!(kitty_probe_ok(b"\x1b[?1u"), "flag 1 그대로");
+        assert!(kitty_probe_ok(b"\x1b[?3u"), "여러 flag");
+        assert!(kitty_probe_ok(b"\x1b[?1;2u"), "event type까지");
+        assert!(kitty_probe_ok(b"x\x1b[?1u"), "앞에 친 글자가 섞여도");
+        assert!(!kitty_probe_ok(b""), "응답 없음");
+        assert!(!kitty_probe_ok(b"abc"), "일반 글자");
+        assert!(!kitty_probe_ok(b"\x1b[?zzu"), "숫자가 아닌 flags");
     }
 
     /// 붙여넣기는 줄바꿈을 그대로 살린다 — Enter처럼 쪼개면 여러 줄 프롬프트의

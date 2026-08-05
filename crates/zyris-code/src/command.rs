@@ -205,6 +205,7 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     match lang {
         Lang::Ko => vec![
             ("Shift+Tab", "모드 바꾸기 (기본 → 계획 → work → job)"),
+            ("Shift+Enter · Alt+Enter", "줄바꿈 (Shift+Enter는 키티 키보드 프로토콜 지원 터미널에서만)"),
             ("←", "프로젝트·쓰레드 목록 (입력란이 비었을 때)"),
             ("↑ ↓", "보낸 말 되살리기"),
             ("Ctrl+O", "작업 카드 접기·펴기"),
@@ -217,6 +218,7 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
         ],
         Lang::En => vec![
             ("Shift+Tab", "Switch mode (normal → plan → work → job)"),
+            ("Shift+Enter · Alt+Enter", "Newline (Shift+Enter needs a kitty-keyboard-protocol terminal)"),
             ("←", "Project and thread list (when the input box is empty)"),
             ("↑ ↓", "Bring back something you sent"),
             ("Ctrl+O", "Fold or unfold a work card"),

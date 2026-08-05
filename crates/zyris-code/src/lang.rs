@@ -189,6 +189,18 @@ impl Lang {
     pub fn connected(self) -> &'static str {
         self.pick("연결됨", "Connected")
     }
+    /// What to show instead of the connected notice when the terminal cannot tell
+    /// Shift+Enter apart from Enter.
+    ///
+    /// A terminal without the Kitty keyboard protocol sends Shift+Enter as a single
+    /// `\r`, so the app cannot separate the two — say up front that Alt+Enter (which
+    /// works everywhere) is the way to insert a newline.
+    pub fn kitty_shift_enter_hint(self) -> &'static str {
+        self.pick(
+            "연결됨 — 이 터미널은 Shift+Enter를 구별하지 못합니다. 줄바꿈은 Alt+Enter를 쓰세요.",
+            "Connected — this terminal can't tell Shift+Enter apart from Enter. Use Alt+Enter for a newline.",
+        )
+    }
     /// What to show in the activity line while a command runs.
     pub fn running_command(self, command: &str, secs: u64) -> String {
         match self {
