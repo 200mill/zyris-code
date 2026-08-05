@@ -1,8 +1,8 @@
-//! Attacca와의 대화. 세션은 **첫 메시지에서** 만든다.
+//! Conversations with Attacca. A session is created at **the first message**.
 
 use anyhow::{anyhow, Result};
-// `AttaccaApi`는 트레이트다. 메서드를 부르려면 클라이언트 타입만으로는 안 되고 트레이트가
-// 스코프에 있어야 한다 — 없으면 "method not found"로 막힌다.
+// `AttaccaApi` is a trait. To call its methods, the client type alone is not enough — the trait
+// has to be in scope, or you get stuck with "method not found".
 use zyris_attacca::{
     AttaccaApi, AttaccaApiClient, ZHistoryQuery, ZNewJob, ZNewProject, ZNewSession, ZNewWork,
     ZSessionFilter, ZTurnFrame,
@@ -12,14 +12,14 @@ use crate::app::Frame;
 use crate::event::entry_from;
 use crate::mode::Route;
 
-/// 서버 호출 하나에 거는 마감. 죽은 연결(반쪽 TCP — 상대가 FIN/RST 없이 사라진
-/// 자리)은 답도 오류도 없이 영원히 기다리게 하므로, 마감이 없으면 화면 루프가
-/// 그 자리에 갇혀 프리즈한다 — 키도 시그널도 안 먹는 상태가 된다(2026-08-04
-/// 실측). 모든 서버 호출이 이 마감 아래로 들어가야 한다.
+/// Timeout placed on each server call. A dead connection (half-open TCP — the peer vanished
+/// without FIN/RST) makes the call wait forever with neither answer nor error, so without a
+/// timeout the screen loop gets stuck there and freezes — a state where neither keys nor
+/// signals work (measured on 2026-08-04). Every server call must run under this timeout.
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// 마감을 건 서버 호출. 죽은 연결 위에서 영원히 기다리지 않는다.
-/// 마감이 지나면 연결을 닫아 Runner가 다시 붙게 만든다.
+/// A server call under a timeout. Never waits forever on a dead connection.
+/// When the timeout passes, closes the connection so the Runner reconnects.
 pub(crate) async fn within<T>(
     api: &AttaccaApiClient,
     fut: impl std::future::Future<Output = zyris::Result<T>>,
@@ -37,23 +37,23 @@ pub(crate) async fn within<T>(
     }
 }
 
-/// 지금 붙는 에이전트의 이름.
+/// The name of the agent we currently attach to.
 ///
-/// **원래 목적지는 `zyris-code`다**(`prompts/agents/zyris_code.yml`의 `name`). 그런데 그
-/// 에이전트는 아직 개발 중이고, 정의가 콘텐츠 리포의 `develop`에만 있어서 지금 붙으면
-/// 전송이 `Agent not found`로 실패한다 — 턴 경로가 기본 브랜치만 보기 때문이다(CLAUDE.md의
-/// "걸려 있는 문제" 절). 그때까지는 `Main Agent`로 개발한다.
+/// **The intended destination is `zyris-code`** (the `name` in `prompts/agents/zyris_code.yml`). But that
+/// agent is still in development, and its definition only exists on `develop` of the content repo, so attaching
+/// to it now fails with `Agent not found` — the turn path only looks at the default branch (see the
+/// "Open Issues" section of CLAUDE.md). Until then, we develop with `Main Agent`.
 ///
-/// 되돌리는 것은 이 상수 한 줄이다.
+/// Reverting is just this one constant line.
 pub const DEFAULT_AGENT: &str = "Main Agent";
 
-/// 이 앱이 실제로 부르는 attacca 호출에 필요한 권한 전부.
+/// Every permission this app actually needs for the attacca calls it makes.
 ///
-/// attacca의 `zyris_gateway.rs`가 호출마다 `require(ApiScope::…)`로 잰다:
+/// attacca's `zyris_gateway.rs` measures it per call with `require(ApiScope::…)`:
 ///
-/// | 부르는 것 | 필요한 권한 |
+/// | Called | Permission needed |
 /// |---|---|
-/// | `me` | 없음 |
+/// | `me` | none |
 /// | `list_agents` | `agents:read` |
 /// | `list_projects` | `projects:read` |
 /// | `create_project` | `projects:write` |
@@ -65,19 +65,19 @@ pub const DEFAULT_AGENT: &str = "Main Agent";
 /// | `create_job` | `jobs:write` |
 /// | `list_jobs`·`get_job` | `jobs:read` |
 ///
-/// **하나라도 빠지면 그 목록만 조용히 빈 채로 돌아온다.** 오류가 아니라 빈 결과라,
-/// 사람은 자기 계정에 에이전트나 프로젝트가 없는 줄 안다. 실제로 그렇게 걸렸다.
+/// **If even one is missing, that list just quietly comes back empty.** It's not an error but an empty result,
+/// so the person believes their account has no agents or projects. This actually happened.
 ///
-/// 요청할 때와 확인할 때가 **같은 목록이어야 한다.** 갈라지면 요청하지도 않은 것을
-/// 없다고 말하거나, 없는데도 아무 말을 안 한다.
+/// What we request and what we verify must be **the same list.** If they diverge, we'd either claim a
+/// scope we never requested is missing, or stay silent about one that actually is.
 ///
-/// **하나라도 없으면 앱이 제 일을 못 한다.** 모자라면 자격을 버리고 다시 승인받는다
+/// **If even one is missing, the app can't do its job.** When short, drop the credentials and get approved again
 /// (`needs_reenrollment`).
 ///
-/// **여기에 새 스코프를 더하기 전에 서버가 그것을 아는지 먼저 재 볼 것.** 모르는 스코프가
-/// 하나라도 있으면 등록 요청이 통째로 막힌다 — axum의 `Json` 추출기가 열거형을 못 읽어
-/// 422로 거절하는 것이라 **승인 화면까지 가지도 못한다.** 2026-08-03에 `nodes:write`를
-/// 넣었다가 정확히 그렇게 막혔고, 오류 본문이 배포본이 받는 목록 전체를 알려 준다:
+/// **Before adding a new scope here, first re-check that the server knows it.** If even one unknown scope
+/// is present, the whole enrollment request is blocked — the axum `Json` extractor can't read the enum and
+/// rejects with 422, so **we never even reach the approval screen.** On 2026-08-03 adding `nodes:write`
+/// got blocked exactly that way, and the error body reveals the full list the deployed build accepts:
 ///
 /// ```text
 /// POST /api/zyris/v1/device/authorize {"scopes":[…,"nodes:write"], …}
@@ -86,18 +86,18 @@ pub const DEFAULT_AGENT: &str = "Main Agent";
 pub const REQUIRED_SCOPES: [&str; 10] = [
     "agents:read",
     "projects:read",
-    // 프로젝트 양식이 쓴다. 2026-08-03에 배포본에 재 보고 넣었다 — 200이었다.
+    // Used by the project form. Re-added after checking the deployed build on 2026-08-03 — it was 200.
     "projects:write",
     "sessions:read",
     "sessions:write",
     "events:read",
-    // `work` 캐퍼빌리티가 쓴다(`tools/work.rs`). 큰 일을 attacca에 넘기는 길이다.
-    // work 모드도 같은 것을 쓴다 — `create_work`가 `works:write`, 계획 대화를 기다리는
-    // `get_work`가 `works:read`다.
+    // Used by the `work` capability (`tools/work.rs`). It's the way to hand big jobs to attacca.
+    // work mode uses the same ones too — `create_work` is `works:write`, and `get_work`, which waits on
+    // the planning conversation, is `works:read`.
     "works:read",
     "works:write",
-    // job 모드(`Session::open_job`). **2026-08-03에 배포본에 직접 재 보고 넣었다** —
-    // 위에 적어 둔 대로, 서버가 모르는 스코프 하나면 등록이 통째로 422다:
+    // job mode (`Session::open_job`). **Re-added after checking the deployed build directly on 2026-08-03** —
+    // as noted above, a single scope the server doesn't know makes the whole enrollment a 422:
     //
     // ```text
     // POST /api/zyris/v1/device/authorize {"scopes":[…,"jobs:read","jobs:write"], …}
@@ -107,55 +107,55 @@ pub const REQUIRED_SCOPES: [&str; 10] = [
     "jobs:write",
 ];
 
-/// 이 프로그램의 이름. 자격 디렉터리가 이것으로 갈린다.
+/// This program's name. The credential directory branches on it.
 pub const APP: &str = "zyris-code";
 
-/// zyris를 쓰는 모든 프로그램이 같이 쓰던 옛 자리. 여기 남은 자격은 첫 실행에 옮겨 온다.
+/// The old location all zyris programs shared. Credentials left here are migrated on first run.
 pub const LEGACY_APP: &str = "zyris";
 
-/// 자격이 사는 디렉터리. `/cwd`가 보여준다.
+/// The directory where credentials live. `/cwd` shows it.
 ///
-/// **`~/.config/zyris/`가 아니다.** 거기는 zyris를 쓰는 모든 프로그램이 같이 쓰던 자리라,
-/// 프로필을 안 정한 둘이 서로의 신원 위에 등록했다. 사람이 "내 로그인이 어디 있나"를
-/// 물을 때 옛 경로를 말하면 엉뚱한 파일을 지우게 된다.
+/// **It is not `~/.config/zyris/`.** That was the shared location for all zyris programs, so two
+/// unprofiled ones registered on top of each other's identity. Telling the old path to someone
+/// who asks "where is my login" would make them delete the wrong file.
 pub fn credential_home() -> String {
     credential_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "자격을 둘 디렉터리를 찾지 못했습니다".to_string())
 }
 
-/// 자격을 둘 자리. **우리가 계산한다.**
+/// Where credentials go. **We compute it.**
 ///
-/// 상류에는 앱별 디렉터리를 정하는 길이 없다(`RunConfig::app`은 zyris `main`에 없다). 대신
-/// zyris의 `config_dir()`이 **`$ZYRIS_CONFIG_DIR`을 가장 먼저 본다** — 그러니 그 변수를
-/// 이 값으로 채우면(`main.rs`) 자격이 이 앱 자리에 떨어진다.
+/// Upstream has no way to set an app-specific directory (`RunConfig::app` doesn't exist in zyris's `main`). Instead,
+/// zyris's `config_dir()` **checks `$ZYRIS_CONFIG_DIR` first** — so filling that variable with
+/// this value (`main.rs`) makes credentials land in this app's own location.
 pub fn credential_dir() -> Option<std::path::PathBuf> {
     config_home_for(APP)
 }
 
-/// 옛 자리. 첫 실행에 여기 있는 자격을 옮겨 온다.
+/// The old location. Credentials found here are migrated on first run.
 pub fn legacy_credential_dir() -> Option<std::path::PathBuf> {
-    // 사람이 `$ZYRIS_CONFIG_DIR`을 준 경우에는 옮길 옛 자리랄 것이 없다 — 그 사람은
-    // 어디에 둘지 이미 정했고, 우리가 다른 디렉터리를 뒤질 이유가 없다.
+    // When the person has set `$ZYRIS_CONFIG_DIR`, there is no old location to migrate — they have
+    // already decided where things go, and we have no reason to search other directories.
     if given_config_dir().is_some() {
         return None;
     }
     config_home_for(LEGACY_APP)
 }
 
-/// 사람이 정한 자리. **빈 값은 안 준 것으로 친다** — `ZYRIS_CONFIG_DIR=`로 지우려 한
-/// 사람에게 빈 경로를 돌려주면 자격이 작업 디렉터리에 떨어진다.
+/// The location the person chose. **An empty value counts as not given** — handing an empty path
+/// to someone who tried to clear it with `ZYRIS_CONFIG_DIR=` would drop credentials into the working directory.
 fn given_config_dir() -> Option<std::ffi::OsString> {
     std::env::var_os("ZYRIS_CONFIG_DIR").filter(|v| !v.is_empty())
 }
 
-/// `$ZYRIS_CONFIG_DIR` → 플랫폼의 사용자 설정 자리 아래 `app`.
+/// `$ZYRIS_CONFIG_DIR` → `app` under the platform's user-config location.
 ///
-/// zyris의 `enroll::config_dir()`과 **같은 갈래**를 따른다. 갈라지면 우리가 채운 변수와
-/// 상류가 읽는 자리가 어긋나 자격이 두 군데로 흩어진다.
+/// Follows **the same branch** as zyris's `enroll::config_dir()`. If they diverge, the variable we fill
+/// and the location upstream reads fall out of sync, scattering credentials across two places.
 fn config_home_for(app: &str) -> Option<std::path::PathBuf> {
     if let Some(given) = given_config_dir() {
-        // 사람이 정확히 그 자리를 뜻한 것이다. 앱 이름을 덧붙이지 않는다.
+        // The person meant exactly that location. Don't append the app name.
         return Some(std::path::PathBuf::from(given));
     }
     let base = platform_config_base()?;
@@ -181,15 +181,15 @@ fn platform_config_base() -> Option<std::path::PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
 }
 
-/// 옛 자리에 남은 이 프로필의 자격을 **옮겨 온다.** 옮긴 개수를 돌려준다.
+/// **Migrates** this profile's credentials left in the old location. Returns the number moved.
 ///
-/// **복사가 아니라 이동이다.** 살아 있는 리프레시 토큰이 디스크에 둘이면 언젠가 둘 다
-/// 제시되고, attacca는 유예 30초를 넘긴 재사용을 사슬이 샌 것으로 보아 **노드를 통째로
-/// revoke한다**(`zyris_enrollment_service.rs`의 `RefreshAttempt::Reused`). 둘 다 죽는다.
+/// **It's a move, not a copy.** If a live refresh token exists twice on disk, both eventually get
+/// presented, and attacca treats a reuse beyond the 30-second grace as a leaked chain and **revokes
+/// the whole node** (`RefreshAttempt::Reused` in `zyris_enrollment_service.rs`). Both die.
 ///
-/// **이미 여기 있는 것은 안 덮어쓴다.** 이 앱이 이미 등록해 둔 자격이 옛 파일보다 뒤이고,
-/// 덮어쓰면 지금 붙어 있는 신원을 잃는다. 그때는 옛 파일도 지우지 않는다 — 우리가 안 가진
-/// 자격을 지우는 것은 남의 것을 버리는 일이다.
+/// **Never overwrites what is already here.** Credentials this app already registered are newer than the old file,
+/// and overwriting would lose the identity currently attached. In that case the old file isn't deleted either —
+/// deleting a credential we don't hold is throwing away someone else's.
 pub fn migrate_credentials(from: &std::path::Path, into: &std::path::Path, profile: &str) -> usize {
     let suffix = format!("-{}.json", slugify_profile(profile));
     let Ok(entries) = std::fs::read_dir(from) else {
@@ -209,9 +209,9 @@ pub fn migrate_credentials(from: &std::path::Path, into: &std::path::Path, profi
         if std::fs::create_dir_all(into).is_err() {
             continue;
         }
-        // 같은 파일시스템이면 rename 한 번이다. 홈이 여러 마운트로 갈려 있으면 EXDEV로
-        // 실패하므로 복사한 **뒤에 지운다** — 지우기가 실패하면 두 벌이 남으니 그때는
-        // 옮기지 않은 것으로 친다.
+        // On the same filesystem it's a single rename. If the home directory spans several mounts, that
+        // fails with EXDEV, so we copy first and **delete afterwards** — if the delete fails, two copies remain,
+        // and we count that as not moved.
         let done = match std::fs::rename(entry.path(), &target) {
             Ok(()) => true,
             Err(_) => match std::fs::copy(entry.path(), &target) {
@@ -226,7 +226,7 @@ pub fn migrate_credentials(from: &std::path::Path, into: &std::path::Path, profi
             },
         };
         if done {
-            // 자격이다. 옮기면서 권한이 느슨해지면 다음 실행에 상류가 읽기를 거부한다.
+            // It's a credential. If the move loosens permissions, upstream refuses to read it next run.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -238,11 +238,11 @@ pub fn migrate_credentials(from: &std::path::Path, into: &std::path::Path, profi
     moved
 }
 
-/// 자격 파일 이름에 들어가는 프로필 조각.
+/// The profile fragment that goes into credential file names.
 ///
-/// **zyris의 `file_store::slugify`를 그대로 베껴 둔 것이다.** 파일 이름을 짓는 쪽은 상류이고
-/// 여기는 그것을 알아보기만 하므로, 규칙이 갈라지면 옮길 파일을 못 알아보고 조용히 지나친다
-/// — 사람 눈에는 "다시 등록하라는 화면"으로만 보인다. 상류가 바뀌면 여기도 같이 고친다.
+/// **This is a verbatim copy of zyris's `file_store::slugify`.** Upstream names the files and we only
+/// recognize them, so if the rules diverge we fail to recognize the files to migrate and quietly pass
+/// them by — the person only sees a "please re-enroll" screen. When upstream changes, this changes too.
 fn slugify_profile(profile: &str) -> String {
     let mut out = String::with_capacity(profile.len());
     let mut prev_dash = false;
@@ -266,26 +266,26 @@ fn slugify_profile(profile: &str) -> String {
     }
 }
 
-/// 받은 권한에서 **모자란 것**. 요청 목록과 확인 목록은 언제나 `REQUIRED_SCOPES` 하나다.
+/// What's **missing** from the granted permissions. The requested list and the verified list are always the single `REQUIRED_SCOPES`.
 pub fn missing_scopes(granted: &[String]) -> Vec<&'static str> {
     REQUIRED_SCOPES.iter().copied().filter(|s| !granted.iter().any(|g| g == s)).collect()
 }
 
-/// 자격을 버리고 다시 승인받아야 하는가. **순수 판정이다.**
+/// Whether credentials must be dropped and approval requested again. **A pure predicate.**
 ///
-/// 승인 때 정해진 권한은 토큰을 갱신해도 넓어지지 않는다. 그러니 기능이 늘어 권한이 하나
-/// 더 필요해지면 길은 하나뿐이다 — 자격을 버리고 다시 묻는 것.
+/// Permissions fixed at approval time don't widen when the token refreshes. So when a feature grows and needs one
+/// more permission, there's only one path — drop the credentials and ask again.
 ///
-/// **프로세스당 한 번이다.** 사람이 또 좁게 승인할 수 있는데, 그때마다 다시 물으면 브라우저를
-/// 계속 요구하는 고리가 된다. 한 번 해 봤으면 그 다음은 말로만 알린다.
+/// **Once per process.** The person can approve narrowly again, and asking every time becomes a loop
+/// that keeps demanding the browser. After trying once, we only tell them in words.
 pub fn needs_reenrollment(granted: &[String], already_tried: bool) -> bool {
     !already_tried && !missing_scopes(granted).is_empty()
 }
 
-/// 권한이 모자랄 때 사람에게 할 말.
+/// What to tell the person when permissions are short.
 ///
-/// **"부족합니다"만으로는 길이 없다.** 승인 때 정해진 권한은 토큰을 갱신해도 넓어지지
-/// 않으므로, 할 수 있는 일은 자격을 버리고 다시 승인받는 것 하나뿐이다. 그 방법을 적는다.
+/// **"Not enough" alone gives no path.** Permissions fixed at approval time don't widen when the token
+/// refreshes, so the only thing to do is drop the credentials and get approved again. That method is written here.
 pub fn missing_scopes_message(missing: &[&str]) -> String {
     format!(
         "**권한이 모자랍니다: {}**. 승인할 때 정해진 권한은 나중에 넓어지지 않습니다.\n\n\
@@ -294,11 +294,11 @@ pub fn missing_scopes_message(missing: &[&str]) -> String {
     )
 }
 
-/// 모자란 권한 때문에 자격을 버렸을 때 할 말.
+/// What to say when credentials were dropped because permissions were short.
 ///
-/// **등록 코드 창이 뜨면 그 자리에서 승인하면 된다고 말해야 한다.** 예전에는 자격을
-/// 버리면 코드가 stdout으로 나가 화면에 가려 "껐다 켜라"고 했지만, 이제는
-/// `EnrollmentUi` 훅이 코드를 화면에 그린다(`enroll.rs`) — 다시 연결될 때 창이 뜬다.
+/// **We must say that approving right there when the enrollment-code window appears is enough.** Previously, dropping
+/// credentials sent the code to stdout where the screen hid it, so we said "turn it off and on"; now the
+/// `EnrollmentUi` hook draws the code on screen (`enroll.rs`) — the window appears on reconnect.
 pub fn scopes_will_be_asked_again(missing: &[&str]) -> String {
     format!(
         "**권한이 모자랍니다: {}**. 다시 승인받을 수 있도록 이 컴퓨터의 자격을 비웠습니다.\n\n\
@@ -308,24 +308,24 @@ pub fn scopes_will_be_asked_again(missing: &[&str]) -> String {
     )
 }
 
-/// 붙을 에이전트. `ZYRIS_CODE_AGENT`로 덮어쓴다.
+/// The agent to attach to. Overridable with `ZYRIS_CODE_AGENT`.
 pub fn agent_name() -> String {
     std::env::var("ZYRIS_CODE_AGENT").unwrap_or_else(|_| DEFAULT_AGENT.to_string())
 }
 
-/// 서버에 등록할 노드 이름.
+/// The node name to register with the server.
 ///
-/// **호스트 이름만 쓰면 이 머신의 다른 노드와 같은 신원이 된다.** 같은 컴퓨터에서
-/// `zyris-daemon`이 돌고 있으면 둘 다 `arch`로 등록되고, attacca는
-/// `slug_with_suffix`로 한쪽에 `-2`를 붙여 떼어 놓는다 — **어느 쪽이 `arch`를 갖는지는
-/// 붙는 순서에 달려 있어**, 도구 이름(`zyris__arch__…`)이 실행마다 바뀔 수 있다.
+/// **Using only the hostname gives the same identity as the machine's other nodes.** If `zyris-daemon`
+/// runs on the same computer, both register as `arch`, and attacca separates them by appending
+/// `-2` to one with `slug_with_suffix` — **which one keeps `arch` depends on the order
+/// they attached**, so the tool names (`zyris__arch__…`) can change between runs.
 ///
-/// 그래서 이 앱은 자기 이름을 달고 등록한다: `arch zyris-code`.
+/// That's why this app registers carrying its own name: `arch zyris-code`.
 ///
-/// **길이에 걸린다.** attacca의 `slugify_node_name`은 영숫자만 남기고 나머지를 하이픈으로
-/// 접은 뒤 **16자에서 자른다**(`ZYRIS_NODE_SLUG_MAX_LEN`). `arch zyris-code`는
-/// `arch-zyris-code`(15자)로 딱 들어가지만, 호스트 이름이 길면 뒤쪽 `zyris-code`가 잘려
-/// 나가 도로 호스트 이름만 남는다. 그때는 **구별되는 쪽을 앞에 둔다.**
+/// **Length is a constraint.** attacca's `slugify_node_name` keeps only alphanumerics, folds the rest into hyphens,
+/// then **truncates at 16 characters** (`ZYRIS_NODE_SLUG_MAX_LEN`). `arch zyris-code` fits exactly as
+/// `arch-zyris-code` (15 chars), but with a long hostname the trailing `zyris-code` gets cut
+/// away and only the hostname remains. In that case **the distinguishing part goes first.**
 pub fn node_name() -> String {
     let host = zyris::machine_name().unwrap_or_else(|| "node".to_string());
     let dir = std::env::current_dir()
@@ -334,13 +334,13 @@ pub fn node_name() -> String {
     compose_name(&host, dir.as_deref())
 }
 
-/// 이름을 짓는 순수한 판. `dir`은 작업 디렉터리의 마지막 조각이다.
+/// The pure decision that builds the name. `dir` is the last fragment of the working directory.
 ///
-/// **작업 디렉터리를 이름에 단다.** 같은 머신의 서로 다른 디렉터리에 띄운 창이
-/// attacca의 노드 목록에서 구별되어야 한다 — `arch zyris-code · zyris-daemon`처럼.
-/// 슬러그는 16자에서 잘리므로 디렉터리는 표시 이름에만 남는다(슬러그는 언제나
-/// `arch-zyris-code` 꼴). 디렉터리가 앱 이름과 같으면(이 리포에서 도는 경우) 붙이지
-/// 않는다 — 같은 것이 두 번 말할 이유가 없다.
+/// **The working directory goes into the name.** Windows opened in different directories of the same machine
+/// must be distinguishable in attacca's node list — like `arch zyris-code · zyris-daemon`.
+/// Since the slug truncates at 16 characters, the directory only survives in the display name (the slug is always
+/// of the form `arch-zyris-code`). When the directory equals the app name (running in this repo), it's not
+/// appended — no reason to say the same thing twice.
 fn compose_name(host: &str, dir: Option<&str>) -> String {
     let suffix = dir.filter(|d| !d.is_empty() && *d != SUFFIX);
     let natural = match suffix {
@@ -350,34 +350,34 @@ fn compose_name(host: &str, dir: Option<&str>) -> String {
     if slug_of(&natural).contains(SUFFIX) {
         natural
     } else {
-        // 잘려서 앱 이름이 사라졌다. 순서를 뒤집으면 적어도 무엇인지는 남는다.
+        // Truncated away the app name. Reversing the order at least keeps what it is.
         format!("{SUFFIX} {host}")
     }
 }
 
-/// attacca가 이 노드에 줄 슬러그. 도구 이름의 가운데 조각이다.
+/// The slug attacca gives this node. It's the middle fragment of tool names.
 ///
-/// **겹치면 서버가 `-2`를 붙인다**(`slug_with_suffix`). 그러니 여기 값이 언제나 실제와
-/// 같지는 않다 — 같은 이름의 노드가 둘이면 어느 쪽이 맨 이름을 갖는지는 붙은 순서다.
+/// **If it collides, the server appends `-2`** (`slug_with_suffix`). So the value here isn't always the actual
+/// one — with two nodes of the same name, which keeps the bare name is the attach order.
 pub fn node_slug() -> String {
     slug_of(&std::env::var("ZYRIS_NODE_NAME").unwrap_or_else(|_| node_name()))
 }
 
-/// 이름 뒤에 붙는 이 앱의 표시. 슬러그에서 이것이 살아남아야 구별이 된다.
+/// This app's display appended to the name. For the distinction to work, this must survive in the slug.
 const SUFFIX: &str = "zyris-code";
 
-// ── 창 잠금 ────────────────────────────────────────────────────────────────
+// ── Window lock ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //
-// **같은 자격을 쓰는 창이 둘이면 서버 레지스트리는 나중 연결로 덮어쓴다.** 조용히
-// 꼬이지 않게, 먼저 떠 있는 창이 있으면 그 사실을 화면에 말한다. 막지는 않는다 —
-// 같은 디렉터리라면 어느 창이 받든 바뀌는 파일은 같다(CLAUDE.md "창 여럿").
+// **With two windows using the same credentials, the server registry is overwritten by the later connection.** So it
+// doesn't quietly tangle: if an earlier window is already up, we say so on screen. We don't block —
+// in the same directory, whichever window receives it, the files changed are the same (CLAUDE.md "Multiple windows").
 
-/// 잠금 파일 이름. 프로필로 갈라서, 서로 다른 프로필(다른 노드)은 서로를 방해하지 않는다.
+/// Lock file name. Branched by profile, so different profiles (different nodes) don't interfere with each other.
 fn instance_lock_path(config_dir: &std::path::Path, profile: &str) -> std::path::PathBuf {
     config_dir.join(format!(".instance-{}.lock", slugify_profile(profile)))
 }
 
-/// 살아 있는 동안 잠금 파일을 지우는 손잡이. **창이 끝나면 어느 길로든 지워진다.**
+/// A handle that removes the lock file while alive. **However the window ends, it gets removed.**
 pub struct InstanceLock(std::path::PathBuf);
 
 impl Drop for InstanceLock {
@@ -386,8 +386,8 @@ impl Drop for InstanceLock {
     }
 }
 
-/// 이 프로필로 **이미 살아 있는** 다른 창이 있는가. 잠금 파일의 PID가 살아 있으면 참 —
-/// 죽은 창의 흔적은 살아 있는 창이 아니다.
+/// Is there **already a living** other window for this profile? True if the PID in the lock file is alive —
+/// a dead window's trace is not a living window.
 pub fn another_instance_alive(config_dir: &std::path::Path, profile: &str) -> bool {
     let Ok(pid) = std::fs::read_to_string(instance_lock_path(config_dir, profile)) else {
         return false;
@@ -395,11 +395,11 @@ pub fn another_instance_alive(config_dir: &std::path::Path, profile: &str) -> bo
     process_alive(pid.trim())
 }
 
-/// 잠금을 건다. 이미 살아 있는 창이 있으면 `None` — 그때는 알림만 띄우고 그대로 간다.
+/// Claims the lock. If a living window already exists, `None` — then we only show a notice and carry on.
 ///
-/// **죽은 창의 흔적은 치우고 다시 건다.** PID 하나만 쓰므로 동시에 두 창이 걸면 나중
-/// 것이 이긴다 — 이 잠금은 "누가 주인인가"가 아니라 "다른 살아 있는 창이 있나"를 묻는
-/// 그물이라, 경합이 지는 쪽도 다음 검사에서 다른 쪽을 보게 된다.
+/// **Clears a dead window's trace and claims again.** Since only one PID is stored, if two windows claim
+/// at once the later one wins — this lock asks "is there another living window", not "who is the owner",
+/// so the losing side of a race will see the other one at the next check.
 pub fn claim_instance_lock(config_dir: &std::path::Path, profile: &str) -> Option<InstanceLock> {
     let path = instance_lock_path(config_dir, profile);
     if another_instance_alive(config_dir, profile) {
@@ -416,25 +416,25 @@ pub fn claim_instance_lock(config_dir: &std::path::Path, profile: &str) -> Optio
 #[cfg(unix)]
 fn process_alive(pid: &str) -> bool {
     let Ok(pid) = pid.trim().parse::<u32>() else { return false; };
-    // PID 0은 "내 프로세스 그룹"이라 kill(0, 0)이 언제나 성공한다 — 그럴 리 없는 값으로 친다.
+    // PID 0 means "my process group", so kill(0, 0) always succeeds — treat it as an impossible value.
     if pid == 0 {
         return false;
     }
-    // kill(pid, 0): 신호는 보내지 않고 그 PID가 존재하는지만 묻는다.
+    // kill(pid, 0): sends no signal, only asks whether that PID exists.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
 #[cfg(not(unix))]
 fn process_alive(_pid: &str) -> bool {
-    // 프로세스 존재를 묻는 길이 없는 플랫폼에서는 남은 파일을 죽은 것으로 친다 —
-    // 다음 창이 그냥 덮어쓰고, 경고는 유닉스에서만 의미가 있다.
+    // On platforms with no way to ask whether a process exists, treat a leftover file as dead —
+    // the next window just overwrites it, and the warning only means something on Unix.
     false
 }
 
-/// attacca의 `slugify_node_name`과 **같은 규칙**이다(`attacca-domain/src/zyris_node.rs`).
+/// **The same rule** as attacca's `slugify_node_name` (`attacca-domain/src/zyris_node.rs`).
 ///
-/// 서버가 무엇을 만들지 여기서 미리 알아야 이름이 잘리는지 판단할 수 있다. 규칙이
-/// 갈라지면 이 판단이 틀리므로, 바뀌면 여기도 같이 고쳐야 한다.
+/// We must know here in advance what the server will produce to judge whether the name gets truncated. If the rules
+/// diverge, this judgment is wrong, so when it changes this must change too.
 fn slug_of(name: &str) -> String {
     const MAX: usize = 16;
     let mut slug = String::new();
@@ -462,64 +462,64 @@ fn slug_of(name: &str) -> String {
 #[derive(Debug, Default)]
 pub struct Session {
     id: Option<String>,
-    /// 지금 보고 있는 프로젝트. **여기서 여는 것은 전부 이 프로젝트로 간다** —
-    /// 세션도, job도, work도.
+    /// The project currently in view. **Everything opened from here goes to this project** —
+    /// sessions, jobs, and works alike.
     ///
-    /// **한 번 쓰고 지우면 안 된다.** 예전에는 `＋ 새 세션`이 채우고 첫 생성이 지우는
-    /// 일회용이었는데, 그러면 프로젝트를 골라 놓고 job을 걸었을 때 `project_id`가 이미
-    /// 비어 서버가 **기본 프로젝트에** 만든다. 실제로 그렇게 걸렸다.
+    /// **Must not be consumed on first use.** It used to be single-use: `＋ 새 세션` filled it and the first
+    /// creation cleared it, so when a job was launched after picking a project, `project_id` was already
+    /// empty and the server created it in the **default project**. That actually happened.
     ///
-    /// `None`은 "아직 안 골랐다"이고 그때만 서버의 기본 프로젝트가 맞다.
+    /// `None` means "not picked yet", and only then is the server's default project right.
     project: Option<String>,
-    /// 세션마다 붙는 시스템 지시. 스킬이 하나도 없으면 `None`이다.
+    /// The system directive attached to each session. `None` when there are no skills.
     preamble: Option<String>,
-    /// 다음 메시지가 **새로 열** 것. `None`이면 지금 세션에 이어 붙인다.
+    /// What the next message will **open anew**. `None` appends to the current session.
     ///
-    /// **`id`를 비우는 것으로 대신할 수 없다.** work·job 모드로 갔다가 아무 말도 안 하고
-    /// 돌아오는 일이 흔한데, 그때 `id`를 이미 버렸으면 하던 대화를 잃는다. 예약과
-    /// "세션이 없다"는 서로 다른 상태다.
+    /// **Can't be replaced by clearing `id`.** It's common to visit work·job mode and come back without
+    /// saying anything; if `id` was already dropped then, the conversation in progress is lost. A staged
+    /// open and "no session" are different states.
     pending_open: Option<Route>,
 }
 
-/// 세션을 열고 나서 알아야 할 것.
+/// What you need to know after opening a session.
 ///
-/// **`sent`이 요점이다.** `create_job`·`create_work`는 여는 요청이 **첫 메시지를 먹으므로**
-/// (`ZNewJob::message`·`ZNewWork::message`) 뒤이어 `send_message`를 또 부르면 같은 말이
-/// 두 번 들어간다. 세션을 그냥 만든 길에서는 아직 아무것도 안 갔다.
+/// **`sent` is the point.** With `create_job`·`create_work` the open request **consumes the first message**
+/// (`ZNewJob::message`·`ZNewWork::message`), so calling `send_message` afterwards would send the same
+/// words twice. On the path that merely creates a session, nothing has been sent yet.
 #[derive(Debug, Clone)]
 pub struct Opened {
     pub id: String,
-    /// 첫 메시지가 여는 요청에 이미 실려 갔는가.
+    /// Whether the first message already rode along on the open request.
     pub sent: bool,
-    /// 방금 무엇을 열었는가. 아무것도 새로 안 열었으면 `None`이다 — 화면이 그때만 말한다.
+    /// What was just opened. `None` when nothing new was opened — the screen only announces then.
     pub announced: Option<(Route, String)>,
 }
 
 impl Session {
-    /// `preamble`은 이 세션의 시스템 지시다 — 지금은 스킬 목록이 실린다.
+    /// `preamble` is this session's system directive — currently it carries the skill list.
     ///
-    /// **세션을 만들 때 한 번 정해지고 뒤에 바꿀 수 없다**(attacca의 `ZNewSession`).
-    /// 그래서 나중에 붙는 MCP 도구는 여기 실리지 않는다 — 그쪽은 도구 목록으로 간다.
+    /// **Fixed once when the session is created and can't be changed later** (attacca's `ZNewSession`).
+    /// That's why MCP tools attached later aren't carried here — they go into the tool list.
     pub fn new(preamble: Option<String>) -> Self {
         Session { preamble, ..Default::default() }
     }
 
-    /// 이미 만들어졌다면 그 id.
+    /// The id, if already created.
     pub fn id(&self) -> Option<&str> {
         self.id.as_deref()
     }
 
-    /// 다른 세션으로 갈아탄다.
+    /// Switches to another session.
     ///
-    /// **예약을 지운다.** 목록에서 세션을 고른 것은 "저기로 간다"는 뜻이라, 그 말을 job으로
-    /// 흘려보내면 고른 자리로 안 간다.
+    /// **Clears the staged open.** Picking a session from the list means "go there", and letting that word
+    /// flow into a job would not go to the picked place.
     ///
-    /// **프로젝트는 지우는 것이 아니라 고른 세션의 것으로 바꾼다.** 비우면 그 다음에 여는
-    /// job이 기본 프로젝트로 떨어진다.
+    /// **The project isn't cleared; it changes to the picked session's.** Clearing it would drop the next
+    /// job opened after this into the default project.
     ///
-    /// 어느 프로젝트인지 모르는 자리도 있다(시작할 때 답 기다리는 세션으로 들어가는 길).
-    /// 그때는 `None`을 주고 **알던 것을 그대로 둔다** — 모른다고 비우면 그것이 곧 기본
-    /// 프로젝트로 떨어지는 길이다.
+    /// Some paths don't know the project (the way into a session awaiting an answer at startup).
+    /// Then pass `None` and **keep what we knew** — clearing it out of ignorance is exactly the path
+    /// that drops into the default project.
     pub fn switch_to(&mut self, id: String, project_id: Option<String>) {
         self.id = Some(id);
         if let Some(p) = project_id {
@@ -528,32 +528,32 @@ impl Session {
         self.pending_open = None;
     }
 
-    /// 프로젝트 목록에서 하나를 열었다. **세션을 고르기 전에도 기억해 둔다** — 목록만
-    /// 열어 보고 Esc로 닫은 뒤 job을 걸어도 그 프로젝트로 가야 한다.
+    /// Opened one from the project list. **Remembered even before picking a session** — opening the list,
+    /// closing it with Esc, and launching a job must still go to that project.
     pub fn enter_project(&mut self, project_id: String) {
         self.project = Some(project_id);
     }
 
-    /// 지금 프로젝트. `/cwd`와 테스트가 본다.
+    /// The current project. `/cwd` and tests look at it.
     pub fn project(&self) -> Option<&str> {
         self.project.as_deref()
     }
 
-    /// 새 세션을 예약한다. 아직 서버에는 아무것도 만들지 않는다.
+    /// Stages a new session. Nothing is created on the server yet.
     pub fn stage_new(&mut self, project_id: String) {
         self.id = None;
         self.project = Some(project_id);
         self.pending_open = None;
     }
 
-    /// 모드가 정한 곳으로 다음 메시지가 가도록 맞춘다.
+    /// Points the next message where the mode decided.
     ///
-    /// **`Route::Session`은 지금 대화를 그대로 둔다.** 기본↔계획이 세션을 안 건드리는 것이
-    /// 그 뜻이고, work·job에 있다가 기본으로 돌아오는 것도 "그것에게 답한다"는 뜻이지
-    /// 새 대화를 여는 것이 아니다.
+    /// **`Route::Session` leaves the current conversation alone.** That's what it means for normal↔plan not
+    /// to touch the session, and coming back to normal from work·job means "answer that", not
+    /// opening a new conversation.
     ///
-    /// 반대로 work·job으로 **들어가는 것은 언제나 새로 여는 것**이다. 이미 열어 둔 job이
-    /// 있어도 또 건다 — 모드를 다시 고른 것은 그러겠다는 뜻이다.
+    /// Conversely, **entering work·job always opens anew**. Even with a job already open it launches another —
+    /// choosing the mode again means wanting that.
     pub fn set_route(&mut self, route: Route) {
         self.pending_open = match route {
             Route::Session => None,
@@ -561,33 +561,33 @@ impl Session {
         };
     }
 
-    /// 다음 메시지가 새로 열 것. 화면이 무슨 말을 할지 정하는 데 쓴다.
+    /// What the next message will open anew. Used to decide what the screen says.
     pub fn pending_open(&self) -> Option<Route> {
         self.pending_open
     }
 
-    /// 기본 프로젝트에 새 세션을 예약한다. `/agent`이 부른다.
+    /// Stages a new session in the default project. Called by `/agent`.
     ///
-    /// **세션의 에이전트는 만들 때 정해지고 바꾸는 API가 없다**(`ZNewSession.agent_id`,
-    /// `send_message`에는 에이전트 인자가 없다). 그러니 에이전트를 바꾸려면 세션을 새로
-    /// 여는 수밖에 없다. 여기서도 서버에는 아무것도 만들지 않는다 — 실제 생성은 첫
-    /// 메시지에서다. **앞 세션은 지우지 않는다**: ←의 목록으로 돌아갈 수 있다.
+    /// **A session's agent is fixed at creation and there's no API to change it** (`ZNewSession.agent_id`;
+    /// `send_message` takes no agent argument). So changing the agent means opening a new
+    /// session. Here too nothing is created on the server — actual creation happens at the first
+    /// message. **The previous session is not cleared**: you can return via the ← list.
     pub fn stage_new_default(&mut self) {
         self.id = None;
-        // **프로젝트는 그대로 둔다.** `/agent`은 에이전트를 바꾼 것이지 프로젝트를 떠난
-        // 것이 아니다 — 여기서 비우면 다음 세션이 기본 프로젝트에 생긴다.
+        // **The project stays as is.** `/agent` changes the agent, not leaves the project —
+        // clearing it here would create the next session in the default project.
         self.pending_open = None;
     }
 
-    /// 전용 에이전트를 찾는다.
+    /// Finds the dedicated agent.
     ///
-    /// **찾지 못하면 다른 에이전트로 폴백하지 않는다.** 조용히 폴백하면 상태줄에는
-    /// 이름이 뜨는데 전송이 `Agent not found`로 실패하는, 원인을 찾기 어려운 상태가 된다.
+    /// **If not found, doesn't fall back to another agent.** A quiet fallback would show the name in the
+    /// status bar while the send fails with `Agent not found` — a state that's hard to diagnose.
     pub async fn agent_id(api: &AttaccaApiClient) -> Result<String> {
         Session::agent_id_named(api, &agent_name()).await
     }
 
-    /// 이름으로 에이전트를 찾는다. `/agent`과 시작 시점이 같은 길을 쓴다.
+    /// Finds an agent by name. Uses the same path as `/agent` and startup.
     pub async fn agent_id_named(api: &AttaccaApiClient, wanted: &str) -> Result<String> {
         let agents = within(api, api.list_agents())
             .await
@@ -597,10 +597,10 @@ impl Session {
         })
     }
 
-    /// 세션 id를 준다. 없으면 지금 만든다.
+    /// Returns the session id, creating it now if absent.
     ///
-    /// `title`은 반드시 `None`이다 — 여기서 제목을 주면 영구가 되고, attacca가 첫
-    /// 메시지로 제목을 붙이는 동작이 막힌다.
+    /// `title` must be `None` — giving a title here makes it permanent and blocks attacca's behavior
+    /// of titling from the first message.
     pub async fn ensure(&mut self, api: &AttaccaApiClient, agent_id: &str) -> Result<String> {
         if let Some(id) = &self.id {
             return Ok(id.clone());
@@ -610,7 +610,7 @@ impl Session {
             api.create_session_with(ZNewSession {
                 agent_id: agent_id.to_string(),
                 title: None,
-                // 예약해 둔 프로젝트가 있으면 거기에 만든다. 없으면 기본 프로젝트다.
+                // If a project was staged, create it there; otherwise it's the default project.
                 project_id: self.project.clone(),
                 preamble: self.preamble.clone(),
             }),
@@ -621,10 +621,10 @@ impl Session {
         Ok(session.id)
     }
 
-    /// 모드가 정한 곳을 연다. **보내기 직전에 딱 한 번 부른다.**
+    /// Opens where the mode decided. **Called exactly once, right before sending.**
     ///
-    /// 셋 다 끝에는 평범한 세션 id가 나오므로(`ZJob::session_id`,
-    /// `ZWork::planner_session_id`) 부른 쪽은 무엇을 열었는지 몰라도 그대로 스트림을 연다.
+    /// All three end with an ordinary session id (`ZJob::session_id`,
+    /// `ZWork::planner_session_id`), so the caller can open the stream without knowing what was opened.
     pub async fn open_for(
         &mut self,
         api: &AttaccaApiClient,
@@ -632,16 +632,16 @@ impl Session {
         message: &str,
         mode: crate::mode::Mode,
     ) -> Result<Opened> {
-        // **예약은 한 번 쓰면 없어진다.** 안 지우면 job 모드에 머무는 동안 말할 때마다
-        // job이 하나씩 생겨, 되묻는 말에 답할 자리가 영영 안 생긴다.
+        // **A staged open is consumed once.** If not cleared, every message while staying in job mode
+        // spawns another job, and no place ever appears to answer the follow-up question.
         //
-        // **예약이 없어도 대화가 아직 없으면 모드가 정한다.** 예약은 모드가 *바뀌는*
-        // 순간에만 걸리므로 안 걸리는 자리가 여럿이다 — 켜자마자 첫 마디, `/agent`으로
-        // 새 쓰레드를 예약한 뒤, `＋ 새 세션` 뒤. 거기서 세션만 만들면 **하단 바는 job인데
-        // 열리는 것은 맨 세션**이 된다. 실제로 그렇게 걸렸다.
+        // **Even without a staged open, the mode decides when there's no conversation yet.** A stage only
+        // happens at the moment the mode *changes*, so there are several spots without one — the first word
+        // right after startup, after staging a new thread with `/agent`, after `＋ 새 세션`. There, creating only a
+        // session means **the bottom bar says job but the plain session opens**. That actually happened.
         let route = match self.pending_open.take() {
             Some(staged) => staged,
-            // 이어 갈 대화가 있으면 이어 간다. 모드는 *새로 열 때* 무엇을 열지만 정한다.
+            // If there's a conversation to continue, continue it. The mode only decides what opens *when opening anew*.
             None if self.id.is_some() => Route::Session,
             None => mode.route(),
         };
@@ -655,7 +655,7 @@ impl Session {
         }
     }
 
-    /// **첫 메시지가 시킬 일이 된다**(`ZNewJob::message`). 그래서 `sent`이 참이다.
+    /// **The first message becomes the job** (`ZNewJob::message`). That's why `sent` is true.
     async fn open_job(
         &mut self,
         api: &AttaccaApiClient,
@@ -666,16 +666,16 @@ impl Session {
             api,
             api.create_job(ZNewJob {
                 message: message.to_string(),
-                // **고른 에이전트로 돌린다.** 비우면 Main Agent로 가는데, 그러면 `/agent`으로
-                // 고른 것이 화면에만 남고 실제로 도는 것은 다른 에이전트가 된다.
+                // **Runs on the chosen agent.** If empty, it goes to Main Agent, and then what `/agent` picked
+                // only stays on screen while a different agent actually runs.
                 agent_id: Some(agent_id.to_string()),
                 project_id: self.project.clone(),
-                // 배포본의 시간대를 그대로 쓴다. 이 머신의 시간대를 억지로 밀어 넣으면
-                // 같은 계정의 다른 job과 답이 갈린다.
+                // Use the deployed build's timezone as is. Forcing this machine's timezone in would make
+                // answers diverge from other jobs in the same account.
                 timezone: None,
-                // **둘 다 끄고 둔다.** `planning`은 job을 work로 넘기는 것이고 `plan_mode`는
-                // job 안에서 계획을 받고 멈추는 것인데, 여기서는 모드가 이미 그 갈래다 —
-                // job 모드는 "시켜 놓는다"이고, 계획이 필요하면 계획 모드나 work 모드다.
+                // **Leave both off.** `planning` hands the job over to work, and `plan_mode` receives a plan
+                // inside the job and stops; here the mode already is that branch —
+                // job mode means "set it going", and when planning is needed that's plan mode or work mode.
                 planning: false,
                 plan_mode: false,
                 data: vec![],
@@ -695,7 +695,7 @@ impl Session {
         Ok(Opened { id, sent: true, announced: Some((Route::Job, job.id)) })
     }
 
-    /// **첫 메시지가 목표가 된다**(`ZNewWork::message`). 그래서 `sent`이 참이다.
+    /// **The first message becomes the goal** (`ZNewWork::message`). That's why `sent` is true.
     async fn open_work(
         &mut self,
         api: &AttaccaApiClient,
@@ -707,8 +707,8 @@ impl Session {
             api.create_work(ZNewWork {
                 message: message.to_string(),
                 agent_id: Some(agent_id.to_string()),
-                // **work의 태스크는 프로젝트의 체크아웃에서 돈다.** 여기가 비면 기본
-                // 프로젝트가 되고, 그것이 무엇을 바꿔도 되는지를 정한다.
+                // **Work tasks run on the project's checkout.** If this is empty it becomes the default
+                // project, and that decides what the work is allowed to change.
                 project_id: self.project.clone(),
             }),
         )
@@ -721,13 +721,13 @@ impl Session {
     }
 }
 
-/// work의 계획 대화를 집는다. **없으면 잠깐 기다려 본다.**
+/// Picks up the work's planning conversation. **If absent, waits briefly.**
 ///
-/// `create_work`는 계획 턴을 걸고 돌아오지만 `planner_session_id`가 그 응답에 이미 들어
-/// 있으리라는 보장이 없다 — 서버가 세션을 만드는 것과 work 행을 돌려주는 것이 같은
-/// 트랜잭션이 아니다. 여기서 포기하면 사람 눈에는 **말이 그냥 사라진 것**으로 보인다.
+/// `create_work` kicks off a planning turn and returns, but there's no guarantee `planner_session_id`
+/// is already in that response — the server creating the session and returning the work row are not the
+/// same transaction. Giving up here looks to the person like **the words simply vanished**.
 ///
-/// 그렇다고 오래 붙들 수도 없다. 기다리는 동안 화면은 아무 말도 못 한다.
+/// But it can't hold on too long either. While waiting, the screen can't say anything.
 async fn planner_session(api: &AttaccaApiClient, work: &zyris_attacca::ZWork) -> Result<String> {
     if let Some(id) = &work.planner_session_id {
         return Ok(id.clone());
@@ -740,7 +740,7 @@ async fn planner_session(api: &AttaccaApiClient, work: &zyris_attacca::ZWork) ->
                     return Ok(id);
                 }
             }
-            // 한 번 실패했다고 그만두지 않는다. 다음 바퀴에 다시 물어본다.
+            // One failure isn't a reason to stop. Ask again on the next loop.
             Err(e) => tracing::debug!(error = %e, work = %work.id, "work를 다시 읽지 못했다"),
         }
     }
@@ -751,11 +751,11 @@ async fn planner_session(api: &AttaccaApiClient, work: &zyris_attacca::ZWork) ->
     ))
 }
 
-/// 계획 대화를 기다리는 시간 — 넉넉잡아 3초. 넘기면 기다리는 것이 아니라 멈춰 있는 것이다.
+/// How long to wait for the planning conversation — generously 3 seconds. Past that it's not waiting, it's stuck.
 const PLANNER_TRIES: u32 = 6;
 const PLANNER_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// 와이어 프레임을 앱 프레임으로. 렌더하지 않는 이벤트도 **커서는 넘긴다.**
+/// Wire frames to app frames. Even events we don't render **still pass the cursor through.**
 pub fn frame_from(f: ZTurnFrame) -> Frame {
     match f {
         ZTurnFrame::Event { cursor, event } => Frame::Event { cursor, entry: entry_from(&event) },
@@ -764,10 +764,10 @@ pub fn frame_from(f: ZTurnFrame) -> Frame {
     }
 }
 
-/// 프로젝트를 만든다. 만든 것의 `(id, 이름)`을 준다.
+/// Creates a project. Returns the `(id, name)` of what was created.
 ///
-/// **이름이 비면 부르지 않는다** — 서버가 무엇을 만들지 모르고, 목록에 이름 없는 줄이
-/// 하나 생기면 지우는 길이 이 앱에 없다. 설명은 비워도 된다.
+/// **Not called with an empty name** — the server wouldn't know what to create, and once a nameless row
+/// appears in the list there's no way to delete it in this app. The description may stay empty.
 pub async fn create_project(
     api: &AttaccaApiClient,
     name: &str,
@@ -789,7 +789,7 @@ pub async fn create_project(
     Ok((p.id, p.name))
 }
 
-/// 프로젝트 목록을 픽커가 쓰는 모양으로.
+/// The project list in the shape the picker uses.
 pub async fn projects(api: &AttaccaApiClient) -> Result<Vec<(String, String, bool)>> {
     let items = within(api, api.list_projects())
         .await
@@ -797,7 +797,7 @@ pub async fn projects(api: &AttaccaApiClient) -> Result<Vec<(String, String, boo
     Ok(items.into_iter().map(|p| (p.id, p.name, p.is_default)).collect())
 }
 
-/// 한 프로젝트의 세션 목록. 제목이 없는 세션은 첫 메시지 전이라 그렇게 말해 준다.
+/// A project's session list. A session without a title is pre-first-message, so it's labeled as such.
 pub async fn sessions(
     api: &AttaccaApiClient,
     project_id: &str,
@@ -821,9 +821,9 @@ pub async fn sessions(
         .collect())
 }
 
-/// 세션의 지난 기록. 갈아탈 때 화면을 채우는 데 쓴다.
+/// The session's past history. Used to fill the screen when switching sessions.
 ///
-/// `after`를 비우면 전체다 — `turn_events`와 반대이니 헷갈리지 말 것.
+/// An empty `after` means everything — the opposite of `turn_events`, so don't confuse them.
 pub async fn history(
     api: &AttaccaApiClient,
     session_id: &str,
@@ -833,20 +833,20 @@ pub async fn history(
         .map_err(|e| anyhow!("지난 기록을 읽지 못했습니다: {e}"))
 }
 
-/// 답을 기다리고 있는 세션을 찾는다.
+/// Finds a session that's awaiting an answer.
 ///
-/// 질문에 답하지 않은 채 앱을 끄면 서버는 계속 기다린다. 다시 켰을 때 사람이 그 세션을
-/// 손으로 찾아 들어가야 한다면 사실상 답할 길이 없는 것과 같다 — 켜자마자 집어 준다.
+/// If the app is quit without answering a question, the server keeps waiting. If the person had to
+/// find that session by hand after restarting, it would be effectively impossible to answer — it's
+/// picked up right at startup.
 ///
-/// 막혀 있는 세션은 `running`이 서 있으므로 목록만으로 좁혀진다. 히스토리는 그 몇 개만
-/// 읽는다.
+/// A blocked session has `running` set, so the list alone narrows it down. History is read only for those few.
 pub async fn session_awaiting_answer(api: &AttaccaApiClient) -> Option<String> {
     let sessions = within(api, api.list_sessions(ZSessionFilter { project_id: None, limit: Some(50) }))
         .await
         .ok()?;
     for s in sessions.into_iter().filter(|s| s.running).take(5) {
         let events = history(api, &s.id).await.ok()?;
-        // 답을 기다리는 질문이 하나라도 있으면 그 세션이다.
+        // If there's at least one question awaiting an answer, that's the session.
         let pending = events.iter().rev().take(50).any(|e| {
             matches!(
                 crate::event::entry_from(e).map(|x| x.kind),
@@ -860,8 +860,8 @@ pub async fn session_awaiting_answer(api: &AttaccaApiClient) -> Option<String> {
     None
 }
 
-/// 세션 사용량. 배포가 미터링을 안 하면 `capability_not_announced`가 오는데,
-/// 그건 오류가 아니라 "이 배포에는 그 기능이 없다"이므로 조용히 비운다.
+/// Session usage. If the deployment doesn't meter, `capability_not_announced` comes back —
+/// that's not an error but "this deployment lacks the feature", so it's quietly emptied.
 pub async fn usage(api: &AttaccaApiClient, session_id: &str) -> Option<crate::sidebar::Usage> {
     let u = within(api, api.session_usage(session_id.to_string())).await.ok()?;
     Some(crate::sidebar::Usage {
@@ -872,7 +872,7 @@ pub async fn usage(api: &AttaccaApiClient, session_id: &str) -> Option<crate::si
     })
 }
 
-/// 이 세션의 제목. 아직 없으면 `None` — 첫 메시지 뒤에 붙는다.
+/// This session's title. `None` when not yet present — it attaches after the first message.
 pub async fn session_title(api: &AttaccaApiClient, session_id: &str) -> Option<String> {
     let sessions = within(api, api.list_sessions(ZSessionFilter { project_id: None, limit: Some(100) }))
         .await
@@ -890,20 +890,20 @@ mod tests {
     use serde_json::json;
     use zyris_attacca::{ZDeltaKind, ZSessionEvent};
 
-    /// **자격은 이 앱 디렉터리로 간다.** `~/.config/zyris/`는 zyris를 쓰는 모든 프로그램이
-    /// 같이 쓰던 자리라, 프로필을 안 정한 둘이 서로의 신원 위에 등록했다.
+    /// **Credentials go to this app's own directory.** `~/.config/zyris/` was shared by every zyris
+    /// program, so two unprofiled ones registered on top of each other's identity.
     ///
-    /// 환경변수를 흔들면 병렬로 도는 다른 테스트를 밟으므로, 여기서는 갈래를 정하는
-    /// 규칙만 본다 — 옛 자리와 새 자리는 **마지막 한 칸만** 다르고 그 위는 같아야 한다.
+    /// Jiggling environment variables would trample other tests running in parallel, so here we only look at the
+    /// branching rule — the old and new locations must differ **only in the last segment** and be the same above it.
     #[test]
     fn credentials_live_under_this_apps_own_name() {
         if given_config_dir().is_some() {
-            // 자리를 정해 주면 갈래 규칙이 아니라 그 자리를 그대로 쓴다 —
-            // 그 규칙은 a_given_config_dir_wins_and_is_taken_literally가 본다.
+            // When a location is given, it's used verbatim rather than the branching rule —
+            // that rule is covered by a_given_config_dir_wins_and_is_taken_literally.
             return;
         }
         let (Some(ours), Some(legacy)) = (config_home_for(APP), config_home_for(LEGACY_APP)) else {
-            // 홈이 없는 환경(systemd `ProtectHome=yes`)에서는 둘 다 없는 것이 맞다.
+            // In an environment without a home (systemd `ProtectHome=yes`), both being absent is correct.
             assert!(config_home_for(APP).is_none() && config_home_for(LEGACY_APP).is_none());
             return;
         };
@@ -912,29 +912,29 @@ mod tests {
         assert_eq!(ours.parent(), legacy.parent(), "두 자리는 같은 부모 아래에 있어야 한다");
     }
 
-    /// **사람이 준 자리가 이긴다.** 그리고 그 자리에는 앱 이름을 덧붙이지 않는다 — 그
-    /// 사람은 정확히 그 디렉터리를 뜻한 것이다.
+    /// **The location the person gave wins.** And no app name is appended to it — that
+    /// person meant exactly that directory.
     #[test]
     fn a_given_config_dir_wins_and_is_taken_literally() {
-        // `given_config_dir`이 읽는 값을 흉내 내는 대신, 그 값이 있을 때의 규칙만 본다.
-        // (환경변수를 실제로 세우면 같은 프로세스의 다른 테스트가 그것을 본다.)
+        // Instead of faking the value `given_config_dir` reads, only look at the rule for when that value exists.
+        // (Actually setting the environment variable would let other tests in the same process see it.)
         let given: Option<std::ffi::OsString> = Some("/somewhere/else".into());
         let picked = given.clone().map(std::path::PathBuf::from).unwrap();
         assert_eq!(picked, std::path::Path::new("/somewhere/else"));
-        // 빈 값은 안 준 것으로 친다 — 빈 경로를 그대로 쓰면 자격이 작업 디렉터리에 떨어진다.
+        // An empty value counts as not given — using the empty path as-is would drop credentials into the working directory.
         let empty: Option<std::ffi::OsString> = Some(std::ffi::OsString::new());
         assert!(empty.filter(|v| !v.is_empty()).is_none());
     }
 
-    /// **옛 자격은 옮겨 오고, 옛 자리는 빈다.** 복사로 두면 살아 있는 리프레시 토큰이
-    /// 디스크에 둘이 되고, 재사용을 본 attacca가 노드를 통째로 revoke한다.
+    /// **Old credentials move over and the old spot is left empty.** Copying would leave a live refresh token
+    /// twice on disk, and attacca, seeing the reuse, revokes the whole node.
     #[test]
     fn a_legacy_credential_moves_and_leaves_nothing_behind() {
         let old = tempfile::tempdir().unwrap();
         let new = tempfile::tempdir().unwrap();
         let name = "wss-attacca-cc-zyris-v1-ws-zyris-code.json";
         std::fs::write(old.path().join(name), "{\"refresh_token\":\"r\"}").unwrap();
-        // 다른 프로필의 것은 남의 것이다. 건드리면 그 프로그램이 로그아웃된다.
+        // Another profile's file belongs to someone else. Touching it logs that program out.
         std::fs::write(old.path().join("wss-attacca-cc-default.json"), "{}").unwrap();
 
         assert_eq!(migrate_credentials(old.path(), new.path(), "zyris-code"), 1);
@@ -943,8 +943,9 @@ mod tests {
         assert!(old.path().join("wss-attacca-cc-default.json").exists(), "남의 것은 그대로다");
     }
 
-    /// **이미 여기 있으면 안 덮어쓴다.** 지금 붙어 있는 신원을 옛 파일로 덮으면 그 자격을
-    /// 잃는다. 그때는 옛 파일도 지우지 않는다 — 우리가 안 가진 자격을 버리는 셈이다.
+    /// **If something is already here, don't overwrite it.** Overwriting the identity currently attached
+    /// with the old file loses that credential. And the old file isn't deleted either — that would be
+    /// throwing away a credential we don't hold.
     #[test]
     fn migration_never_overwrites_what_is_already_here() {
         let old = tempfile::tempdir().unwrap();
@@ -958,30 +959,30 @@ mod tests {
         assert!(old.path().join(name).exists(), "안 가져왔으면 지우지도 않는다");
     }
 
-    /// **모자라면 한 번은 다시 묻는다.** 승인 때 정해진 권한은 갱신으로 넓어지지 않으므로,
-    /// 자격을 버리고 다시 승인받는 것 말고는 길이 없다.
+    /// **When short, we ask once more.** Permissions fixed at approval time don't widen on refresh,
+    /// so there's no path other than dropping credentials and getting approved again.
     #[test]
     fn a_narrow_approval_is_asked_again_exactly_once() {
         let narrow: Vec<String> = vec!["agents:read".into()];
         assert!(needs_reenrollment(&narrow, false), "모자라면 다시 묻는다");
-        // **두 번은 안 묻는다.** 사람이 또 좁게 승인할 수 있고, 매번 물으면 브라우저를
-        // 계속 요구하는 고리가 된다.
+        // **We don't ask twice.** The person can approve narrowly again, and asking every time becomes
+        // a loop that keeps demanding the browser.
         assert!(!needs_reenrollment(&narrow, true), "한 번 해 봤으면 말로만 알린다");
     }
 
-    /// 다 받았으면 아무 일도 없어야 한다. **평소의 길에서 브라우저가 뜨면 그게 사고다.**
+    /// With everything granted, nothing should happen. **If the browser pops up on the ordinary path, that's an accident.**
     #[test]
     fn a_full_approval_is_left_alone() {
         let all: Vec<String> = REQUIRED_SCOPES.iter().map(|s| s.to_string()).collect();
         assert!(missing_scopes(&all).is_empty());
         assert!(!needs_reenrollment(&all, false));
-        // 더 넓게 받은 것도 모자란 것이 아니다.
+        // Receiving more than asked is not a shortage either.
         let more: Vec<String> =
             all.iter().cloned().chain(std::iter::once("jobs:read".to_string())).collect();
         assert!(!needs_reenrollment(&more, false));
     }
 
-    /// 무엇이 없는지 **이름으로** 말해야 한다. "부족합니다"만으로는 할 수 있는 일이 없다.
+    /// What's missing must be named **by name**. "Not enough" alone leaves nothing actionable.
     #[test]
     fn what_is_missing_is_named() {
         let narrow: Vec<String> = vec!["agents:read".into(), "projects:read".into()];
@@ -991,30 +992,30 @@ mod tests {
         assert!(missing_scopes_message(&missing).contains("events:read"));
     }
 
-    /// 파일 이름을 짓는 쪽은 상류다. **규칙이 갈라지면 옮길 파일을 못 알아본다.**
+    /// The one naming files is upstream. **If the rules diverge, we fail to recognize the files to migrate.**
     #[test]
     fn the_profile_slug_matches_what_zyris_writes() {
-        // zyris `enroll/file_store.rs`의 테스트에서 그대로 가져온 값들이다.
+        // Values copied verbatim from zyris `enroll/file_store.rs`'s tests.
         assert_eq!(slugify_profile("zyris-code"), "zyris-code");
         assert_eq!(slugify_profile("///"), "default");
         assert_eq!(slugify_profile(""), "default");
         assert_eq!(slugify_profile("Two  Words"), "two-words");
     }
 
-    /// **슬러그 규칙이 attacca와 같아야 한다.** 여기가 갈라지면 이름이 잘리는지에 대한
-    /// 판단이 틀리고, 그러면 앱 이름이 사라진 채로 등록된다.
+    /// **The slug rule must match attacca.** If this diverges, the judgment about whether the name gets
+    /// truncated is wrong, and the app registers without its name.
     #[test]
     fn the_slug_rule_matches_what_attacca_does() {
-        // `attacca-domain/src/zyris_node.rs`의 테스트에서 그대로 가져온 값들이다.
+        // Values copied verbatim from `attacca-domain/src/zyris_node.rs`'s tests.
         assert_eq!(slug_of("Allen's Desktop!!"), "allen-s-desktop");
         assert_eq!(slug_of("   "), "node");
         assert_eq!(slug_of("a-very-long-machine-name-here"), "a-very-long-mach");
     }
 
-    /// `HOSTNAME`은 프로세스 전역이라 이 둘은 한 줄로 세운다.
+    /// `HOSTNAME` is process-global, so these two run in one thread.
     static HOST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// **호스트 이름만으로 등록하면 이 머신의 다른 노드와 같은 신원이 된다.**
+    /// **Registering with only the hostname makes the same identity as the machine's other nodes.**
     #[test]
     fn the_node_name_carries_this_app() {
         let _g = HOST.lock().unwrap_or_else(|e| e.into_inner());
@@ -1023,8 +1024,8 @@ mod tests {
         assert_eq!(slug_of(&node_name()), "arch-zyris-code");
     }
 
-    /// **호스트 이름이 길면 뒤쪽이 잘려 나간다.** 그대로 두면 도로 호스트 이름만 남아
-    /// 구별이 사라진다 — 그때는 구별되는 쪽을 앞에 둔다.
+    /// **A long hostname cuts off the tail.** Left as is, only the hostname remains and the
+    /// distinction disappears — then the distinguishing part goes first.
     #[test]
     fn a_long_hostname_does_not_swallow_the_app_name() {
         let _g = HOST.lock().unwrap_or_else(|e| e.into_inner());
@@ -1035,8 +1036,8 @@ mod tests {
         assert!(slug.len() <= 16, "{slug}");
     }
 
-    /// **작업 디렉터리가 이름에 붙는다.** 같은 머신의 다른 디렉터리가 구별되어야 한다.
-    /// 슬러그는 16자에서 잘리므로 표시 이름에만 남는다.
+    /// **The working directory goes into the name.** Different directories on the same machine must be distinguishable.
+    /// The slug truncates at 16 characters, so it only survives in the display name.
     #[test]
     fn the_node_name_carries_the_working_directory() {
         assert_eq!(
@@ -1044,14 +1045,14 @@ mod tests {
             "arch zyris-code · zyris-daemon"
         );
         assert_eq!(slug_of("arch zyris-code · zyris-daemon"), "arch-zyris-code");
-        // 앱 이름과 같은 디렉터리는 붙이지 않는다 — 중복이다.
+        // A directory equal to the app name isn't appended — it's a duplicate.
         assert_eq!(compose_name("arch", Some("zyris-code")), "arch zyris-code");
-        // 디렉터리가 없어도(루트 등) 평소 이름이다.
+        // Without a directory (e.g. root) it's the usual name.
         assert_eq!(compose_name("arch", None), "arch zyris-code");
     }
 
-    /// 죽은 창의 흔적은 살아 있는 창이 아니다. PID 0은 kill(0, 0)이 언제나 성공하므로
-    /// 반드시 죽은 값으로 쳐야 한다.
+    /// A dead window's trace is not a living window. PID 0 must be treated as dead, since kill(0, 0)
+    /// always succeeds.
     #[test]
     fn a_stale_instance_lock_is_not_a_living_window() {
         let dir = tempfile::tempdir().unwrap();
@@ -1059,8 +1060,8 @@ mod tests {
         assert!(!another_instance_alive(dir.path(), "test"));
     }
 
-    /// 잠금을 걸면 그 프로필의 "다른 창"이 있음을 알 수 있고, 손잡이가 Drop되면 풀린다.
-    /// 둘째 창은 잠금을 다시 걸 수 없다 — 그게 알림이 갈 자리다.
+    /// Claiming the lock makes "another window" for that profile visible, and dropping the handle releases it.
+    /// A second window can't claim the lock again — that's where the notice goes.
     #[test]
     fn claiming_the_lock_marks_another_window_and_releasing_clears_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1075,8 +1076,8 @@ mod tests {
         assert!(!another_instance_alive(dir.path(), "test"), "풀렸는데 남아 있다");
     }
 
-    /// 죽은 PID가 적힌 잠금은 치우고 다시 건다 — 죽은 창 때문에 두 번째 창이 알림을
-    /// 잘못 받으면 그것도 소음이다.
+    /// A lock holding a dead PID is cleared and claimed again — if a dead window makes the second window
+    /// get a false notice, that's noise too.
     #[test]
     fn a_dead_pid_lock_is_reclaimed() {
         let dir = tempfile::tempdir().unwrap();
@@ -1088,8 +1089,8 @@ mod tests {
         );
     }
 
-    /// 에이전트를 바꾸면 **다음 메시지에서 새 세션이 열린다.** 세션의 에이전트는 만들 때
-    /// 정해지고 바꾸는 API가 없어서(`ZNewSession`), 앞 세션을 계속 쓰면 안 바뀐다.
+    /// Changing the agent **opens a new session at the next message.** A session's agent is fixed at
+    /// creation with no API to change it (`ZNewSession`), so continuing the old session wouldn't change it.
     #[test]
     fn staging_a_new_default_session_forgets_the_current_one() {
         let mut s = Session::new(None);
@@ -1099,8 +1100,8 @@ mod tests {
         assert_eq!(s.id(), None, "앞 세션을 계속 쓰면 에이전트가 안 바뀐다");
     }
 
-    /// **서버에 지금 만들지 않는다.** 예약만 하고 실제 생성은 첫 메시지에서다 —
-    /// 열어만 보고 마는 빈 세션이 계정에 쌓이면 안 된다.
+    /// **Nothing is created on the server now.** Only staging; actual creation happens at the first message —
+    /// empty sessions that are only opened and abandoned must not pile up in the account.
     #[test]
     fn staging_creates_nothing_by_itself() {
         let mut s = Session::new(None);
@@ -1108,8 +1109,8 @@ mod tests {
         assert_eq!(s.id(), None);
     }
 
-    /// **기본↔계획은 하던 대화를 안 건드린다.** 이것이 깨지면 대화 도중에 계획 모드를
-    /// 켜는 순간 얘기가 끊겨, 계획 모드가 쓸모 있는 유일한 방식이 사라진다.
+    /// **Normal↔plan doesn't touch the conversation in progress.** If this breaks, turning on plan mode
+    /// mid-conversation cuts the thread off, and the only way plan mode is useful disappears.
     #[test]
     fn routing_to_a_session_leaves_the_conversation_alone() {
         let mut s = Session::new(None);
@@ -1119,7 +1120,7 @@ mod tests {
         assert_eq!(s.pending_open(), None);
     }
 
-    /// work·job으로 들어가면 **다음 메시지가 새로 연다**고 예약된다.
+    /// Entering work·job stages that **the next message opens anew**.
     #[test]
     fn routing_to_work_or_job_stages_an_open() {
         for route in [Route::Work, Route::Job] {
@@ -1129,8 +1130,8 @@ mod tests {
         }
     }
 
-    /// **예약은 하던 대화를 버리지 않는다.** work·job에 들렀다가 아무 말 없이 돌아오는 일이
-    /// 흔한데, 그때 세션을 이미 버렸으면 되돌아갈 곳이 없다.
+    /// **Staging doesn't discard the conversation in progress.** Visiting work·job and coming back without
+    /// saying anything is common; if the session was already dropped then, there's nowhere to return.
     #[test]
     fn staging_an_open_keeps_the_conversation_to_come_back_to() {
         let mut s = Session::new(None);
@@ -1142,8 +1143,8 @@ mod tests {
         assert_eq!(s.pending_open(), None, "돌아왔는데 예약이 남아 있다");
     }
 
-    /// 목록에서 세션을 고른 것은 "저기로 간다"는 뜻이다. **예약이 남아 있으면 고른 자리로
-    /// 안 가고 job이 하나 더 생긴다.**
+    /// Picking a session from the list means "going there". **If a staged open remains, it doesn't go
+    /// to the picked place and another job spawns.**
     #[test]
     fn picking_a_session_by_hand_cancels_a_staged_open() {
         let mut s = Session::new(None);
@@ -1163,47 +1164,47 @@ mod tests {
         assert_eq!(s.pending_open(), None);
     }
 
-    /// **고른 프로젝트는 붙어 있어야 한다.** 예전에는 `pending_project`가 일회용이라
-    /// 첫 생성이 지웠고, 그래서 프로젝트를 골라 놓고 job을 걸면 `project_id`가 이미 비어
-    /// **서버가 기본 프로젝트에 만들었다.** 실제로 그렇게 걸렸다.
+    /// **The chosen project must stick.** `pending_project` used to be single-use and the first creation
+    /// cleared it, so launching a job after picking a project had `project_id` already empty and
+    /// **the server created it in the default project.** That actually happened.
     #[test]
     fn the_chosen_project_sticks_to_everything_opened_after_it() {
-        // 목록에서 프로젝트를 열기만 해도 기억한다 — 세션을 안 고르고 Esc해도 그대로다.
+        // Merely opening a project from the list remembers it — Esc without picking a session keeps it.
         let mut s = Session::new(None);
         s.enter_project("프로젝트-1".into());
         assert_eq!(s.project(), Some("프로젝트-1"));
 
-        // 그 안의 세션을 고르면 그 세션의 프로젝트로 간다.
+        // Picking a session inside it goes to that session's project.
         s.switch_to("세션-1".into(), Some("프로젝트-2".into()));
         assert_eq!(s.project(), Some("프로젝트-2"));
 
-        // 어느 프로젝트인지 모르는 자리는 **알던 것을 안 지운다.**
+        // On a path that doesn't know the project, **what we knew isn't cleared.**
         s.switch_to("세션-2".into(), None);
         assert_eq!(s.project(), Some("프로젝트-2"), "모른다고 비우면 기본 프로젝트로 떨어진다");
 
-        // `/agent`은 에이전트를 바꾼 것이지 프로젝트를 떠난 것이 아니다.
+        // `/agent` changes the agent, not leaves the project.
         s.stage_new_default();
         assert_eq!(s.project(), Some("프로젝트-2"));
 
-        // job·work를 예약해도 그대로다 — 그 예약이 쓸 값이 바로 이것이다.
+        // Staging job·work keeps it too — this is exactly the value that stage will use.
         s.set_route(Route::Job);
         assert_eq!(s.project(), Some("프로젝트-2"));
     }
 
-    /// 아직 아무 프로젝트도 안 골랐으면 `None`이고, **그때만** 서버의 기본 프로젝트가 맞다.
+    /// Before any project is picked it's `None`, and **only then** is the server's default project right.
     #[test]
     fn a_fresh_session_has_no_project_of_its_own() {
         assert_eq!(Session::new(None).project(), None);
     }
 
-    /// **모드가 정하는 것은 예약이 없을 때도 통해야 한다.**
+    /// **What the mode decides must also hold when there's no staged open.**
     ///
-    /// 예약은 모드가 *바뀌는* 순간에만 걸린다. 그래서 안 걸리는 자리가 여럿이다 — 켜자마자
-    /// 첫 마디, `/agent` 뒤, `＋ 새 세션` 뒤. 거기서 세션만 만들면 **하단 바는 job인데
-    /// 열리는 것은 맨 세션**이 된다. 실제로 그렇게 걸렸다.
+    /// A stage only happens at the moment the mode *changes*. So there are several spots without one — the first
+    /// word right after startup, after `/agent`, after `＋ 새 세션`. There, creating only a session means **the bottom
+    /// bar says job but the plain session opens**. That actually happened.
     ///
-    /// 여기서는 `open_for`를 부를 수 없으므로(서버가 필요하다) 그 판정을 그대로 흉내 낸다.
-    /// 갈라지면 이 테스트가 지키는 것이 없어지니, `open_for`를 고치면 여기도 고칠 것.
+    /// `open_for` can't be called here (it needs a server), so this decision is mimicked as is.
+    /// If this diverges, nothing this test protects is left, so when `open_for` changes, change this too.
     #[test]
     fn with_no_conversation_yet_the_mode_decides_what_opens() {
         use crate::mode::Mode;
@@ -1213,20 +1214,20 @@ mod tests {
             None => mode.route(),
         };
 
-        // 대화가 없고 예약도 없다 → 모드가 정한다.
+        // No conversation and no staged open → the mode decides.
         assert_eq!(route_for(None, false, Mode::Job), Route::Job, "job 모드인데 맨 세션이 열린다");
         assert_eq!(route_for(None, false, Mode::Work), Route::Work);
         assert_eq!(route_for(None, false, Mode::Normal), Route::Session);
         assert_eq!(route_for(None, false, Mode::Plan), Route::Session);
 
-        // 이어 갈 대화가 있으면 이어 간다 — 말할 때마다 job이 하나씩 생기면 안 된다.
+        // If there's a conversation to continue, continue it — a job must not spawn on every message.
         assert_eq!(route_for(None, true, Mode::Job), Route::Session);
 
-        // 예약이 있으면 그것이 이긴다. 하던 대화가 있어도 새로 연다.
+        // A staged open wins. Even with a conversation in progress, it opens anew.
         assert_eq!(route_for(Some(Route::Job), true, Mode::Normal), Route::Job);
     }
 
-    /// 렌더하지 않는 이벤트여도 커서는 넘겨야 한다 — 재개 위치를 놓치면 안 된다.
+    /// Even an event we don't render must pass the cursor through — the resume position must not be missed.
     #[test]
     fn a_hidden_event_still_carries_its_cursor() {
         let f = ZTurnFrame::Event {
@@ -1260,8 +1261,8 @@ mod tests {
         }
     }
 
-    /// zyris-code가 준비되면 여기만 바꾸면 된다. 그때 이 테스트가 같이 빨개져서
-    /// 바꿨다는 사실이 드러난다.
+    /// When zyris-code is ready, only this needs changing. This test turns red at the same time,
+    /// making the fact that it changed visible.
     #[test]
     fn the_default_agent_is_main_agent_while_zyris_code_is_in_progress() {
         assert_eq!(DEFAULT_AGENT, "Main Agent");

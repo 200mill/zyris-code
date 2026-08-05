@@ -1,28 +1,28 @@
-//! 큰 일을 attacca에 넘긴다. **여기서 도는 것이 아니라 저쪽에서 돈다.**
+//! Hands big work to attacca. **It doesn't run here; it runs over there.**
 //!
-//! 대화 하나(thread)로 하기에 큰 일이 있다. attacca에는 그것을 위한 **work**가 있다 —
-//! 목표를 받아 계획을 세우고, 태스크 그래프로 쪼개, 태스크마다 **제 git 워크트리에서
-//! 서브에이전트가 돌린 뒤** 통합 브랜치로 합친다. 이 노드가 하는 일은 그 일을 **시작하고
-//! 들여다보는 것**뿐이다. 실행은 서버가 한다.
+//! Some work is too big for one conversation (thread). attacca has **work** for that — it takes a
+//! goal, plans it, splits it into a task graph, runs a **subagent in its own git worktree per
+//! task**, then merges onto an integration branch. All this node does is **start and watch** the
+//! work. The server does the execution.
 //!
 //! ```text
-//! Draft → CheckingRequirements → [관문 1] → Planning → [관문 2] → Executing → Verifying → Done
-//!                                 목표 승인              계획 승인
+//! Draft → CheckingRequirements → [Gate 1] → Planning → [Gate 2] → Executing → Verifying → Done
+//!                                 goal approval          plan approval
 //! ```
 //!
-//! ## 관문 둘은 사람의 것이다
+//! ## Both gates belong to the person
 //!
-//! `approve_work_goal`·`approve_work_plan`은 **일부러 안 내준다.** 그 둘은 "이대로 진행해도
-//! 좋다"고 사람이 말하는 자리인데, 계획을 세운 쪽이 스스로 통과시키면 관문이 있을 이유가
-//! 없어진다. 에이전트는 `status`로 지금 어느 관문에서 멈춰 있는지 읽고 **사람에게 말하면
-//! 된다.** 승인은 attacca 화면에서 한다.
+//! `approve_work_goal`·`approve_work_plan` are **deliberately not exposed.** Those two are where a
+//! person says "go ahead with this" — if the planner could pass itself through, the gates would
+//! have no reason to exist. The agent reads which gate a work is stopped at via `status` and
+//! **tells the person.** Approval happens on the attacca screen.
 //!
-//! ## 이 캐퍼빌리티만 밖으로 나간다
+//! ## Only this capability goes outside
 //!
-//! 다른 도구는 이 컴퓨터의 파일과 셸을 만지지만 이것은 **서버에 일을 만든다.** 그래서
-//! 게이트에서 갈리는 자리도 다르다 — 경로 판정에 걸릴 것이 없는 대신, `start`·`say`·
-//! `stop`·`resume`은 **계획 모드에서 막힌다**(`gate::only_reads`). 계획 모드는 "아직
-//! 아무것도 하지 마라"이고, 서브에이전트 열둘을 깨우는 것은 그 반대다.
+//! The other tools touch this computer's files and shell, but this one **creates work on the
+//! server.** So the place it splits at the gate is different too — nothing to catch on path checks,
+//! but instead `start`·`say`·`stop`·`resume` are **blocked in plan mode** (`gate::only_reads`).
+//! Plan mode means "don't do anything yet", and waking a dozen subagents is the opposite of that.
 
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ use tokio::sync::watch;
 use zyris::WireError;
 use zyris_attacca::{AttaccaApi, AttaccaApiClient, ZNewWork, ZWork, ZWorkFilter, ZWorkState};
 
-/// 한 번에 돌려주는 최대 work 수. 목록은 고르라고 주는 것이지 읽으라고 주는 것이 아니다.
+/// Maximum number of works returned at once. The list is for picking, not reading.
 const LIST_LIMIT: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -115,11 +115,11 @@ pub trait Work {
     async fn resume(&self, work_id: String) -> zyris::Result<WorkView>;
 }
 
-/// attacca 쪽 손잡이를 들고 있는 구현.
+/// The implementation holding the attacca-side handle.
 ///
-/// **손잡이는 붙은 뒤에 온다.** 도구는 붙기 전에 announce되므로(`tools::announce`) 여기서는
-/// `watch`로 받아 두고 부를 때 집는다 — 연결이 끊겼다 다시 붙으면 새 손잡이로 저절로
-/// 갈아탄다. 아직 안 붙었으면 그렇게 말한다: 조용히 실패하면 에이전트가 원인을 못 찾는다.
+/// **The handle arrives after attaching.** Tools are announced before attach (`tools::announce`),
+/// so here it's received via `watch` and grabbed at call time — if the connection drops and
+/// reattaches, it switches to the new handle. If not attached yet, it says so: failing silently would leave the agent unable to find the cause.
 #[derive(Clone)]
 pub struct Works {
     api: watch::Receiver<Option<Arc<AttaccaApiClient>>>,
@@ -156,8 +156,8 @@ impl Work for Works {
     async fn status(&self, work_id: String) -> zyris::Result<WorkStatus> {
         let api = self.api()?;
         let work = api.get_work(work_id.clone()).await?;
-        // 태스크는 계획이 끝나야 생긴다. 없다고 실패로 만들지 않는다 — 관문 앞에서
-        // 기다리는 것이 정상 상태다.
+        // Tasks only appear once planning finishes. Their absence isn't treated as failure —
+        // waiting in front of a gate is the normal state.
         let tasks = api.work_tasks(work_id).await.map(|t| t.tasks).unwrap_or_default();
         Ok(WorkStatus {
             work: view(&work),
@@ -199,10 +199,10 @@ impl Work for Works {
     }
 }
 
-/// `ZWork`에서 에이전트가 실제로 쓸 것만 뽑는다.
+/// Picks out of `ZWork` only what the agent will actually use.
 ///
-/// **통째로 넘기지 않는다.** `ZWork`에는 옵션 필드가 열 개 넘게 붙어 있고 대부분은 서버
-/// 내부 사정이라, 그대로 주면 정작 "지금 무엇을 해야 하는가"가 묻힌다.
+/// **Not handed over whole.** `ZWork` carries more than ten option fields, most of them server
+/// internals — passed as-is, the actual "what should I do now" would be buried.
 fn view(work: &ZWork) -> WorkView {
     WorkView {
         id: work.id.clone(),
@@ -216,7 +216,7 @@ fn view(work: &ZWork) -> WorkView {
     }
 }
 
-/// `AwaitingGoalApproval` → `awaiting_goal_approval`. 와이어에 나가는 이름과 맞춘다.
+/// `AwaitingGoalApproval` → `awaiting_goal_approval`. Matches the name that goes on the wire.
 fn state_name(debug: String) -> String {
     let mut out = String::with_capacity(debug.len() + 4);
     for (i, ch) in debug.chars().enumerate() {
@@ -232,10 +232,10 @@ fn state_name(debug: String) -> String {
     out
 }
 
-/// 지금 무엇을 기다리는가. **누가 움직여야 하는지까지 말한다.**
+/// What it's waiting for now. **Says who has to act too.**
 ///
-/// 이것이 없으면 에이전트는 관문 앞에 선 work를 "멈췄다"로 읽고 다시 시작하려 든다 —
-/// 실제로 필요한 것은 사람의 승인 한 번이다.
+/// Without this, the agent would read a work stopped at a gate as "stalled" and try to restart it —
+/// what's actually needed is a single approval from a person.
 fn next_step(state: ZWorkState) -> String {
     match state {
         ZWorkState::Draft | ZWorkState::CheckingRequirements => {
@@ -265,8 +265,8 @@ fn next_step(state: ZWorkState) -> String {
 mod tests {
     use super::*;
 
-    /// 상태 이름은 **와이어에 나가는 이름과 같아야 한다.** 다르면 에이전트가 문서에서 본
-    /// 이름으로 견주다 아무것도 못 맞춘다.
+    /// State names must **match the names that go on the wire.** Differently, the agent compares
+    /// against the name it saw in the docs and matches nothing.
     #[test]
     fn a_state_reads_as_its_wire_name() {
         assert_eq!(state_name("AwaitingGoalApproval".into()), "awaiting_goal_approval");
@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(state_name("CheckingRequirements".into()), "checking_requirements");
     }
 
-    /// **관문에서는 사람이 움직여야 한다고 말해야 한다.** 안 그러면 에이전트가 멈춘 것으로
-    /// 읽고 work를 하나 더 만든다.
+    /// **At a gate it must say a person has to act.** Otherwise the agent reads it as stalled and
+    /// creates one more work.
     #[test]
     fn a_gate_says_who_has_to_act() {
         for state in [ZWorkState::AwaitingGoalApproval, ZWorkState::AwaitingPlanApproval] {
@@ -283,13 +283,13 @@ mod tests {
             assert!(said.contains("a person"), "{state:?}: {said}");
             assert!(said.contains("approve"), "{state:?}: {said}");
         }
-        // 도는 중인 것을 승인 기다리는 것으로 말하면 안 된다.
+        // Must not describe something running as waiting for approval.
         assert!(!next_step(ZWorkState::Executing).contains("person"));
     }
 
-    /// **와이어 이름이 정확히 넷으로 갈라져야 한다.** attacca가 `zyris__{노드}__{캐퍼빌리티}
-    /// __{도구}`를 `__`로 쪼개 되읽으므로, 이름 안에 `__`가 있거나 끝이 `_`이면 그 자리에서
-    /// 어긋난다. 판정은 언제나 **이어 붙여 쪼개 보는 것**이다.
+    /// **The wire name must split into exactly four.** attacca re-reads
+    /// `zyris__{node}__{capability}__{tool}` by splitting on `__`, so a `__` inside the name or a
+    /// trailing `_` misaligns it right there. The test is always **join it back together and split it.**
     #[test]
     fn the_wire_name_splits_into_exactly_four() {
         for tool in ["start", "status", "list", "say", "stop", "resume"] {
@@ -301,7 +301,7 @@ mod tests {
         }
     }
 
-    /// 실패는 **왜인지 읽을 자리를 가리켜야 한다.** "실패했습니다"만으로는 다음 수가 없다.
+    /// A failure must **point at where to read why.** "It failed" alone leaves no next move.
     #[test]
     fn a_failure_points_at_the_reason() {
         assert!(next_step(ZWorkState::Failed).contains("failure_reason"));

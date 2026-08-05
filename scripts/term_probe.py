@@ -16,7 +16,7 @@ import sys
 import termios
 import tty
 
-# 왼쪽이 zyris-code가 쓰는 글자, 오른쪽이 unicode-width가 말하는 폭.
+# Left is the glyph zyris-code uses, right is the width unicode-width reports.
 GLYPHS = [
     ("●", 1, "작업 표시 점"),
     ("·", 1, "모드·에이전트 사이"),
@@ -38,7 +38,7 @@ def ask_column(fd: int) -> int | None:
     os.write(fd, b"\x1b[6n")
     buf = b""
     while b"R" not in buf:
-        # 대답하지 않는 터미널이 있다. 무한정 기다리지 않는다.
+        # Some terminals don't answer. Don't wait forever.
         if not select.select([fd], [], [], 0.5)[0]:
             return None
         buf += os.read(fd, 32)

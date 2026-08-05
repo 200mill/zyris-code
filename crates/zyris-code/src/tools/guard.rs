@@ -1,10 +1,10 @@
-//! 내주는 캐퍼빌리티를 감싸 **모든 호출에 판정을 끼운다.**
+//! Wraps the served capability to **inject a decision into every call.**
 //!
-//! announce하는 순간 그 계정의 모든 세션이 이 노드를 보고, 경로 해석은 감옥이 아니라서
-//! 절대경로는 작업 디렉터리를 벗어난다.
+//! The moment it announces, every session of that account sees this node, and path resolution isn't a jail, so
+//! absolute paths escape the working directory.
 //!
-//! **묻는 자리는 하나뿐이다: 작업 디렉터리 밖.** 안쪽 일에는 아무것도 묻지 않고,
-//! 밖으로 나가면 모드와 무관하게 사람에게 묻는다(`gate::escaping_path`).
+//! **There is only one place we ask: outside the working directory.** Nothing inside is asked, and
+//! going outside asks a human regardless of mode (`gate::escaping_path`).
 
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use crate::tools::gate::{escaping_path, target_of, Call, Decision};
 
 pub struct Gate<C> {
     inner: C,
-    /// `descriptor()`는 도구 스키마를 통째로 만든다. 호출마다 부르지 않으려고 한 번만 뽑는다.
+    /// `descriptor()` builds the whole tool schema. Pulled once so it isn't called per call.
     capability: String,
     bridge: Bridge,
 }
@@ -36,18 +36,18 @@ impl<C: ServeCapability> Gate<C> {
 #[async_trait]
 impl<C: ServeCapability> ServeCapability for Gate<C> {
     fn descriptor(&self) -> CapabilityDescriptor {
-        // **도구 정의를 토큰 예산에 맞춘다.** 상류(zyris-caps)의 doc 주석이 그대로
-        // 에이전트에게 실리는데, 매 세션·매 턴마다 반복되면 컨텍스트를 잡아먹는다.
-        // 설명만 자르고 이름·스키마의 값 해석 부분은 그대로 — dispatch는 설명을 읽지
-        // 않으므로 여기서 자르는 것이 announce되는 것에만 닿는다.
+        // **Fits the tool definition into the token budget.** The upstream (zyris-caps) doc comments ride along
+        // to the agent as-is, and repeated every session·turn they eat context.
+        // Only the description is trimmed; name·schema value-parsing parts stay — dispatch doesn't read
+        // the description, so trimming here only touches what gets announced.
         let mut descriptor = self.inner.descriptor();
         crate::tools::trim::trim_descriptor(&mut descriptor);
         descriptor
     }
 
     async fn dispatch(&self, call: IncomingCall) -> Result<Outgoing> {
-        // 인자를 못 읽으면 대상을 알 수 없고, 대상을 모르면 무엇을 승인하는지도 모른다.
-        // 그럴 때는 빈 값으로 두고 판정을 받는다 — 통과시키지 않는다.
+        // If the args can't be read, the target is unknown, and without the target it's unknown what's being approved.
+        // Then leave it as the empty value and take the decision — don't pass it through.
         let args = call.params.to_json().unwrap_or(Value::Null);
         let target = target_of(&self.capability, &call.tool, &args);
         let outside = escaping_path(&self.bridge.root(), &self.capability, &call.tool, &args);
@@ -60,11 +60,11 @@ impl<C: ServeCapability> ServeCapability for Gate<C> {
         }
 
         let (call, cut) = self.clamp_exec(call, &args, wire_deadline());
-        // **명령이 도는 동안 무엇이 도는지 보여 준다.** `exec`은 완료될 때 한 번만
-        // 결과를 주므로(프로토콜 §terminal), 이것이 없으면 사람은 최대 55초를
-        // 아무것도 모른 채 기다린다.
-        // **어느 창이 이 호출을 받았는가.** 창을 여럿 띄우면 서버가 고른 창으로만 가는데,
-        // 화면만 봐서는 안 온 창인지 안 부른 것인지 알 수 없다.
+        // **Shows what's running while it runs.** `exec` gives its result only once at completion
+        // (protocol §terminal), so without this a human waits up to 55 seconds
+        // knowing nothing.
+        // **Which window took this call.** With several windows up, it only goes to the one the server picked, and
+        // looking at the screen alone can't tell whether a window missed it or wasn't asked.
         tracing::info!(capability = %gated.capability, tool = %gated.tool, "도구 호출을 받았다");
 
         let running = self.tell_the_screen_it_started(&gated, &args);
@@ -82,11 +82,11 @@ impl<C: ServeCapability> ServeCapability for Gate<C> {
 }
 
 impl<C: ServeCapability> Gate<C> {
-    /// 사람에게 묻고 답을 기다린다. **기다리는 시간에 제한이 없다** — 창은 사람이
-    /// 답할 때까지 화면에 남는다. 마감이 걸리는 것은 와이어뿐이다.
+    /// Asks a human and waits for the answer. **No limit on the wait** — the window stays
+    /// on screen until the human answers. Only the wire carries a deadline.
     async fn ask_and_wait(&self, call: &Call) -> Result<()> {
-        // **왜 물었는지 남긴다.** 승인 창을 못 본 사람에게는 "승인이 없어서 못 했다"는
-        // 에이전트의 말만 남는데, 그것만으로는 무엇이 울타리를 넘었는지 알 수 없다.
+        // **Records why it asked.** To someone who never saw the approval window, only the agent's
+        // "couldn't, no approval" remains, and alone that can't say what crossed the fence.
         let outside = call.outside.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
         tracing::info!(
             capability = %call.capability,
@@ -96,7 +96,7 @@ impl<C: ServeCapability> Gate<C> {
         );
 
         let Some((id, wait)) = self.bridge.ask(call.clone(), summarize(call)) else {
-            // 화면이 없으면 물을 곳이 없다. **통과시키면 몰래 밖으로 나간다.**
+            // With no screen there's nowhere to ask. **Passing it through sneaks outside.**
             return Err(WireError::invalid_params(format!(
                 "`{outside}`은 작업 디렉터리 밖이라 사람의 승인이 필요한데, 이 노드에 화면이 \
                  붙어 있지 않아 물을 곳이 없습니다. 작업 디렉터리 안에서 되는 길을 찾아 주세요."
@@ -106,8 +106,8 @@ impl<C: ServeCapability> Gate<C> {
         let answer = match wire_deadline() {
             Some(d) => match tokio::time::timeout(d, wait).await {
                 Ok(v) => v.ok(),
-                // **와이어에만 답하고 창은 남긴다.** attacca가 노드 호출을 60초에
-                // 끊으므로 그 전에 우리가 먼저 말한다.
+                // **Answers the wire only and keeps the window.** attacca cuts node calls at 60 seconds,
+                // so we speak first, before that.
                 Err(_) => {
                     self.bridge.expire(id);
                     return Err(WireError::invalid_params(format!(
@@ -130,10 +130,10 @@ impl<C: ServeCapability> Gate<C> {
         }
     }
 
-    /// `terminal.exec`이면 무엇이 도는지 화면에 알린다. 그 밖에는 아무 일도 안 한다.
+    /// Tells the screen what's running for `terminal.exec`. Does nothing otherwise.
     ///
-    /// 돌려주는 것은 끝났을 때 지울 번호다. **`exec`만이다** — 나머지 도구는 금방
-    /// 끝나서, 하나하나 알리면 활동 줄이 깜박이기만 한다.
+    /// What's returned is the number to clear when done. **Only `exec`** — the other tools finish
+    /// quickly, so announcing each one would just make the activity line flicker.
     fn tell_the_screen_it_started(&self, call: &Call, args: &Value) -> Option<u64> {
         if (call.capability.as_str(), call.tool.as_str()) != ("terminal", "exec") {
             return None;
@@ -144,12 +144,12 @@ impl<C: ServeCapability> Gate<C> {
         Some(id)
     }
 
-    /// **와이어 마감이 켜져 있으면 `exec`의 `timeout_ms`를 그 안쪽으로 자른다.**
+    /// **When the wire deadline is on, `exec`'s `timeout_ms` is clamped inside it.**
     ///
-    /// 이것은 도구의 마감이 아니라 저쪽 사정이다. attacca가 노드 호출을 60초
-    /// (`ZYRIS_CALL_TIMEOUT_SECS`)에 끊는데, 그보다 오래 도는 명령은 저쪽에서 Timeout
-    /// **오류**가 되어 에이전트는 무슨 일이 있었는지 모른 채 남는다. 우리가 먼저 끝내고
-    /// 잘랐다고 적어 주면 에이전트가 `terminal.open`으로 갈아탈 수 있다.
+    /// This isn't the tool's deadline but the other side's situation. attacca cuts node calls at 60 seconds
+    /// (`ZYRIS_CALL_TIMEOUT_SECS`), and a command running longer becomes a Timeout
+    /// **error** over there, leaving the agent not knowing what happened. We finish first and
+    /// note that it was cut, so the agent can switch to `terminal.open`.
     fn clamp_exec(
         &self,
         call: IncomingCall,
@@ -164,7 +164,7 @@ impl<C: ServeCapability> Gate<C> {
         if room == 0 {
             return (call, None);
         }
-        // 에이전트가 이미 짧게 잡았으면 그쪽이 이긴다. 마감은 상한이지 기본값이 아니다.
+        // If the agent already set it shorter, that side wins. The deadline is a cap, not a default.
         if args.get("timeout_ms").and_then(Value::as_u64).is_some_and(|ms| ms <= room) {
             return (call, None);
         }
@@ -174,10 +174,10 @@ impl<C: ServeCapability> Gate<C> {
         (IncomingCall { params: Payload::from_json(patched), ..call }, Some(deadline))
     }
 
-    /// 열리고 닫히는 셸을 화면에 알린다.
+    /// Tells the screen about shells opening and closing.
     ///
-    /// **모든 `terminal` 호출이 여기를 지나므로 아는 곳이 여기뿐이다.** 안 알리면
-    /// 에이전트가 열어 둔 셸이 사람 모르게 돈다.
+    /// **Every `terminal` call passes here, so this is the only place that knows.** Without it,
+    /// shells the agent left open run without the human knowing.
     fn note_the_shells(&self, call: &Call, args: &Value, out: &Outgoing) {
         if self.capability != "terminal" {
             return;
@@ -199,7 +199,7 @@ impl<C: ServeCapability> Gate<C> {
     }
 }
 
-/// 사람이 읽을 한 줄. **무엇이 밖으로 나가는지**가 이 승인의 전부다.
+/// One line for a human to read. **What's going outside** is all this approval is about.
 fn summarize(call: &Call) -> String {
     match &call.outside {
         Some(path) => path.to_string_lossy().into_owned(),
@@ -207,7 +207,7 @@ fn summarize(call: &Call) -> String {
     }
 }
 
-/// 열린 PTY의 식별자. 단항 응답이든 스트림 머리든 같은 자리에 있다.
+/// Identifier of the opened PTY. Same spot in a unary response or a stream head.
 fn pty_id_of(out: &Outgoing) -> Option<String> {
     let payload = match out {
         Outgoing::Response(p) => p,
@@ -217,8 +217,8 @@ fn pty_id_of(out: &Outgoing) -> Option<String> {
     v.get("pty")?.as_str().map(str::to_string)
 }
 
-/// 잘린 채로 시간이 다 됐으면 **결과에 그렇게 적는다.** 조용히 끊으면 에이전트는
-/// 명령이 실패한 줄 알고 같은 것을 다시 시도한다.
+/// When time ran out and it was cut, **say so in the result.** Cut silently, the agent
+/// thinks the command failed and retries the same thing.
 fn note_the_cut(out: Outgoing, deadline: Duration) -> Outgoing {
     let Outgoing::Response(payload) = out else { return out };
     let Ok(mut v) = payload.to_json() else { return Outgoing::Response(payload) };
@@ -236,16 +236,16 @@ fn note_the_cut(out: Outgoing, deadline: Duration) -> Outgoing {
     Outgoing::Response(Payload::from_json(v))
 }
 
-/// `exec`에 주는 여유. 우리가 결과를 만들어 돌려보낼 시간이다.
+/// Headroom given to `exec`. Time for us to build and send back the result.
 const EXEC_HEADROOM: Duration = Duration::from_secs(5);
 
-/// 와이어에만 걸리는 마감. **도구의 마감이 아니다.**
+/// A deadline that only applies to the wire. **Not the tool's deadline.**
 ///
-/// attacca가 노드 호출을 `ZYRIS_CALL_TIMEOUT_SECS`(기본 60)에 끊는데 그 값을 우리가 읽을
-/// 수 없다. 그래서 그 안에서 제때 답하고 창은 화면에 남긴다.
+/// attacca cuts node calls at `ZYRIS_CALL_TIMEOUT_SECS` (default 60) and we can't read that value.
+/// So we answer in time within it and keep the window on screen.
 ///
-/// **저쪽이 고쳐지면 `ZYRIS_CODE_WIRE_DEADLINE_SECS=0`으로 끄면 된다** — 그러면 우리가
-/// 먼저 답하지 않고 사람을 그냥 기다린다. 코드를 고칠 일이 없다.
+/// **When the other side is fixed, turn it off with `ZYRIS_CODE_WIRE_DEADLINE_SECS=0`** — then we
+/// don't answer first and just wait for the human. No code to change.
 fn wire_deadline() -> Option<Duration> {
     let secs: u64 = std::env::var("ZYRIS_CODE_WIRE_DEADLINE_SECS")
         .ok()
@@ -263,11 +263,11 @@ mod tests {
     use std::sync::Arc;
     use zyris::{Serialization, ToolDescriptor};
 
-    /// 감싸이는 쪽. **불렸는지 아닌지가 이 파일의 전부다.**
+    /// The wrapped side. **Whether it was called is all this file cares about.**
     struct Fake {
         name: &'static str,
         ran: Arc<AtomicBool>,
-        /// 돌려줄 결과. 없으면 빈 맵이다.
+        /// The result to return. An empty map if none.
         reply: Option<Value>,
     }
 
@@ -303,8 +303,8 @@ mod tests {
         }
     }
 
-    /// 감싸는 순간 **설명이 예산에 맞아 나간다.** dispatch는 설명을 읽지 않으므로
-    /// announce되는 것에만 닿는다 — 토큰 예산(`tools::trim`)의 Gate 쪽 반쪽이다.
+    /// At wrap time **the description goes out within budget.** dispatch doesn't read the description, so
+    /// it only touches what gets announced — the Gate-side half of the token budget (`tools::trim`).
     #[test]
     fn the_gate_trims_long_descriptions() {
         struct Verbose;
@@ -342,7 +342,7 @@ mod tests {
         }
     }
 
-    /// **안쪽 일에는 화면이 없어도 그냥 돈다.** 묻는 자리는 밖뿐이다.
+    /// **Inside work just runs even with no screen.** The only asking spot is outside.
     #[tokio::test]
     async fn a_tool_inside_the_tree_runs_with_no_screen_attached() {
         let (fake, ran) = Fake::new("code_edit");
@@ -353,7 +353,7 @@ mod tests {
         assert!(ran.load(Ordering::SeqCst));
     }
 
-    /// **밖으로 나가는데 물을 곳이 없으면 안 돌아야 한다.** 통과시키면 몰래 나간다.
+    /// **Leaving with nowhere to ask must not run.** Passing it through sneaks outside.
     #[tokio::test]
     async fn leaving_the_tree_with_no_screen_refuses_instead_of_passing() {
         let (fake, ran) = Fake::new("code_edit");
@@ -368,7 +368,7 @@ mod tests {
         assert!(e.message.contains("작업 디렉터리 밖"), "{}", e.message);
     }
 
-    /// 밖으로 나가면 **화면에 물음이 간다.**
+    /// Leaving sends **a question to the screen.**
     #[tokio::test]
     async fn leaving_the_tree_asks_the_screen() {
         let (fake, ran) = Fake::new("code_edit");
@@ -378,7 +378,7 @@ mod tests {
         bridge.attach(tx);
         let gate = Gate::new(fake, bridge.clone());
 
-        // 답하지 않으므로 마감에 걸려 돌아온다. 그 전에 물음이 갔는지만 본다.
+        // No answer is given, so it comes back on the deadline. Only checks the question went out before that.
         std::env::set_var("ZYRIS_CODE_WIRE_DEADLINE_SECS", "1");
         let _ = gate.dispatch(incoming("edit", json!({"path": "/etc/passwd"}))).await;
         std::env::remove_var("ZYRIS_CODE_WIRE_DEADLINE_SECS");
@@ -393,7 +393,7 @@ mod tests {
         assert!(!ran.load(Ordering::SeqCst), "답도 안 했는데 돌았다");
     }
 
-    /// 기본 모드는 묻지 않고 돌린다.
+    /// The normal mode runs without asking.
     #[tokio::test]
     async fn the_normal_mode_runs_without_asking() {
         let (fake, ran) = Fake::new("code_edit");
@@ -405,7 +405,7 @@ mod tests {
         assert!(ran.load(Ordering::SeqCst));
     }
 
-    /// 거부는 **에이전트가 읽고 행동을 바꿀 수 있는 문장**이어야 한다.
+    /// A refusal must be **a sentence the agent can read and change its behavior by.**
     #[tokio::test]
     async fn a_refusal_says_what_to_do_instead() {
         let (fake, ran) = Fake::new("code_edit");
@@ -420,7 +420,7 @@ mod tests {
         assert!(e.message.contains("계획"), "{}", e.message);
     }
 
-    /// 읽기는 어느 모드에서도 막히지 않는다 — 읽지 못하면 아무것도 시작할 수 없다.
+    /// Reading is never blocked in any mode — without reading, nothing can start.
     #[tokio::test]
     async fn reading_is_never_gated() {
         let (fake, ran) = Fake::new("file_io");
@@ -432,7 +432,7 @@ mod tests {
         assert!(ran.load(Ordering::SeqCst));
     }
 
-    /// 셸을 열면 화면에 알려야 한다. **안 알리면 유령 셸이 돈다.**
+    /// Opening a shell must tell the screen. **Without it, ghost shells run.**
     #[tokio::test]
     async fn opening_a_shell_tells_the_screen() {
         let (mut fake, _) = Fake::new("terminal");
@@ -452,8 +452,8 @@ mod tests {
         }
     }
 
-    /// **긴 명령은 와이어 마감 안쪽으로 자른다.** 안 자르면 저쪽이 먼저 끊고,
-    /// 에이전트는 무슨 일이 있었는지 모른 채로 남는다.
+    /// **A long command is clamped inside the wire deadline.** Unclamped, the other side cuts first and
+    /// the agent is left not knowing what happened.
     #[tokio::test]
     async fn a_long_exec_is_cut_to_fit_the_wire_deadline() {
         let (fake, _) = Fake::new("terminal");
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(sent["command"], json!("cargo build"), "다른 인자를 건드리면 안 된다");
     }
 
-    /// 에이전트가 이미 짧게 잡았으면 그쪽이 이긴다. 마감은 상한이지 기본값이 아니다.
+    /// If the agent already set it shorter, that side wins. The deadline is a cap, not a default.
     #[tokio::test]
     async fn a_short_exec_is_left_alone() {
         let (fake, _) = Fake::new("terminal");
@@ -484,7 +484,7 @@ mod tests {
         assert_eq!(call.params.to_json().unwrap()["timeout_ms"], json!(1_000u64));
     }
 
-    /// 마감을 끄면 아무것도 자르지 않는다 — attacca가 고쳐지면 이 길로 간다.
+    /// Deadline off means nothing is cut — once attacca is fixed, this is the way.
     #[tokio::test]
     async fn turning_the_deadline_off_stops_the_cutting() {
         let (fake, _) = Fake::new("terminal");
@@ -495,8 +495,8 @@ mod tests {
         assert_eq!(call.params.to_json().unwrap().get("timeout_ms"), None);
     }
 
-    /// 시간이 다 돼서 잘렸으면 **결과에 그렇게 적는다.** 조용히 끊으면 에이전트는
-    /// 명령이 실패한 줄 알고 같은 것을 다시 시도한다.
+    /// Cut because time ran out, **the result says so.** Cut silently, the agent
+    /// thinks the command failed and retries the same thing.
     #[test]
     fn a_cut_run_says_so_in_its_output() {
         let out = Outgoing::Response(Payload::from_json(
@@ -511,7 +511,7 @@ mod tests {
         assert!(stderr.contains("terminal.open"), "무엇을 하라는지 말해야 한다: {stderr}");
     }
 
-    /// 제때 끝난 명령에는 아무 말도 붙이지 않는다.
+    /// A command that finished in time gets nothing appended.
     #[test]
     fn a_run_that_finished_in_time_is_left_alone() {
         let out = Outgoing::Response(Payload::from_json(

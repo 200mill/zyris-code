@@ -74,7 +74,7 @@ try:
 finally:
     if proc.poll() is None: proc.send_signal(signal.SIGKILL)
     os.close(p)
-    # 실제 홈을 썼으므로 반드시 치운다.
+    # The real home was used, so it must be cleaned up.
     shutil.rmtree(f"{HOME}/.config/zyris-code/plugins/원본플러그인", ignore_errors=True)
 print(f"\n{n}/11 통과")
 sys.exit(0 if ok and n == 11 else 1)

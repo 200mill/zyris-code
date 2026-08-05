@@ -19,15 +19,15 @@ zyris-attacca.workspace = true
 zyris-caps.workspace = true
 zyris-capkit.workspace = true
 
-# `#[zyris::capability]`가 만드는 코드가 쓴다. **버전을 상류와 맞춘다** — 다르면 매크로가
-# 만든 타입이 상류의 것과 달라져 트레이트가 안 맞는다.
+# Used by the code `#[zyris::capability]` generates. **Match the version to upstream** — if
+# different, the macro's generated types differ from upstream's and the traits don't line up.
 schemars = "1.2.2"
 serde = { version = "1.0.228", features = ["derive"] }
 async-trait = "0.1.91"
 
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-# `process`·`io-util`은 MCP 서버를 자식 프로세스로 띄우고 줄 단위로 주고받는 데 쓴다.
+# `process` and `io-util` are used to spawn the MCP server as a child process and exchange lines with it.
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
 unicode-width = "0.2"
 anyhow = "1.0"
@@ -35,19 +35,19 @@ serde_json = "1.0.150"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 pulldown-cmark = { version = "0.13.4", default-features = false }
-# 줄 단위 diff. 직접 짜면 큰 파일에서 느려지고, 그건 도구 호출 예산 안에서 일어나는 일이다.
+# Line-based diff. Hand-rolling it gets slow on big files, and that happens inside the tool-call budget.
 similar = "2"
-# ripgrep이 쓰는 워커. **`.gitignore`를 존중하는 것이 요점이다** — target/을 뒤지면 이
-# 머신에서 몇 초가 날아가고 나오는 것은 빌드 산출물뿐이다. glob 매칭도 여기 것을 쓴다.
+# The worker ripgrep uses. **Respecting `.gitignore` is the point** — searching target/ would
+# cost seconds on this machine and only yield build artifacts. Its glob matching is used too.
 ignore = "0.4"
 regex = "1"
 futures-util = "0.3.32"
 base64 = "0.23.0"
-# 창 잠금의 PID 생존 검사(`conn::instance_lock`). 이미 트리에 있어 네트워크 없이 빌드된다.
+# PID liveness check for the window lock (`conn::instance_lock`). Already in the tree, so it builds without network.
 libc = "0.2"
-# 편집 툴의 버전 토큰(SHA-256). 이미 Cargo.lock에 있어 네트워크 없이 빌드된다.
+# Version token for the edit tool (SHA-256). Already in Cargo.lock, so it builds without network.
 sha2 = "0.10"
 
 [dev-dependencies]
-# 도구 테스트가 진짜 파일을 쓴다. 모의 파일시스템으로는 경로 해석 실수가 안 잡힌다.
+# Tool tests write real files. A mock filesystem can't catch path-resolution mistakes.
 tempfile = "3"

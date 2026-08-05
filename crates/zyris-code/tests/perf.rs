@@ -1,7 +1,7 @@
-//! 한 프레임 그리는 데 드는 비용을 잰다.
+//! Measures what it costs to draw one frame.
 //!
-//! "답이 길어지면 화면이 깨진다"와 "대화가 길어지면 랙이 걸린다"는 같은 원인으로 보인다 —
-//! 매 프레임 대화 **전체**를 다시 만든다는 것. 고치기 전에 그것이 사실인지부터 재 둔다.
+//! "A long answer breaks the screen" and "a long conversation lags" look like the same cause —
+//! rebuilding the **whole** conversation every frame. Before fixing it, we measure whether that's actually true.
 //!
 //! ```bash
 //! cargo test -j2 -p zyris-code --test perf -- --nocapture --ignored
@@ -13,10 +13,10 @@ use zyris_code::event::{Entry, EntryKind};
 use zyris_code::rows::{rows, Cache, Folds};
 use zyris_code::timeline::Timeline;
 
-/// 폭. 실제 터미널과 비슷하게 잡는다.
+/// Width. Chosen to be close to a real terminal.
 const WIDTH: u16 = 100;
 
-/// 300줄짜리 표 하나가 든 답변. 실제로 깨졌던 그 크기다.
+/// An answer holding one 300-row table. This is the size that actually broke before.
 fn long_table(rows: usize) -> String {
     let mut s = String::from("아래가 결과입니다.\n\n| 경로 | 크기 | 비고 |\n|---|---|---|\n");
     for i in 0..rows {
@@ -28,7 +28,7 @@ fn long_table(rows: usize) -> String {
     s
 }
 
-/// 대화 `turns`턴. 한 턴은 사용자 한 마디 + 작업 카드 + 긴 답변이다.
+/// A conversation of `turns` turns. One turn is one user message + a work card + a long answer.
 fn conversation(turns: usize, table_rows: usize) -> Timeline {
     let mut t = Timeline::new();
     let mut seq = 0i64;
@@ -45,22 +45,22 @@ fn conversation(turns: usize, table_rows: usize) -> Timeline {
     t
 }
 
-/// 터미널 높이. 실제로 화면에 나오는 줄은 이만큼뿐이다.
+/// Terminal height. This is all the lines that actually appear on screen.
 const HEIGHT: usize = 45;
 
-/// 예전 방식 — 매 프레임 전부 다시 만든다.
+/// The old way — rebuilds everything every frame.
 fn frame_all(t: &mut Timeline, folds: &Folds) -> usize {
     rows(t.items(), WIDTH, folds).lines.len()
 }
 
-/// 지금 방식 — 바뀐 항목만 다시 만들고 보이는 창만 편다.
+/// The current way — rebuilds only changed items and lays out just the visible window.
 fn frame_cached(t: &mut Timeline, cache: &mut Cache, folds: &Folds) -> usize {
     cache.layout(t.items(), WIDTH, folds, None);
     let top = cache.total().saturating_sub(HEIGHT);
     cache.window(top, top + HEIGHT).len()
 }
 
-/// 한 프레임 비용이 대화 길이에 비례하는지 본다. 눈으로 읽는 수치다 — 단언하지 않는다.
+/// Checks whether one frame's cost scales with conversation length. These are eyeball numbers — no assertions.
 #[test]
 #[ignore = "수치를 보려고 돌리는 것이지 통과/실패를 가리는 것이 아니다"]
 fn measure_one_frame() {
@@ -79,7 +79,7 @@ fn measure_one_frame() {
         let old = start.elapsed() / N;
 
         let mut cache = Cache::new();
-        frame_cached(&mut t, &mut cache, &folds); // 데운다
+        frame_cached(&mut t, &mut cache, &folds); // warm it up
         let start = Instant::now();
         for _ in 0..N {
             std::hint::black_box(frame_cached(&mut t, &mut cache, &folds));
@@ -97,10 +97,10 @@ fn measure_one_frame() {
     println!();
 }
 
-/// 스트리밍 한 번. 델타가 올 때마다 한 프레임 그린다 — 실제로 도는 모양 그대로다.
+/// One streaming pass. Each delta draws one frame — exactly how it runs in production.
 ///
-/// 여기가 진짜 부하다. 앞선 대화가 길어도 **바뀌는 것은 마지막 답변 하나뿐**이라
-/// 비용이 앞선 대화 길이를 따라가면 안 된다.
+/// This is where the real load is. Even with a long prior conversation, **only the last answer
+/// changes**, so the cost must not track the length of the prior conversation.
 #[test]
 #[ignore = "수치를 보려고 돌리는 것이지 통과/실패를 가리는 것이 아니다"]
 fn measure_streaming_deltas() {
@@ -136,7 +136,7 @@ fn measure_streaming_deltas() {
     println!();
 }
 
-/// 가만히 두면 아무 일도 하지 않아야 한다. 유휴 프레임이 CPU를 먹으면 안 된다.
+/// Left alone, it should do nothing. Idle frames must not eat CPU.
 #[test]
 #[ignore = "수치를 보려고 돌리는 것이지 통과/실패를 가리는 것이 아니다"]
 fn measure_idle_frames() {
@@ -156,12 +156,12 @@ fn measure_idle_frames() {
     );
 }
 
-// ─── 화면이 아니라 **선로**에 무엇이 실리는가 ────────────────────────────────
+// ─── What goes out on the **wire**, not the screen ──────────────────────────
 //
-// "SSH에서만 깨진다"의 답은 프레임을 만드는 비용이 아니라 **터미널로 나가는 바이트 수**에
-// 있다. ratatui는 바뀐 칸만 보내지만, 대화가 한 줄 올라가면 화면의 거의 모든 칸이 바뀐다.
-// 여기서는 그 바이트를 실제로 세어 본다 — TestBackend는 바이트를 만들지 않으므로 진짜
-// crossterm 백엔드를 메모리 버퍼에 물려 쓴다.
+// The answer to "it only breaks over SSH" is not the cost of building frames but the **number of
+// bytes going to the terminal**. ratatui sends only changed cells, but when the conversation
+// scrolls up one line, nearly every cell on screen changes. Here we actually count those bytes —
+// TestBackend doesn't produce bytes, so we attach a real crossterm backend to an in-memory buffer.
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
@@ -169,11 +169,11 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use zyris_code::app::{apply, Action, Frame as AppFrame, State};
 use zyris_code::widgets;
 
-/// 태블릿 SSH 클라이언트에서 찍힌 화면과 비슷한 크기.
+/// Roughly the size of a screen captured from a tablet SSH client.
 const W: u16 = 200;
 const H: u16 = 40;
 
-/// 나간 바이트를 세는 쓰기 대상. 백엔드가 버퍼를 안 내주므로 우리가 쥐고 있는다.
+/// A write target that counts the bytes that go out. The backend won't hand out its buffer, so we hold one ourselves.
 #[derive(Clone, Default)]
 struct Wire(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -197,7 +197,7 @@ impl Wire {
 }
 
 fn wire_terminal(wire: Wire) -> Terminal<CrosstermBackend<Wire>> {
-    // Fixed 뷰포트를 쓰는 이유는 하나다 — 진짜 tty가 없어도 크기를 물어보지 않는다.
+    // There's one reason to use a Fixed viewport — it doesn't ask for a size even without a real tty.
     Terminal::with_options(
         CrosstermBackend::new(wire),
         TerminalOptions { viewport: Viewport::Fixed(Rect::new(0, 0, W, H)) },
@@ -205,7 +205,7 @@ fn wire_terminal(wire: Wire) -> Terminal<CrosstermBackend<Wire>> {
     .expect("메모리 백엔드")
 }
 
-/// 한 번 그리고, 그 사이 선로에 실린 바이트 수를 돌려준다.
+/// Draws once and returns the number of bytes that went on the wire in between.
 fn draw_bytes(
     term: &mut Terminal<CrosstermBackend<Wire>>,
     wire: &Wire,
@@ -223,7 +223,7 @@ fn measure_bytes_on_the_wire() {
     state.connected = true;
     state.agent = "Main Agent".into();
 
-    // 대화를 좀 쌓아 화면을 채운다.
+    // Stack up some conversation to fill the screen.
     let mut seq = 0i64;
     for i in 0..6 {
         seq += 1;
@@ -241,14 +241,14 @@ fn measure_bytes_on_the_wire() {
     let mut term = wire_terminal(wire.clone());
     let first = draw_bytes(&mut term, &wire, &mut state);
 
-    // 1) 아무것도 안 바뀐 프레임.
+    // 1) A frame where nothing changed.
     let idle = draw_bytes(&mut term, &wire, &mut state);
 
-    // 2) 글자 하나 친 프레임 — 입력란만 바뀐다.
+    // 2) A frame with one character typed — only the input field changes.
     apply(&mut state, &Action::Insert('가'));
     let typing = draw_bytes(&mut term, &wire, &mut state);
 
-    // 3) 스트리밍 한 조각 — 답이 자라며 **대화가 한 줄 올라간다**.
+    // 3) One streaming chunk — the answer grows and **the conversation scrolls up one line**.
     let mut stream = Vec::new();
     for _ in 0..20 {
         apply(
@@ -262,8 +262,8 @@ fn measure_bytes_on_the_wire() {
     }
     let avg: usize = stream.iter().sum::<usize>() / stream.len();
 
-    // 4) 통째로 다시 그리기 — 자가 치유 한 번의 값. 새 터미널의 첫 프레임과 같다
-    //    (`clear()`는 진짜 tty에 커서를 물어봐서 여기서는 못 쓴다).
+    // 4) A full redraw — the cost of one self-heal. Same as a fresh terminal's first frame
+    //    (`clear()` asks a real tty for the cursor, so we can't use it here).
     let wire2 = Wire::default();
     let mut fresh = wire_terminal(wire2.clone());
     let heal = draw_bytes(&mut fresh, &wire2, &mut state);
@@ -280,12 +280,12 @@ fn measure_bytes_on_the_wire() {
     }
 }
 
-/// **전각 글자 뒤 칸에는 아무것도 안 나간다.**
+/// **Nothing goes out in the cell after a wide character.**
 ///
-/// 이게 SSH 화면에 글자 부스러기가 남는 구조적 이유다. ratatui는 전각 글자를 한 칸에
-/// 적고 **그다음 칸은 건드리지 않는다** — 터미널이 두 칸을 다 칠해 준다고 믿기 때문이다.
-/// 그 믿음을 지키지 않는 터미널(글자는 한 칸으로 그리면서 두 칸을 잡는 종류)에서는 뒤
-/// 칸에 있던 옛 글자가 그대로 비쳐 보인다.
+/// This is the structural reason stray glyphs remain on SSH screens. ratatui writes a wide
+/// character into one cell and **doesn't touch the next one** — it trusts the terminal to paint
+/// both cells. On a terminal that doesn't honor that trust (the kind that draws the glyph in one
+/// cell while reserving two), the old glyph in the following cell shows through.
 #[test]
 #[ignore = "수동 측정용"]
 fn measure_what_goes_out_behind_a_wide_character() {

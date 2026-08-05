@@ -1,9 +1,9 @@
-//! `ZSessionEvent` 하나를 화면 항목 하나로 옮긴다.
+//! Moves one `ZSessionEvent` into one screen entry.
 //!
-//! 여기는 이벤트 **하나**만 본다. 작업 카드 그룹핑은 `timeline.rs`가 한다.
+//! This only looks at **one** event. Grouping into work cards is `timeline.rs`'s job.
 //!
-//! `payload`는 타입이 없는 JSON이고 `kind`가 문자열이다. 정본은 attacca의
-//! `attacca-domain/src/session_event.rs`다.
+//! `payload` is untyped JSON and `kind` is a string. The canonical copy lives in attacca's
+//! `attacca-domain/src/session_event.rs`.
 
 use serde_json::Value;
 use zyris_attacca::ZSessionEvent;
@@ -18,24 +18,24 @@ pub struct Entry {
 pub enum EntryKind {
     User(String),
     Agent(String),
-    /// 작업 런의 시작. 내용이 비어 있으면 제목이 아직 안 정해진 것이다.
+    /// Start of a work run. Empty content means the title isn't decided yet.
     WorkStart(String),
     Thinking(String),
     Tool {
         name: String,
         summary: String,
         failed: bool,
-        /// 펼쳤을 때 보여 줄 것 — 무엇을 받고 무엇을 돌려줬는가. 비면 펼칠 것이 없다.
+        /// What to show when expanded — what it received and what it returned. Empty means nothing to expand.
         detail: String,
-        /// `todo_*` 도구일 때만 인자와 결과를 들고 온다 — 사이드바의 태스크가 여기서 온다.
-        /// 다른 도구까지 실어 나르면 타임라인이 쓸데없이 무거워진다.
+        /// Carries arguments and result only for `todo_*` tools — the sidebar tasks come from here.
+        /// Carrying every other tool would make the timeline needlessly heavy.
         todo: Option<(serde_json::Value, Option<serde_json::Value>)>,
-        /// 파일을 바꾼 도구면 무엇이 어떻게 바뀌었는가. 화면이 초록/빨강으로 그린다.
+        /// For tools that changed files, what changed and how. The screen draws it in green/red.
         diff: Option<crate::tools::diff::Diff>,
     },
-    /// 에이전트가 물어본 것. 답을 고르면 평범한 메시지로 돌려보낸다.
+    /// What the agent asked. Picking an answer sends it back as an ordinary message.
     ///
-    /// 이미 답이 달린 질문은 다시 띄우지 않는다 — `answered`가 그 표시다.
+    /// A question that already has an answer isn't shown again — `answered` is the marker for that.
     Question {
         steps: Vec<crate::question::Step>,
         answered: bool,
@@ -45,10 +45,10 @@ pub enum EntryKind {
     Error(String),
 }
 
-/// 렌더할 것이 없으면 `None`.
+/// `None` when there is nothing to render.
 ///
-/// `recall`과 `chat_system`은 모델만 보는 이벤트라 의도적으로 버린다 — 그리면
-/// 사용자가 쓴 적 없는 메시지가 대화창에 나타난다.
+/// `recall` and `chat_system` are model-only events and are deliberately dropped — drawing them
+/// would show messages the user never wrote in the conversation window.
 pub fn entry_from(event: &ZSessionEvent) -> Option<Entry> {
     let p = &event.payload;
     let kind = match event.kind.as_str() {
@@ -62,10 +62,10 @@ pub fn entry_from(event: &ZSessionEvent) -> Option<Entry> {
         "tool_call" => {
             let name = text(p, "name");
             let failed = p.get("error").is_some_and(|e| !e.is_null());
-            // 질문은 도구 호출로 오지만 한 줄 요약이 아니라 고를 수 있는 화면이 돼야 한다.
+            // Questions arrive as tool calls, but they must become a pickable screen, not a one-line summary.
             if name == "question" {
                 if let Some(steps) = p.get("arguments").and_then(crate::question::parse) {
-                    // 결과가 붙었으면 이미 답이 간 것이다. 다시 물으면 안 된다.
+                    // If a result is attached, the answer is already in. Asking again would be wrong.
                     let answered = p.get("result").is_some_and(|r| !r.is_null()) || failed;
                     return Some(Entry {
                         seq: event.seq,
@@ -88,9 +88,9 @@ pub fn entry_from(event: &ZSessionEvent) -> Option<Entry> {
                 todo,
             }
         }
-        // 모델만 보는 것. 절대 렌더하지 않는다.
+        // Model-only. Never rendered.
         "recall" | "chat_system" => return None,
-        // v1에서 다루지 않는 것, 그리고 아직 없는 미래의 종류. 죽지 않고 무시한다.
+        // Things v1 doesn't handle, and future kinds that don't exist yet. Ignore without dying.
         _ => return None,
     };
     Some(Entry { seq: event.seq, kind })
@@ -100,11 +100,11 @@ fn text(payload: &Value, field: &str) -> String {
     payload.get(field).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-/// 도구 줄에 붙는 **짧은** 인자 요약. 이름은 여기 안 넣는다 — 화면이 둘을 따로 칠한다.
+/// The **short** argument summary for a tool row. The name isn't included here — the screen paints
+/// the two separately.
 ///
-/// 인자 전체를 펼치지 않는다. 상세는 눌러서 펴면 볼 수 있으므로, 여기 있어야 하는 것은
-/// "무엇에 대고 한 일인가" 한 조각이다. **예전에는 JSON의 첫 값을 그냥 썼는데**, 그러면
-/// `write`의 `content`가 통째로 나와 도구 줄이 파일 하나가 됐다.
+/// The full arguments aren't expanded. Since the detail can be seen by pressing to expand, what
+/// belongs here is the one piece of "what it was done to". **It used to just take the first JSON value**, which made `write`'s `content` come out whole and one tool row become a whole file.
 const SUMMARY_LIMIT: usize = 56;
 
 fn tool_summary(payload: &Value, name: &str) -> String {
@@ -117,10 +117,10 @@ fn tool_summary(payload: &Value, name: &str) -> String {
         "glob" | "grep" => pick("pattern"),
         "load" => pick("name"),
         "open" | "open_stream" => pick("shell").or(Some("기본 셸")),
-        // PTY를 이어 쓰는 것들은 어느 셸인지가 전부다.
+        // For things that keep a PTY going, which shell it is is everything.
         "read" | "write" | "screen" | "resize" | "close" if pick("pty").is_some() => pick("pty"),
         "edit" | "multi_edit" | "write" | "version" | "stat" | "list" | "read_stream" => pick("path"),
-        // 모르는 도구(서버 빌트인·MCP)는 흔한 이름부터 찾아보고, 없으면 첫 문자열이다.
+        // For unknown tools (server built-ins · MCP), look through the common names first, and fall back to the first string.
         _ => ["path", "name", "query", "title", "content", "url", "id"]
             .into_iter()
             .find_map(pick)
@@ -129,7 +129,7 @@ fn tool_summary(payload: &Value, name: &str) -> String {
     clip_summary(chosen.unwrap_or_default())
 }
 
-/// 한 줄로 만들고 길면 자른다. **줄바꿈이 남으면 도구 줄 하나가 여러 줄이 된다.**
+/// Make it one line and clip it when long. **A leftover newline turns one tool row into several lines.**
 fn clip_summary(s: &str) -> String {
     let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one.chars().count() <= SUMMARY_LIMIT {
@@ -138,12 +138,12 @@ fn clip_summary(s: &str) -> String {
     one.chars().take(SUMMARY_LIMIT).chain(['…']).collect()
 }
 
-/// 파일을 바꾼 도구의 결과에서 diff를 꺼낸다.
+/// Pulls the diff out of a file-changing tool's result.
 ///
-/// 도구 이름은 attacca가 `zyris__{슬러그}__{캐퍼빌리티}__{도구}`로 만들어 보내므로 뒤쪽만
-/// 본다. 못 꺼내면 `None`이고, 그러면 지금처럼 JSON 덤프로 떨어진다 — **죽지 않는 것이
-/// 요점이다.** 결과 모양은 우리가 정하지만(`tools::edit::EditResult`) 서버를 한 바퀴
-/// 돌아온 JSON이라 무엇이든 올 수 있다.
+/// attacca sends tool names as `zyris__{slug}__{capability}__{tool}`, so only the tail is looked
+/// at. If it can't be pulled, it's `None` and falls back to a JSON dump as now — **not dying is the
+/// point.** The result shape is ours to define (`tools::edit::EditResult`), but it's JSON that came
+/// back around the server, so anything can arrive.
 fn diff_of(name: &str, result: Option<&Value>) -> Option<crate::tools::diff::Diff> {
     let tail = name.rsplit("__").next()?;
     if !matches!(tail, "edit" | "multi_edit" | "write") {
@@ -157,21 +157,21 @@ fn diff_of(name: &str, result: Option<&Value>) -> Option<crate::tools::diff::Dif
     crate::tools::diff::Diff::parse(text, path, added, removed)
 }
 
-/// `terminal`의 결과를 사람이 읽을 수 있게 편다.
+/// Unfolds a `terminal` result so a person can read it.
 ///
-/// 안 하면 `to_string_pretty`를 지나면서 `"stdout": "   Compiling…\n"`이 되어
-/// **줄바꿈이 이스케이프로 남고 빌드 로그 전체가 한 줄이 된다.**
+/// Without this, passing through `to_string_pretty` would make `"stdout": "   Compiling…\n"` into
+/// **escaped newlines and the entire build log on one line.**
 ///
-/// 모양이 다르면 `None`이고 그러면 지금처럼 JSON으로 떨어진다 — 결과 모양은 상류가
-/// 정하고(`zyris_caps::ExecOutput`) 서버를 한 바퀴 돌아온 JSON이라 무엇이든 올 수 있다.
-/// `diff_of`와 같은 자리, 같은 방식이다.
+/// A different shape means `None` and it falls back to JSON as now — the result shape is set
+/// upstream (`zyris_caps::ExecOutput`) and it's JSON that came back around the server, so anything
+/// can arrive. Same place, same approach as `diff_of`.
 fn exec_detail(name: &str, result: Option<&Value>) -> Option<String> {
     let tail = name.rsplit("__").next()?;
     if !matches!(tail, "exec" | "read" | "screen") {
         return None;
     }
     let r = result?;
-    // exec만 종료 코드를 가진다. read·screen은 화면 텍스트 하나다.
+    // Only exec has an exit code. read·screen are a single screen text.
     let out = r.get("stdout").or_else(|| r.get("data")).or_else(|| r.get("text"))?.as_str()?;
     let err = r.get("stderr").and_then(Value::as_str).unwrap_or_default();
 
@@ -194,18 +194,18 @@ fn exec_detail(name: &str, result: Option<&Value>) -> Option<String> {
         s.push_str("stderr\n");
         s.push_str(err);
     }
-    // **아무 말도 안 하면 도구가 고장 난 줄 안다.** 성공했는데 조용한 명령이 흔하다.
+    // **If nothing is said, the tool looks broken.** Quiet commands that succeed are common.
     if s.is_empty() {
         s.push_str("(출력 없음)");
     }
     Some(s)
 }
 
-/// 펼쳤을 때 보여 줄 것 — 무엇을 받고 무엇을 돌려줬는가.
+/// What to show when expanded — what it received and what it returned.
 ///
-/// **여기서 글자로 굳혀 둔다.** 원본 JSON을 그대로 들고 있으면 타임라인이 무거워지는데
-/// 어차피 화면에는 글자로만 나간다. 그리고 아주 긴 결과는 잘라 둔다 — 도구 하나가
-/// 화면 몇천 줄을 차지할 이유가 없고, 다 보고 싶으면 웹 UI에 원본이 있다.
+/// **It's hardened into text right here.** Holding the raw JSON would weigh down the timeline, and
+/// it only ever reaches the screen as text anyway. Very long results are clipped too — one tool has
+/// no reason to take thousands of screen lines, and the web UI holds the original if you want it all.
 const DETAIL_LIMIT: usize = 4000;
 
 fn tool_detail(payload: &Value, name: &str) -> String {
@@ -217,7 +217,7 @@ fn tool_detail(payload: &Value, name: &str) -> String {
     if let Some(err) = payload.get("error").filter(|v| !v.is_null()) {
         push_section(&mut out, "오류", err);
     } else if let Some(res) = payload.get("result").filter(|v| !v.is_null()) {
-        // 셸이 뱉은 것은 JSON이 아니라 글이다.
+        // What the shell spat out is prose, not JSON.
         match exec_detail(name, Some(res)) {
             Some(text) => push_section(&mut out, "출력", &Value::String(text)),
             None => push_section(&mut out, "결과", res),
@@ -235,7 +235,7 @@ fn push_section(out: &mut String, head: &str, v: &Value) {
     out.push_str(&flatten(v));
 }
 
-/// 문자열이면 그대로, 아니면 보기 좋게 편 JSON.
+/// A string as-is, otherwise JSON pretty-printed.
 fn flatten(v: &Value) -> String {
     match v.as_str() {
         Some(s) => s.to_string(),
@@ -260,7 +260,7 @@ mod tests {
         ZSessionEvent { seq, cursor: seq, kind: kind.into(), payload, created_at: None }
     }
 
-    /// 와이어 이름은 `zyris__{노드}__{캐퍼빌리티}__{도구}`다.
+    /// The wire name is `zyris__{node}__{capability}__{tool}`.
     fn wire(tool: &str) -> String {
         format!("zyris__arch__terminal__{tool}")
     }
@@ -269,8 +269,8 @@ mod tests {
         json!({"exit_code": code, "stdout": out, "stderr": err, "timed_out": timed_out})
     }
 
-    /// **요약에 이름을 넣지 않는다.** 화면이 이름과 요약을 따로 칠하므로 여기서 섞으면
-    /// 도로 갈라내야 한다.
+    /// **The name isn't put in the summary.** The screen paints name and summary separately, so
+    /// mixing them here would mean splitting them apart again.
     #[test]
     fn the_summary_is_only_the_argument() {
         let got =
@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(got, "cargo build -j2");
     }
 
-    /// **JSON의 첫 값을 그냥 쓰면 안 된다.** `write`는 `content`가 파일 전체라
-    /// 그것이 도구 줄로 나오면 한 줄이 파일 하나가 된다.
+    /// **Don't just take the first JSON value.** For `write`, `content` is the whole file, so if it
+    /// became the tool row, one line would be a whole file.
     #[test]
     fn writing_a_file_is_summarised_by_its_path_not_its_content() {
         let got = tool_summary(
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(got, "src/app.rs");
     }
 
-    /// 줄바꿈이 남으면 도구 줄 하나가 여러 줄이 된다.
+    /// A leftover newline turns one tool row into several lines.
     #[test]
     fn a_summary_is_always_one_line() {
         let got =
@@ -297,7 +297,7 @@ mod tests {
         assert!(!got.contains('\n'), "{got:?}");
     }
 
-    /// 길면 자른다. 도구 줄은 훑는 것이지 읽는 것이 아니다.
+    /// Long ones are clipped. A tool row is for skimming, not reading.
     #[test]
     fn a_long_summary_is_clipped() {
         let got = tool_summary(&json!({"arguments": {"command": "x".repeat(400)}}), &wire("exec"));
@@ -305,7 +305,7 @@ mod tests {
         assert!(got.ends_with('…'), "잘렸다는 표시가 없다");
     }
 
-    /// 모르는 도구도 뭐라도 말해야 한다 — 서버 빌트인과 MCP가 여기로 온다.
+    /// Unknown tools must still say something — server built-ins and MCP come here.
     #[test]
     fn an_unknown_tool_still_gets_a_summary() {
         assert_eq!(
@@ -316,8 +316,8 @@ mod tests {
         assert_eq!(tool_summary(&json!({"arguments": {}}), "mystery"), "");
     }
 
-    /// **진짜 `ExecOutput`을 직렬화해 넣는다.** 모양이 어긋나면 여기서 잡힌다 —
-    /// `diff_of`가 `EditResult`로 하는 것과 같은 이음매 테스트다.
+    /// **A real `ExecOutput` is serialized in.** If the shape drifts, it's caught here — the same
+    /// seam test `diff_of` does with `EditResult`.
     #[test]
     fn a_real_exec_result_becomes_readable_lines() {
         let out = zyris_caps::ExecOutput {
@@ -333,7 +333,7 @@ mod tests {
         assert!(!got.contains("exit_code"), "JSON 키가 그대로 보인다: {got:?}");
     }
 
-    /// 실패한 명령은 종료 코드가 보여야 한다. 0과 3을 구별 못 하면 로그를 다시 읽어야 한다.
+    /// A failed command must show its exit code. If 0 and 3 can't be told apart, the log has to be read again.
     #[test]
     fn a_failed_command_shows_its_exit_code() {
         let got = exec_detail(
@@ -345,21 +345,21 @@ mod tests {
         assert!(got.contains("E0308"), "{got:?}");
     }
 
-    /// 시간이 다 된 것과 아무것도 안 나온 것은 다른 일이다.
+    /// Timing out and producing nothing are different things.
     #[test]
     fn a_timed_out_command_says_so() {
         let got = exec_detail(&wire("exec"), Some(&exec_json(-1, "", "", true))).unwrap();
         assert!(got.contains("시간이 다 됐습니다"), "{got:?}");
     }
 
-    /// 아무 말도 안 하면 도구가 고장 난 줄 안다.
+    /// If nothing is said, the tool looks broken.
     #[test]
     fn a_silent_command_still_says_something() {
         let got = exec_detail(&wire("exec"), Some(&exec_json(0, "", "", false))).unwrap();
         assert!(!got.trim().is_empty(), "빈 결과가 빈 화면이 됐다");
     }
 
-    /// 모양이 다르면 `None`으로 떨어져 지금처럼 JSON이 나온다. **죽지 않는 것이 요점이다.**
+    /// A different shape falls to `None` and JSON comes out as now. **Not dying is the point.**
     #[test]
     fn something_that_is_not_an_exec_result_falls_back() {
         assert!(exec_detail(&wire("exec"), Some(&json!({"nope": 1}))).is_none());
@@ -368,7 +368,7 @@ mod tests {
         assert!(exec_detail(&wire("exec"), None).is_none());
     }
 
-    /// PTY 화면도 글이지 JSON이 아니다.
+    /// A PTY screen is prose too, not JSON.
     #[test]
     fn a_pty_screen_is_shown_as_text_too() {
         let got = exec_detail(&wire("screen"), Some(&json!({"data": "$ ls\na.rs  b.rs\n"})))
@@ -377,8 +377,8 @@ mod tests {
         assert!(!got.contains("\\n"), "{got:?}");
     }
 
-    /// **화면에 실제로 닿는 길이어야 한다.** `exec_detail`만 맞고 `tool_detail`이
-    /// 안 부르면 사용자가 보는 것은 그대로 JSON이다.
+    /// **It must be the path that actually reaches the screen.** If only `exec_detail` is right and
+    /// `tool_detail` doesn't call it, the user still sees raw JSON.
     #[test]
     fn the_readable_output_actually_reaches_the_tool_row() {
         let e = ev(
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(entry.kind, EntryKind::User("안녕".into()));
     }
 
-    /// 모델만 보는 이벤트다. 그리면 사용자가 쓴 적 없는 메시지가 대화창에 나타난다.
+    /// A model-only event. Drawing it would show messages the user never wrote in the conversation window.
     #[test]
     fn recall_and_chat_system_are_never_rendered() {
         let recall = ev(2, "recall", json!({"kind": "recall", "content": "지난주에 …"}));
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(entry_from(&system), None);
     }
 
-    /// 실패한 도구는 눈에 띄어야 한다 — 조용히 성공처럼 보이면 안 된다.
+    /// A failed tool must stand out — it must not quietly look like a success.
     #[test]
     fn a_failed_tool_call_is_marked_failed() {
         let e = ev(
@@ -436,14 +436,14 @@ mod tests {
         }
     }
 
-    /// work_summary는 런 시작에 빈 내용으로 만들어지고 나중에 제목이 채워진다.
+    /// work_summary is created with empty content at run start, and the title is filled in later.
     #[test]
     fn an_empty_work_summary_still_opens_a_card() {
         let e = ev(5, "work_summary", json!({"kind": "work_summary", "content": ""}));
         assert_eq!(entry_from(&e).unwrap().kind, EntryKind::WorkStart(String::new()));
     }
 
-    /// 질문은 고를 수 있는 화면이 돼야 한다. 한 줄 요약으로 흘려보내면 답할 길이 없다.
+    /// A question must become a pickable screen. Let through as a one-line summary, there'd be no way to answer.
     #[test]
     fn a_question_tool_call_becomes_a_question_entry() {
         let e = ev(
@@ -467,7 +467,7 @@ mod tests {
         }
     }
 
-    /// 결과가 달린 질문은 이미 답이 간 것이라 다시 띄우면 안 된다.
+    /// A question with a result attached is already answered, so it must not be shown again.
     #[test]
     fn an_answered_question_is_marked_answered() {
         let e = ev(
@@ -485,7 +485,7 @@ mod tests {
         }
     }
 
-    /// 모양이 어긋난 질문은 평범한 도구 호출로 그린다 — 죽지 않는다.
+    /// A malformed question is drawn as an ordinary tool call — it doesn't die.
     #[test]
     fn a_malformed_question_falls_back_to_a_plain_tool_row() {
         let e = ev(
@@ -498,7 +498,7 @@ mod tests {
         assert!(matches!(entry_from(&e).unwrap().kind, EntryKind::Tool { .. }));
     }
 
-    /// 도구 결과에 실린 diff를 화면 쪽이 다시 읽어야 한다. 못 읽으면 diff가 안 보인다.
+    /// The screen side must re-read the diff carried in a tool result. If it can't, the diff won't show.
     #[test]
     fn a_code_edit_result_carries_its_diff() {
         let e = ev(
@@ -520,11 +520,11 @@ mod tests {
         }
     }
 
-    /// **도구가 실제로 내보내는 모양 그대로** 왕복해야 한다.
+    /// **It must round-trip in the exact shape the tool actually emits.**
     ///
-    /// `EditResult`의 필드 이름을 하나 바꾸거나 `to_unified`/`parse`가 어긋나면 diff가
-    /// 조용히 사라지고 JSON 덤프로 떨어진다 — 화면 테스트는 손으로 만든 `Diff`를 쓰므로
-    /// 그 어긋남을 못 본다. 이 테스트가 그 이음매를 잡는다.
+    /// Change one field name of `EditResult`, or let `to_unified`/`parse` drift, and the diff
+    /// silently vanishes into a JSON dump — the screen tests use a hand-made `Diff`, so they can't
+    /// see that drift. This test catches that seam.
     #[test]
     fn a_real_edit_result_round_trips_into_a_drawable_diff() {
         let d = crate::tools::diff::diff("a\n옛 줄\nc\n", "a\n새 줄\nc\n", "src/app.rs");
@@ -550,7 +550,7 @@ mod tests {
         }
     }
 
-    /// 모양이 아니면 죽지 않고 지금처럼 JSON 덤프로 떨어진다.
+    /// Not the shape? It doesn't die — it falls back to a JSON dump as now.
     #[test]
     fn a_result_without_a_diff_is_still_a_plain_tool_row() {
         let e = ev(
@@ -564,7 +564,7 @@ mod tests {
         assert!(matches!(entry_from(&e).unwrap().kind, EntryKind::Tool { diff: None, .. }));
     }
 
-    /// 모르는 종류가 앱을 죽이면 안 된다. attacca가 새 이벤트를 추가해도 살아 있어야 한다.
+    /// An unknown kind must not kill the app. It must survive even when attacca adds new events.
     #[test]
     fn an_unknown_kind_is_ignored_rather_than_panicking() {
         let e = ev(6, "some_future_kind", json!({"kind": "some_future_kind"}));

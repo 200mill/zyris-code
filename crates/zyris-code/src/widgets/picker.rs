@@ -1,4 +1,4 @@
-//! 프로젝트/세션 목록. 화면 가운데에 겹쳐 띄운다.
+//! The project/session list. Overlaid in the center of the screen.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -11,8 +11,8 @@ use crate::picker::{Picker, Slot};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker, lang: crate::lang::Lang) {
-    // 화면 가운데 상자. 목록 길이에 맞추되 화면을 넘지 않는다.
-    // 가름선이 한 줄을 더 쓰므로 그것까지 세어야 다 들어간다.
+    // The centered box. Sized to the list, but never taller than the screen.
+    // The separator line takes one more row, so it must be counted for everything to fit.
     let rule = picker.is_create(0) && picker.rows.len() > 1;
     let want_h = (picker.rows.len() as u16).saturating_add(4 + rule as u16).max(6);
     let h = want_h.min(area.height.saturating_sub(2)).max(3);
@@ -24,11 +24,11 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker, lang: crate::lang::L
         height: h,
     };
 
-    // 뒤를 지우지 않으면 대화가 비쳐 보인다.
+    // Without clearing behind, the conversation shows through.
     frame.render_widget(Clear, box_area);
-    // **경계에 걸친 전각 글자를 마저 지운다.** 상자 왼쪽 바로 바깥에 전각 글자의 앞
-    // 절반이 남아 있으면 그 글자가 상자 안쪽으로 번져 테두리가 깨진다. `Clear`는 상자
-    // 안만 지우므로 이 반쪽은 우리가 치워야 한다.
+    // **Also scrub wide characters straddling the border.** If the leading half of a wide
+    // character remains just outside the box's left edge, it bleeds into the box and breaks the
+    // border. `Clear` only clears inside the box, so we must remove this half ourselves.
     scrub_left_edge(frame, box_area);
 
     let block = Block::default()
@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker, lang: crate::lang::L
             .push(Line::from(Span::styled("불러오는 중…", Style::default().fg(theme::TEXT_MUTED))));
     }
 
-    // 어느 줄을 어디에 놓을지는 **순수한 쪽이 정한다**(`picker::slots`). 여기는 그린다.
+    // **The pure side decides** where each row goes (`picker::slots`). Here we just draw.
     let width = inner.width as usize;
     let body_h = inner.height.saturating_sub(1) as usize;
     for slot in crate::picker::slots(&picker.rows, picker.cursor, body_h) {
@@ -65,11 +65,11 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker, lang: crate::lang::L
         });
     }
 
-    // 단계에 따라 ← 의 뜻이 다르다. 그대로 말해 준다.
+    // The meaning of ← changes with the level. Say it plainly.
     let back = match picker.level {
         crate::picker::Level::Projects => "← 닫기",
         crate::picker::Level::Sessions { .. } => "← 뒤로",
-        // 이 둘은 프로젝트 계층 바깥이라 뒤로 갈 곳이 없다.
+        // These two are outside the project hierarchy, so there's nowhere to go back to.
         crate::picker::Level::Agents
         | crate::picker::Level::Commands
         | crate::picker::Level::Languages => "Esc 닫기",
@@ -82,10 +82,10 @@ pub fn draw(frame: &mut Frame, area: Rect, picker: &Picker, lang: crate::lang::L
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// 목록의 한 줄.
+/// One row of the list.
 ///
-/// **"새로 만들기"는 다른 색이다.** 세션 목록에 섞여 있으면 세션 하나로 읽히는데,
-/// 그것은 고르는 것이 아니라 만드는 것이다.
+/// **"Create new" is a different color.** Mixed into the session list it would read as one
+/// session, but it's something you create, not pick.
 fn row_line(row: &crate::picker::Row, on: bool, create: bool, width: usize) -> Line<'static> {
     let fg = match (row.enabled, create, on) {
         (false, _, _) => theme::BORDER_LIGHT,
@@ -107,23 +107,23 @@ fn row_line(row: &crate::picker::Row, on: bool, create: bool, width: usize) -> L
     Line::from(spans)
 }
 
-/// 설명이 아무리 짧아도 이만큼은 보여줄 값어치가 있다. 이보다 좁으면 통째로 뺀다.
+/// However short the note is, it's worth showing at least this much. Narrower than this, drop it entirely.
 const NOTE_MIN: usize = 8;
 
-/// 한 줄을 (이름, 설명)으로 나눈다. **이름이 먼저다.**
+/// Splits one line into (name, note). **The name comes first.**
 ///
-/// 설명에 자리를 먼저 주면 이름이 깎인다 — 실제로 `/agent`이 `/a…`로 잘려 목록에서
-/// 무슨 명령인지 알 수 없었다. **이름은 신원이고 설명은 곁들임이다**: 이름이 잘리면
-/// 그 줄을 고를 이유 자체가 사라지지만, 설명은 없어도 이름으로 짐작할 수 있다.
+/// Give the note the room first and the name gets cut — `/agent` actually got truncated to
+/// `/a…`, and you couldn't tell what command it was in the list. **The name is identity and the
+/// note is garnish**: when the name is cut, the reason to pick that line disappears, but without the note you can still guess from the name.
 ///
-/// 그래도 이름은 반드시 자른다 — 세션 제목은 길이가 제멋대로라 그대로 두면 상자를
-/// 뚫고 나가 화면이 무너진다.
+/// Still, the name must always be truncated — session titles have arbitrary lengths, and left
+/// alone they'd punch through the box and collapse the screen.
 fn split(width: usize, label: &str, note: Option<&str>) -> (String, Option<String>) {
     let label = truncate(label, width.saturating_sub(2));
     let Some(note) = note else {
         return (label, None);
     };
-    // 이름과 설명 사이에 최소 두 칸은 띄운다. 붙어 있으면 한 낱말로 읽힌다.
+    // Leave at least two columns between the name and the note. Stuck together, they read as one word.
     let room = width.saturating_sub(2 + display_width(&label) + 2);
     if room < NOTE_MIN {
         return (label, None);
@@ -131,7 +131,7 @@ fn split(width: usize, label: &str, note: Option<&str>) -> (String, Option<Strin
     (label, Some(truncate(note, room)))
 }
 
-/// 칸 수에 맞춰 자른다. 자르면 `…`를 붙여 잘렸다는 것을 보인다.
+/// Truncates to fit the column count. When cut, appends `…` to show it was cut.
 fn truncate(s: &str, limit: usize) -> String {
     if display_width(s) <= limit {
         return s.to_string();
@@ -147,9 +147,9 @@ fn truncate(s: &str, limit: usize) -> String {
     out
 }
 
-/// 상자 왼쪽 바깥에 걸친 전각 글자의 앞 절반을 공백으로 바꾼다.
+/// Replaces the leading half of a wide character straddling the box's left edge with a space.
 ///
-/// 등록 코드 창(`enroll.rs`)도 같은 일을 한다 — 겹쳐 띄우는 창은 다 이 길을 쓴다.
+/// The enrollment-code window (`enroll.rs`) does the same — every overlaid window uses this path.
 pub(crate) fn scrub_left_edge(frame: &mut Frame, box_area: Rect) {
     if box_area.x == 0 {
         return;
@@ -170,8 +170,8 @@ pub(crate) fn scrub_left_edge(frame: &mut Frame, box_area: Rect) {
 mod tests {
     use super::*;
 
-    /// **이름은 절대 안 깎인다.** 실제로 `/agent`이 `/a…`로 잘려 목록에서 무슨
-    /// 명령인지 알 수 없었다 — 설명이 길다는 이유였다.
+    /// **The name never gets shaved.** `/agent` actually got truncated to `/a…` and you couldn't
+    /// tell what command it was — the reason was a long note.
     #[test]
     fn a_long_note_never_eats_into_the_name() {
         let (label, _) =
@@ -179,16 +179,16 @@ mod tests {
         assert_eq!(label, "/agent");
     }
 
-    /// 설명이 들어갈 자리가 없으면 설명을 뺀다. 반 토막 설명은 읽을 수 없다.
+    /// If there's no room for the note, drop the note. A half-cut note is unreadable.
     #[test]
     fn a_note_is_dropped_rather_than_squeezed_to_nothing() {
-        // 이름이 딱 들어가고 설명이 설 자리는 안 남는 폭.
+        // A width where the name fits exactly and no room is left for the note.
         let (label, note) = split(14, "가나다라마", Some("설명"));
         assert_eq!(label, "가나다라마", "이름이 깎였다");
         assert!(note.is_none(), "{note:?}");
     }
 
-    /// 그래도 이름은 자른다 — 세션 제목이 상자를 뚫고 나가면 화면이 무너진다.
+    /// Still, the name is cut — a session title punching through the box would collapse the screen.
     #[test]
     fn a_very_long_name_is_still_cut_to_fit() {
         let (label, _) = split(20, &"가".repeat(40), None);
@@ -196,7 +196,7 @@ mod tests {
         assert!(label.ends_with('…'), "잘렸다는 표시가 없다: {label}");
     }
 
-    /// 둘 다 들어가면 둘 다 보인다.
+    /// When both fit, both show.
     #[test]
     fn both_fit_when_there_is_room() {
         let (label, note) = split(40, "/cwd", Some("도구가 도는 자리"));

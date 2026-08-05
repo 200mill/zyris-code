@@ -1,65 +1,65 @@
-//! 슬래시 명령. **여기는 순수하다** — 글자를 읽어 무엇을 할지만 정한다.
+//! Slash commands. **This module is pure** — it reads text and only decides what to do.
 //!
-//! 실행은 `app.rs`가 한다. 어떤 것은 상태만 만지고(`/mode`), 어떤 것은 서버나 디스크가
-//! 필요하다(`/agent`·`/undo`) — 그 갈래도 저쪽에서 진다.
+//! `app.rs` executes them. Some only touch state (`/mode`), some need the server or disk
+//! (`/agent`·`/undo`) — that branch is also borne over there.
 //!
-//! **명령은 서버로 가지 않는다.** 오타 하나가 크레딧을 쓰면 안 되고, `/mode`처럼
-//! 이 노드만 아는 것을 서버에 물어봐야 알 이유도 없다.
+//! **Commands don't go to the server.** A typo must not burn credits, and there's no reason to ask the server
+//! about something only this node knows, like `/mode`.
 
 use crate::mode::Mode;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Help,
-    /// 인자가 없으면 지금 모드를 말하고, 있으면 바꾼다.
+    /// Without an argument, reports the current mode; with one, changes it.
     Mode(Option<Mode>),
-    /// 화면 말. 인자가 없으면 지금 것을 말하고, 있으면 바꾼다.
-    /// **모르는 말은 `Unknown`으로 떨어뜨리지 않는다** — 무엇이 잘못됐는지 그 자리에서
-    /// 말해 줘야 다시 칠 수 있다(`Lang(None)`은 "지금 것"이라는 뜻이라 자리가 없다).
+    /// The screen language. Without an argument, reports the current one; with one, changes it.
+    /// **An unknown language isn't dropped into `Unknown`** — it must say what's wrong on the spot
+    /// so the user can retype (`Lang(None)` means "the current one", so there's no room).
     Lang(Option<crate::lang::Lang>),
-    /// `/lang 일본어`처럼 못 알아들은 말.
+    /// A language we couldn't understand, like `/lang Japanese`.
     LangUnknown(String),
     Mcp,
     Skills,
-    /// 세션에 실린 `CLAUDE.md`·`AGENTS.md`가 무엇인지.
+    /// Which `CLAUDE.md`·`AGENTS.md` are loaded into the session.
     Rules,
     Cwd,
-    /// 인자가 없으면 목록을 열고, 있으면 그 이름으로 바로 간다.
+    /// Without an argument, opens the list; with one, goes straight to that name.
     Agent(Option<String>),
     Plugin(Plugin),
     Undo,
     Clear,
-    /// 작업 디렉터리 밖으로 열어 둔 곳을 보여준다.
+    /// Shows what's been opened outside the working directory.
     Grants,
-    /// 그것을 전부 닫는다.
+    /// Closes all of them.
     GrantsClose,
-    /// 이 디렉터리에서 무엇을 바꿨는가.
+    /// What was changed in this directory.
     Changes,
-    /// 끈다. **도는 턴이 있으면 서버에서도 멈춘다**(`app.rs`의 `turn_to_stop`).
+    /// Quits. **If a turn is running, it stops on the server too** (`turn_to_stop` in `app.rs`).
     Quit,
-    /// 모르는 것. **서버로 보내지 않고 무엇이 있는지 알려 준다.**
+    /// Something unknown. **Not sent to the server; tells what's available instead.**
     Unknown(String),
 }
 
-/// `/plugin`이 무엇을 하는가.
+/// What `/plugin` does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plugin {
-    /// 받아 둔 것을 보여준다.
+    /// Shows what was fetched.
     List,
-    /// `owner/repo`나 clone할 수 있는 주소에서 받는다.
+    /// Fetches from an `owner/repo` or a clonable address.
     Add(String),
     Remove(String),
-    /// 이름이 없으면 받아 둔 것 전부.
+    /// Without a name, everything fetched.
     Update(Option<String>),
-    /// 무엇을 하라는 건지 모르겠다. **조용히 삼키지 않는다.**
+    /// It's unclear what's being asked. **Not swallowed silently.**
     Unknown(String),
 }
 
-/// 이 글이 명령인가.
+/// Whether this text is a command.
 ///
-/// **경로가 명령으로 먹히면 안 된다.** `/home/ruma/...`를 그대로 치는 일이 실제로 있고,
-/// 그걸 명령으로 삼키면 메시지가 서버에 안 간다. 그래서 셋을 요구한다 —
-/// `/`로 시작하고, 다음 글자가 ASCII 알파벳이고, 첫 낱말에 `/`가 더 없을 것.
+/// **A path must not be eaten as a command.** People really do type `/home/ruma/...` verbatim, and
+/// swallowing it as a command would keep the message from reaching the server. So three things are required —
+/// it starts with `/`, the next character is an ASCII letter, and the first word has no further `/`.
 pub fn is_command(text: &str) -> bool {
     let t = text.trim_start();
     let Some(rest) = t.strip_prefix('/') else { return false };
@@ -80,7 +80,7 @@ pub fn parse(text: &str) -> Option<Command> {
         Some((n, a)) => (n, a.trim()),
         None => (rest, ""),
     };
-    // **이름에 공백이 있는 에이전트가 있다**("Main Agent"). 첫 낱말에서 자르면 못 고른다.
+    // **Some agents have spaces in their names** ("Main Agent"). Cutting at the first word would make them unpickable.
     let some = |s: &str| (!s.is_empty()).then(|| s.to_string());
     Some(match name {
         "help" | "h" => Command::Help,
@@ -88,7 +88,7 @@ pub fn parse(text: &str) -> Option<Command> {
             "" => None,
             other => match mode_named(other) {
                 Some(m) => Some(m),
-                // 모르는 모드 이름은 조용히 무시하지 않는다 — 안 바뀐 줄 모른다.
+                // An unknown mode name isn't silently ignored — otherwise the user wouldn't know it didn't change.
                 None => return Some(Command::Unknown(format!("mode {other}"))),
             },
         }),
@@ -100,7 +100,7 @@ pub fn parse(text: &str) -> Option<Command> {
         "plugin" | "plugins" => Command::Plugin(plugin_action(arg)),
         "undo" => Command::Undo,
         "clear" => Command::Clear,
-        // 여는 것은 승인 화면의 `a` 하나뿐이라, 여기서는 보고 닫기만 한다.
+        // Only the approval screen's `a` opens them, so here we only view and close.
         "grants" | "grant" => match arg {
             "" | "list" => Command::Grants,
             "close" | "clear" | "닫기" => Command::GrantsClose,
@@ -119,7 +119,7 @@ pub fn parse(text: &str) -> Option<Command> {
     })
 }
 
-/// `/plugin` 뒤에 오는 것. **인자에 공백이 있을 수 있다**(주소는 없지만 이름은 있을 수 있다).
+/// What comes after `/plugin`. **Arguments can contain spaces** (addresses don't, but names can).
 fn plugin_action(arg: &str) -> Plugin {
     let (verb, rest) = match arg.split_once(char::is_whitespace) {
         Some((v, r)) => (v, r.trim()),
@@ -135,18 +135,18 @@ fn plugin_action(arg: &str) -> Plugin {
         ("remove" | "rm" | "uninstall", what) => Plugin::Remove(what.to_string()),
         ("update" | "upgrade", "") => Plugin::Update(None),
         ("update" | "upgrade", what) => Plugin::Update(Some(what.to_string())),
-        // **`/plugin owner/repo`도 받는다.** `add`를 빼먹는 것이 제일 흔한 실수다.
+        // **`/plugin owner/repo` is accepted too.** Forgetting `add` is the most common mistake.
         (what, "") if what.contains('/') || what.contains("://") => Plugin::Add(what.to_string()),
         (what, _) => Plugin::Unknown(format!("plugin {what}")),
     }
 }
 
-/// 화면에 보이는 한글 이름과 영문 이름을 모두 받는다 — 화면은 한글이지만 손에 익은 쪽이
-/// 사람마다 다르다.
+/// Accepts both the Korean names shown on screen and the English ones — the screen is Korean, but which one is familiar
+/// varies from person to person.
 ///
-/// `work`·`job`은 **화면에서는 번역하지 않는다**(`lang::mode_work`) — attacca가 제 화면에서
-/// 부르는 이름 그대로여야 저쪽 목록에서 찾을 수 있다. 그래도 여기서는 `작업`·`잡`도
-/// 받아 준다: **받는 쪽을 넓히는 것은 공짜지만, 화면에 두 이름이 돌아다니는 것은 그렇지 않다.**
+/// `work`·`job` are **not translated on screen** (`lang::mode_work`) — they must stay exactly as attacca calls them on its own screen
+/// so they can be found in that list. Still, the Korean words for them are also accepted here: **widening the input side is free,
+/// but having two names floating around on screen is not.**
 fn mode_named(s: &str) -> Option<Mode> {
     match s {
         "기본" | "normal" | "default" => Some(Mode::Normal),
@@ -157,7 +157,7 @@ fn mode_named(s: &str) -> Option<Mode> {
     }
 }
 
-/// `/`를 쳤을 때 뜨는 목록. **`/help`가 찍는 것도 이것이다** — 둘이 갈라지면 하나가 낡는다.
+/// The list that appears when `/` is typed. **`/help` prints the same thing** — if the two diverge, one goes stale.
 pub fn catalogue(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     use crate::lang::Lang;
     match lang {
@@ -196,10 +196,10 @@ pub fn catalogue(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-/// 알아 둘 키. **화면 안에 없으면 없는 것이다** — README는 필요한 순간에 안 열린다.
+/// Keys worth knowing. **If it isn't on the screen, it doesn't exist** — a README isn't opened when you need it.
 ///
-/// 정본은 `app.rs`의 `on_key`이고 여기는 그중 사람이 외워야 할 것만 옮겨 적은 것이다.
-/// 키를 고쳤으면 여기도 고칠 것.
+/// The canonical source is `on_key` in `app.rs`; this is only a transcription of what a human should memorize.
+/// If a key changes, change it here too.
 pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     use crate::lang::Lang;
     match lang {
@@ -230,7 +230,7 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-/// `/help`가 찍는 글.
+/// The text `/help` prints.
 pub fn help_text(lang: crate::lang::Lang) -> String {
     use crate::lang::Lang;
     let (head, keys_head) = match lang {
@@ -256,10 +256,10 @@ mod tests {
     fn a_plain_message_is_not_a_command() {
         assert!(parse("안녕하세요").is_none());
         assert!(parse("").is_none());
-        // **경로가 명령으로 먹히면 안 된다.** `/home/...`을 치는 일이 실제로 있다.
+        // **A path must not be eaten as a command.** People really do type `/home/...`.
         assert!(parse("/home/ruma/zyris-code를 봐 줘").is_none());
         assert!(parse("/usr/bin/env").is_none());
-        // 숫자로 시작하는 것도 명령이 아니다 — `/2026-08-02` 같은 것.
+        // Something starting with a digit isn't a command either — like `/2026-08-02`.
         assert!(parse("/2026-08-02").is_none());
     }
 
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(parse("/mode 계획"), Some(Command::Mode(Some(Mode::Plan))));
     }
 
-    /// 영문도 받는다 — 화면은 한글이지만 손에 익은 쪽이 사람마다 다르다.
+    /// English names are accepted too — the screen is Korean, but what's familiar varies from person to person.
     #[test]
     fn mode_also_takes_the_english_names() {
         assert_eq!(parse("/mode plan"), Some(Command::Mode(Some(Mode::Plan))));
@@ -283,7 +283,7 @@ mod tests {
         assert_eq!(parse("/mode normal"), Some(Command::Mode(Some(Mode::Normal))));
     }
 
-    /// **모르는 모드 이름을 조용히 무시하면 안 바뀐 줄 모른다.**
+    /// **Silently ignoring an unknown mode name would leave the user thinking it didn't change.**
     #[test]
     fn an_unknown_mode_name_is_reported_not_ignored() {
         assert_eq!(parse("/mode 빠름"), Some(Command::Unknown("mode 빠름".into())));
@@ -307,7 +307,7 @@ mod tests {
         );
     }
 
-    /// **`add`를 빼먹는 것이 제일 흔한 실수다.** 주소처럼 생겼으면 받는 것으로 친다.
+    /// **Forgetting `add` is the most common mistake.** If it looks like an address, treat it as a fetch.
     #[test]
     fn a_bare_source_is_taken_as_add() {
         assert_eq!(
@@ -316,7 +316,7 @@ mod tests {
         );
     }
 
-    /// 무엇을 하라는 건지 모를 때 **조용히 삼키면** 아무 일도 안 일어난 줄 안다.
+    /// When it's unclear what's being asked, **swallowing it silently** makes it look like nothing happened.
     #[test]
     fn an_incomplete_plugin_command_says_what_is_missing() {
         let Some(Command::Plugin(Plugin::Unknown(why))) = parse("/plugin add") else {
@@ -334,27 +334,27 @@ mod tests {
         );
     }
 
-    /// 이름에 공백이 있는 에이전트가 있다("Main Agent"). 첫 낱말에서 자르면 못 고른다.
+    /// Some agents have spaces in their names ("Main Agent"). Cutting at the first word would make them unpickable.
     #[test]
     fn agent_keeps_the_whole_name() {
         assert_eq!(parse("/agent Main Agent"), Some(Command::Agent(Some("Main Agent".into()))));
         assert_eq!(parse("/agent"), Some(Command::Agent(None)));
     }
 
-    /// 앞뒤 공백은 치다 남은 것이지 뜻이 아니다.
+    /// Surrounding whitespace is leftover typing, not meaning.
     #[test]
     fn surrounding_whitespace_does_not_change_the_meaning() {
         assert_eq!(parse("  /cwd  "), Some(Command::Cwd));
         assert_eq!(parse("/agent   Main Agent  "), Some(Command::Agent(Some("Main Agent".into()))));
     }
 
-    /// **모르는 명령을 서버로 보내면 안 된다.** 오타 한 번이 크레딧을 쓴다.
+    /// **An unknown command must not be sent to the server.** One typo burns credits.
     #[test]
     fn an_unknown_command_stays_local() {
         assert_eq!(parse("/nope"), Some(Command::Unknown("nope".into())));
     }
 
-    /// 목록과 파서가 갈라지면 목록에서 고른 것이 안 먹는다.
+    /// If the list and the parser diverge, what you pick from the list won't work.
     #[test]
     fn the_catalogue_covers_every_command_the_parser_takes() {
         for (name, _) in catalogue(crate::lang::Lang::Ko) {
@@ -364,10 +364,10 @@ mod tests {
         }
     }
 
-    /// **프로젝트는 이제 목록에서 양식으로 만든다** — 명령이 따로 필요 없다.
+    /// **Projects are now made from a form in the list** — no separate command needed.
     #[test]
     fn project_is_not_a_command_anymore() {
-        // 모르는 명령은 조용히 삼키지 않는다 — 무엇이 잘못됐는지 말해 줘야 한다.
+        // Unknown commands aren't swallowed silently — it must say what's wrong.
         assert_eq!(parse("/project"), Some(Command::Unknown("project".into())));
         assert_eq!(parse("/project 새 프로젝트"), Some(Command::Unknown("project".into())));
         for (name, _) in
@@ -377,7 +377,7 @@ mod tests {
         }
     }
 
-    /// 도움말은 목록에서 나온다 — 손으로 적으면 하나가 낡는다.
+    /// The help text comes from the list — written by hand, one would go stale.
     #[test]
     fn the_help_text_lists_everything_in_the_catalogue() {
         let help = help_text(crate::lang::Lang::Ko);
@@ -386,7 +386,7 @@ mod tests {
         }
     }
 
-    /// **키는 화면 안에 있어야 한다.** README는 필요한 순간에 안 열린다.
+    /// **Keys must be on the screen.** A README isn't opened when you need it.
     #[test]
     fn the_help_text_also_lists_the_keys() {
         let help = help_text(crate::lang::Lang::Ko);
@@ -395,7 +395,7 @@ mod tests {
         }
     }
 
-    /// `/grants`는 보는 것과 닫는 것이 다른 명령이다 — 목록을 보려다 닫으면 안 된다.
+    /// For `/grants`, viewing and closing are different commands — you shouldn't close while trying to view the list.
     #[test]
     fn grants_lists_by_default_and_closes_only_when_asked() {
         assert_eq!(parse("/grants"), Some(Command::Grants));
@@ -404,13 +404,13 @@ mod tests {
         assert_eq!(parse("/grants clear"), Some(Command::GrantsClose));
     }
 
-    /// 무엇을 하라는 건지 모를 때 **아무거나 고르면 안 된다.** 닫는 쪽으로 떨어지면 최악이다.
+    /// When it's unclear what's being asked, **don't pick just anything.** Falling into the closing side would be the worst.
     #[test]
     fn an_unknown_grants_argument_does_nothing() {
         assert_eq!(parse("/grants 다열어"), Some(Command::Unknown("grants 다열어".into())));
     }
 
-    /// 손에 익은 이름이 사람마다 다르다. 끝내는 것을 못 찾으면 곤란하다.
+    /// The familiar name varies from person to person. Not finding how to quit would be a problem.
     #[test]
     fn quitting_answers_to_the_usual_names() {
         for text in ["/quit", "/exit", "/q"] {

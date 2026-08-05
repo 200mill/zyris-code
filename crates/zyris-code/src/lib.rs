@@ -1,10 +1,10 @@
-//! zyris-code — Attacca 에이전트와 대화하는 터미널 클라이언트.
+//! zyris-code — a terminal client for talking with the Attacca agent.
 //!
-//! 순수 코어와 I/O를 가른다. 프레임 변환·타임라인·마크다운·레이아웃·스크롤·입력은
-//! 전부 순수 함수라 단위 테스트로 덮이고, 네트워크와 터미널은 `conn`과 `app::run()`
-//! 두 곳에만 있다.
+//! Separates the pure core from I/O. Frame conversion, timeline, markdown, layout, scroll, and
+//! input are all pure functions covered by unit tests; the network and the terminal live only in
+//! two places: `conn` and `app::run()`.
 //!
-//! 통합 테스트(`tests/`)는 바이너리를 볼 수 없으므로 모듈은 여기서 공개한다.
+//! Integration tests (`tests/`) can't see the binary, so the modules are made public here.
 
 pub mod app;
 pub mod clipboard;

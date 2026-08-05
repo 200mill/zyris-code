@@ -1,15 +1,15 @@
-//! 플러그인 — 도구(MCP 서버)와 스킬을 한 묶음으로 더한다.
+//! Plugins — add tools (MCP servers) and skills as one bundle.
 //!
-//! 새 실행 형식을 만들지 않는다. 플러그인이 하는 일은 **이미 있는 두 자리를 가리키는
-//! 것**뿐이다: `mcp`는 작업 10의 설정 모양 그대로이고, `skills/`는 `tools::skill`이 읽는
-//! 그 모양 그대로다. 그래서 플러그인을 지원하는 데 새 실행 경로가 없다.
+//! No new execution format is created. A plugin only **points at two places that already exist**:
+//! `mcp` is exactly the config shape from task 10, and `skills/` is exactly the shape `tools::skill`
+//! reads. So supporting plugins adds no new execution path.
 //!
 //! ```text
 //! plugins/
-//!   깃허브/
-//!     plugin.json     { "name": "깃허브", "mcp": { "gh": { "command": "npx", … } } }
+//!   github/
+//!     plugin.json     { "name": "github", "mcp": { "gh": { "command": "npx", … } } }
 //!     skills/
-//!       리뷰/SKILL.md
+//!       review/SKILL.md
 //! ```
 
 use std::collections::HashMap;
@@ -23,17 +23,17 @@ use crate::mcp::bridge::ServerSpec;
 pub struct Plugin {
     pub name: String,
     pub description: String,
-    /// 이 플러그인이 얹는 MCP 서버들.
+    /// The MCP servers this plugin adds.
     pub mcp: Vec<ServerSpec>,
-    /// 이 플러그인의 `skills/` 디렉터리. 없으면 `None`.
+    /// This plugin's `skills/` directory. `None` when absent.
     pub skills: Option<PathBuf>,
-    /// 어느 디렉터리에서 왔는가. **받아 온 것과 손으로 둔 것을 이걸로 가른다** —
-    /// 이름만으로는 알 수 없고, 지울 수 있는 것은 받아 온 쪽뿐이다.
+    /// Which directory it came from. **This is what tells fetched and hand-placed apart** — the
+    /// name alone can't, and only the fetched side can be removed.
     pub root: PathBuf,
 }
 
 impl Plugin {
-    /// `/plugin`으로 받아 온 것인가.
+    /// Whether it was fetched via `/plugin`.
     pub fn fetched(&self) -> bool {
         self.root.starts_with(install_dir())
     }
@@ -49,7 +49,7 @@ struct Manifest {
     mcp: HashMap<String, ServerSpecFile>,
 }
 
-/// 파일에 적히는 모양. `ServerSpec`의 `slug`는 키에서 오므로 여기 없다.
+/// The shape written in the file. `ServerSpec`'s `slug` comes from the key, so it's not here.
 #[derive(Debug, Deserialize)]
 struct ServerSpecFile {
     command: String,
@@ -59,19 +59,19 @@ struct ServerSpecFile {
     env: HashMap<String, String>,
 }
 
-/// 사람이 준 글에서 clone할 곳과 그것이 놓일 디렉터리 이름을 뽑는다.
+/// Pulls the place to clone and the directory name it lands in out of what the person typed.
 ///
-/// **`git`으로 가져온다.** 새 의존이 없고, 코딩 도구를 쓰는 자리에 git이 없을 리 없고,
-/// `/plugin update`가 `git pull` 한 줄로 따라온다. 받침이 필요한 것은 아카이브를 풀고
-/// 갱신을 직접 짜는 쪽이다.
+/// **It's fetched with `git`.** No new dependency — a place using coding tools can't lack git, and
+/// `/plugin update` comes down to one `git pull` line. It's the archive path that needs scaffolding:
+/// unpacking and writing the update logic yourself.
 ///
-/// 받는 모양:
+/// Accepted shapes:
 ///
-/// - `owner/repo` — 깃허브로 친다. 제일 많이 칠 모양이다
-/// - `https://github.com/owner/repo`(`.git`·끝의 `/` 있어도 됨)
+/// - `owner/repo` — treated as GitHub. The shape people type most
+/// - `https://github.com/owner/repo` (`.git` or trailing `/` allowed)
 /// - `git@github.com:owner/repo.git`
-/// - 그 밖의 `scheme://…` — 깃허브가 아니어도 clone할 수 있으면 받는다
-/// - `/…`·`~/…`·`./…` — 로컬 리포. **플러그인을 만들면서 시험할 때 이 길이 필요하다**
+/// - any other `scheme://…` — accepted if it can be cloned even when it isn't GitHub
+/// - `/…`·`~/…`·`./…` — a local repo. **This path is needed when testing while building a plugin**
 pub fn source(text: &str) -> Option<(String, String)> {
     let text = text.trim().trim_end_matches('/');
     if text.is_empty() || text.contains(char::is_whitespace) {
@@ -84,22 +84,22 @@ pub fn source(text: &str) -> Option<(String, String)> {
     } else if text.starts_with('/') || text.starts_with("./") || text.starts_with("../") {
         text.to_string()
     } else {
-        // `owner/repo` 지름길. 조각이 정확히 둘이어야 한다 — 경로를 준 것과 갈라야 한다.
+        // The `owner/repo` shortcut. There must be exactly two pieces — to tell it apart from a given path.
         let parts: Vec<&str> = text.split('/').collect();
         if parts.len() != 2 || parts.iter().any(|p| p.is_empty()) {
             return None;
         }
         format!("https://github.com/{text}.git")
     };
-    // 이름은 마지막 조각이다. `git@host:owner/repo`도 `/`로 갈리므로 같이 걸린다.
+    // The name is the last piece. `git@host:owner/repo` splits on `/` too, so it's caught the same way.
     let last = url.rsplit(['/', ':']).next()?.trim_end_matches(".git");
     let name = sanitize(last);
     (!name.is_empty()).then_some((url, name))
 }
 
-/// 디렉터리 이름 하나로 쓸 수 있게 씻는다.
+/// Washes a name until it can serve as one directory name.
 ///
-/// **경로 조각 하나여야 한다.** `..`나 `/`가 남으면 플러그인 디렉터리 밖에 쓰게 된다.
+/// **It must be a single path piece.** If `..` or `/` remains, it would write outside the plugin directory.
 fn sanitize(name: &str) -> String {
     let kept: String = name
         .chars()
@@ -112,7 +112,7 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// 플러그인을 찾을 자리 둘. 뒤가 이긴다 — 프로젝트가 홈보다 구체적이다.
+/// The two places to look for plugins. The latter wins — the project is more specific than home.
 pub fn plugin_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -126,8 +126,8 @@ pub fn discover(cwd: &Path) -> Vec<Plugin> {
     discover_in(&plugin_dirs(cwd))
 }
 
-/// 받아 온 플러그인이 사는 곳. **홈 쪽 하나다** — 프로젝트에 남의 코드를 받아 두면
-/// 그 리포의 커밋에 섞인다.
+/// Where fetched plugins live. **Only the home side** — fetching someone else's code into a project
+/// would mix it into that repo's commits.
 pub fn install_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(home) => PathBuf::from(home).join(".config/zyris-code/plugins"),
@@ -135,8 +135,8 @@ pub fn install_dir() -> PathBuf {
     }
 }
 
-/// `git`을 한 번 돌린다. 실패하면 git이 한 말을 그대로 옮긴다 — 우리가 고쳐 쓰면
-/// "그런 리포가 없다"가 "설치에 실패했습니다"로 뭉개진다.
+/// Runs `git` once. On failure it passes git's words through verbatim — if we rewrote them,
+/// "no such repo" would get crushed into "installation failed".
 async fn git(args: &[&str], at: Option<&Path>) -> Result<String, String> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.args(args);
@@ -154,16 +154,16 @@ async fn git(args: &[&str], at: Option<&Path>) -> Result<String, String> {
     Err(why.lines().last().unwrap_or("git이 실패했습니다").trim().to_string())
 }
 
-/// 받아서 자리에 놓는다. 이미 있으면 받지 않는다 — 덮어쓰면 손댄 것이 조용히 사라진다.
+/// Fetches and puts it in place. If it's already there, it isn't fetched — overwriting would silently erase local edits.
 ///
-/// **`plugin.json`이 없으면 되돌린다.** 아무 리포나 받아 두면 다음 실행 때 조용히 무시되고,
-/// 사람은 설치가 된 줄 안다.
+/// **Without `plugin.json`, it's rolled back.** Fetching any random repo would silently ignore it
+/// next run while the person believes it's installed.
 pub async fn install(text: &str) -> Result<Plugin, String> {
     install_into(&install_dir(), text).await
 }
 
-/// 받을 자리를 받는 판. **테스트가 이것을 쓴다** — 진짜 홈을 건드리지 않고,
-/// 환경변수를 흔들지 않아도 된다.
+/// The variant that takes the destination. **Tests use this** — the real home isn't touched and no
+/// environment variables need to be shaken.
 pub async fn install_into(dir: &Path, text: &str) -> Result<Plugin, String> {
     let Some((url, name)) = source(text) else {
         return Err(format!(
@@ -176,7 +176,7 @@ pub async fn install_into(dir: &Path, text: &str) -> Result<Plugin, String> {
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("플러그인 자리를 못 만들었습니다: {e}"))?;
 
-    // 히스토리는 필요 없다. 얕게 받으면 큰 리포에서 몇 배 빠르다.
+    // History isn't needed. A shallow clone is several times faster on big repos.
     git(&["clone", "--depth", "1", &url, &at.to_string_lossy()], None).await?;
 
     if !at.join("plugin.json").exists() {
@@ -192,7 +192,7 @@ pub async fn install_into(dir: &Path, text: &str) -> Result<Plugin, String> {
         .ok_or_else(|| format!("`{name}`의 plugin.json을 읽지 못했습니다."))
 }
 
-/// 매니페스트가 말하는 이름. 없으면 디렉터리 이름이다 — `discover_in`과 같은 규칙이다.
+/// The name the manifest states. Without one, the directory name — same rule as `discover_in`.
 fn manifest_name(at: &Path, slug: &str) -> String {
     let named = std::fs::read_to_string(at.join("plugin.json"))
         .ok()
@@ -202,7 +202,7 @@ fn manifest_name(at: &Path, slug: &str) -> String {
     named.unwrap_or_else(|| slug.to_string())
 }
 
-/// 받아 둔 것을 지운다. **받아 온 것만 지운다** — 손으로 만든 플러그인은 여기 없다.
+/// Removes something fetched. **Only fetched things are removed** — hand-made plugins aren't here.
 pub fn remove(name: &str) -> Result<(), String> {
     remove_from(&install_dir(), name)
 }
@@ -212,7 +212,7 @@ pub fn remove_from(dir: &Path, name: &str) -> Result<(), String> {
     std::fs::remove_dir_all(&at).map_err(|e| format!("지우지 못했습니다: {e}"))
 }
 
-/// 하나, 또는 받아 둔 것 전부를 갱신한다. 실패한 것은 사유와 함께 돌려준다.
+/// Updates one, or everything fetched. Failures are returned along with their reasons.
 pub async fn update(name: Option<&str>) -> Vec<(String, Result<String, String>)> {
     update_in(&install_dir(), name).await
 }
@@ -233,7 +233,7 @@ pub async fn update_in(dir: &Path, name: Option<&str>) -> Vec<(String, Result<St
     out
 }
 
-/// 받아 둔 플러그인 디렉터리 이름들.
+/// The directory names of fetched plugins.
 pub fn installed() -> Vec<String> {
     installed_in(&install_dir())
 }
@@ -249,12 +249,12 @@ pub fn installed_in(dir: &Path) -> Vec<String> {
     out
 }
 
-/// 받아 둔 것 하나의 자리.
+/// The location of one fetched thing.
 ///
-/// 디렉터리 이름으로도, 매니페스트가 말하는 이름으로도 찾는다 — 화면에 보이는 것은
-/// 후자라 사람은 그것을 친다.
+/// Found by directory name or by the name the manifest states — what's shown on screen is the
+/// latter, so that's what a person types.
 ///
-/// **이름을 씻어 쓴다.** `../`가 든 이름으로 남의 디렉터리를 지우게 두면 안 된다.
+/// **The name is washed before use.** A name carrying `../` must not be allowed to delete someone else's directory.
 fn installed_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
     let slug = sanitize(name);
     if !slug.is_empty() {
@@ -270,7 +270,7 @@ fn installed_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("받아 둔 플러그인 중에 `{name}`이 없습니다."))
 }
 
-/// **하나가 망가져도 나머지는 산다.** 읽을 수 없는 플러그인은 로그만 남기고 넘어간다.
+/// **If one breaks, the rest survive.** An unreadable plugin is skipped with a log entry left behind.
 pub fn discover_in(dirs: &[PathBuf]) -> Vec<Plugin> {
     let mut found: Vec<Plugin> = Vec::new();
     for dir in dirs {
@@ -310,7 +310,7 @@ pub fn discover_in(dirs: &[PathBuf]) -> Vec<Plugin> {
             }
         }
     }
-    // 이름 순서로 고정한다. 디렉터리 순서 그대로 두면 실행마다 announce가 달라진다.
+    // Fixed to name order. Left in directory order, the announce would change from run to run.
     found.sort_by(|a, b| a.name.cmp(&b.name));
     for p in &mut found {
         p.mcp.sort_by(|a, b| a.slug.cmp(&b.slug));
@@ -318,12 +318,12 @@ pub fn discover_in(dirs: &[PathBuf]) -> Vec<Plugin> {
     found
 }
 
-/// 플러그인들이 얹는 MCP 서버 전부.
+/// All the MCP servers the plugins add.
 pub fn mcp_servers(plugins: &[Plugin]) -> Vec<ServerSpec> {
     plugins.iter().flat_map(|p| p.mcp.iter().cloned()).collect()
 }
 
-/// 플러그인들이 얹는 스킬 디렉터리 전부.
+/// All the skill directories the plugins add.
 pub fn skill_dirs(plugins: &[Plugin]) -> Vec<PathBuf> {
     plugins.iter().filter_map(|p| p.skills.clone()).collect()
 }
@@ -332,7 +332,7 @@ pub fn skill_dirs(plugins: &[Plugin]) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
-    /// **제일 많이 칠 모양이다.** `owner/repo`가 안 되면 매번 주소를 붙여넣어야 한다.
+    /// **The shape people type most.** If `owner/repo` didn't work, they'd paste the address every time.
     #[test]
     fn a_bare_owner_slash_repo_means_github() {
         let (url, name) = source("attacca-cc/zyris").expect("받을 곳이 나와야 한다");
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(name, "zyris");
     }
 
-    /// 주소를 그대로 붙여넣는 쪽이 더 흔하다. 꼬리가 어떻든 같은 이름이 나와야 한다.
+    /// Pasting the address as-is is more common. Whatever the tail, the same name must come out.
     #[test]
     fn every_github_url_shape_gives_the_same_name() {
         for text in [
@@ -354,7 +354,7 @@ mod tests {
         }
     }
 
-    /// **로컬 리포도 받는다.** 플러그인을 만들면서 시험할 때 이 길이 필요하다.
+    /// **Local repos are accepted too.** This path is needed when testing while building a plugin.
     #[test]
     fn a_local_path_is_a_source_too() {
         let (url, name) = source("/tmp/내플러그인").expect("로컬 경로도 받아야 한다");
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(name, "내플러그인");
     }
 
-    /// 깃허브가 아니어도 clone할 수 있으면 받는다.
+    /// Even if it isn't GitHub, anything clonable is accepted.
     #[test]
     fn another_host_is_taken_as_given() {
         let (url, name) = source("https://gitlab.com/someone/thing.git").unwrap();
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(name, "thing");
     }
 
-    /// **경로 조각 하나여야 한다.** `..`가 남으면 플러그인 디렉터리 밖에 쓰게 된다.
+    /// **It must be a single path piece.** If `..` remains, it would write outside the plugin directory.
     #[test]
     fn a_name_can_never_climb_out_of_the_plugin_directory() {
         for bad in ["../../etc", "..", "a/../b", "  "] {
@@ -380,13 +380,13 @@ mod tests {
         }
     }
 
-    /// 받을 자리. **환경변수를 흔들지 않는다** — 인자로 받으므로 그럴 이유가 없다.
+    /// The destination. **No environment variables are shaken** — it's taken as an argument, so there's no reason to.
     fn scoped() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }
 
-    /// 받아 올 원본. **진짜 git 리포여야 한다** — 모의 clone으로는 얕은 복제도
-    /// `git pull`도 확인되지 않는다.
+    /// The origin to fetch from. **It must be a real git repo** — a mock clone wouldn't exercise
+    /// shallow cloning or `git pull`.
     fn origin(body: &str) -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("plugin.json"), body).unwrap();
@@ -421,13 +421,13 @@ mod tests {
         assert_eq!(got.name, "깃허브");
         assert_eq!(got.mcp.len(), 1);
 
-        // **진짜 판정은 이것이다** — 다음 실행 때 이 자리에서 읽힌다.
+        // **This is the real verdict** — on the next run it's read from this place.
         let found = discover_in(&[into.to_path_buf()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].name, "깃허브");
     }
 
-    /// 받아 온 것과 손으로 둔 것을 가른다 — 지울 수 있는 것은 받아 온 쪽뿐이다.
+    /// Tells fetched and hand-placed apart — only the fetched side can be removed.
     #[test]
     fn only_what_was_fetched_counts_as_fetched() {
         let inside = Plugin {
@@ -442,7 +442,7 @@ mod tests {
         assert!(!outside.fetched());
     }
 
-    /// **아무 리포나 받아 두면 안 된다.** 조용히 무시되면 사람은 설치가 된 줄 안다.
+    /// **Don't fetch just any repo.** Silently ignored, the person would believe it's installed.
     #[tokio::test]
     async fn a_repository_without_a_manifest_is_rejected_and_cleaned_up() {
         let into = scoped();
@@ -469,7 +469,7 @@ mod tests {
         assert!(discover_in(&[into.to_path_buf()]).is_empty(), "받은 것이 남아 있다");
     }
 
-    /// 덮어쓰면 손댄 것이 조용히 사라진다.
+    /// Overwriting would silently erase local edits.
     #[tokio::test]
     async fn installing_the_same_thing_twice_refuses() {
         let into = scoped();
@@ -482,7 +482,7 @@ mod tests {
         assert!(why.contains("이미 있습니다"), "{why}");
     }
 
-    /// 갱신은 새 커밋을 실제로 가져와야 한다.
+    /// An update must actually pull the new commit.
     #[tokio::test]
     async fn updating_pulls_the_new_commit() {
         let into = scoped();
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(discover_in(&[into.to_path_buf()])[0].description, "바뀐 설명");
     }
 
-    /// **화면에 보이는 이름으로 지울 수 있어야 한다.** 사람은 그것을 친다.
+    /// **It must be removable by the name shown on screen.** That's what a person types.
     #[tokio::test]
     async fn removing_works_by_the_name_that_is_shown() {
         let into = scoped();
@@ -525,7 +525,7 @@ mod tests {
         assert!(discover_in(&[into.to_path_buf()]).is_empty());
     }
 
-    /// 없는 것을 지우라고 하면 그렇게 말한다. 조용히 성공하면 지운 줄 안다.
+    /// Asked to remove something absent, it says so. A silent success would read as removed.
     #[test]
     fn removing_something_that_is_not_there_says_so() {
         let into = scoped();
@@ -533,7 +533,7 @@ mod tests {
         assert!(remove_from(into, "없는것").is_err());
     }
 
-    /// **남의 디렉터리를 지우게 두면 안 된다.**
+    /// **Must not allow deleting someone else's directory.**
     #[test]
     fn a_climbing_name_cannot_remove_anything_outside() {
         let into = scoped();
@@ -543,7 +543,7 @@ mod tests {
         assert!(victim.exists(), "밖의 디렉터리가 지워졌다");
     }
 
-    /// 무엇을 받으라는 건지 모를 때 조용히 넘어가면 안 된다.
+    /// When it's unclear what to fetch, it must not pass silently.
     #[test]
     fn nonsense_is_not_a_source() {
         for bad in ["", "   ", "그냥 글자 여럿", "onlyone", "owner/repo/extra"] {
@@ -557,7 +557,7 @@ mod tests {
         std::fs::write(root.join("plugin.json"), manifest).unwrap();
     }
 
-    /// 플러그인의 mcp 설정이 그대로 브리지로 간다.
+    /// The plugin's mcp config goes to the bridge as-is.
     #[test]
     fn a_plugin_contributes_its_mcp_servers() {
         let dir = tempfile::tempdir().unwrap();
@@ -570,7 +570,7 @@ mod tests {
         assert_eq!(found[0].mcp[0].command, "npx");
     }
 
-    /// `skills/`가 있으면 그것도 딸려 온다 — 플러그인이 더하는 것은 도구만이 아니다.
+    /// If `skills/` exists, it comes along too — a plugin adds more than just tools.
     #[test]
     fn a_plugin_contributes_its_skills_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -584,7 +584,7 @@ mod tests {
         assert_eq!(skills.list()[0].name, "리뷰");
     }
 
-    /// `skills/`가 없으면 아무것도 가리키지 않는다. 빈 경로를 들려 보내면 안 된다.
+    /// Without `skills/` it points at nothing. An empty path must not be handed along.
     #[test]
     fn a_plugin_without_skills_points_nowhere() {
         let dir = tempfile::tempdir().unwrap();
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(discover_in(&[dir.path().to_path_buf()])[0].skills, None);
     }
 
-    /// **하나가 망가져도 나머지는 산다.** 앱이 통째로 멈추면 안 된다.
+    /// **If one breaks, the rest survive.** The app must not stop entirely.
     #[test]
     fn a_broken_plugin_does_not_hide_the_good_ones() {
         let dir = tempfile::tempdir().unwrap();
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(found[0].name, "멀쩡");
     }
 
-    /// 이름이 없으면 디렉터리 이름을 쓴다 — 이름을 안 적었다고 사라지면 안 된다.
+    /// Without a name, the directory name is used — it must not vanish just because no name was written.
     #[test]
     fn a_plugin_without_a_name_uses_its_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(discover_in(&[dir.path().to_path_buf()])[0].name, "이름없음");
     }
 
-    /// 플러그인 디렉터리가 아예 없는 것이 정상이다.
+    /// Having no plugin directory at all is normal.
     #[test]
     fn no_plugins_at_all_is_fine() {
         assert!(discover_in(&[PathBuf::from("/이런건/없다")]).is_empty());

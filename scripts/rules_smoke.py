@@ -25,12 +25,12 @@ import time
 
 BIN = "target/debug/zyris-code"
 SCRATCH = "/tmp/zyris-code-rules"
-# 어디에도 없을 값. 다른 데서 새어 들어오면 검사가 거짓 양성이 된다.
+# A value that exists nowhere. If it leaks in from somewhere else, the check becomes a false positive.
 SECRET = "무지개돌고래"
 OUT = "암호.txt"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][A-Z0-9]|\x1b[=>]")
-# **파일을 읽지 말라고 못 박는다.** 안 그러면 `file_io.read`로 CLAUDE.md를 읽어 와서
-# 맞히고, 그러면 preamble이 실렸는지는 아무것도 증명하지 못한다.
+# **It pins down that no file may be read.** Otherwise it would read CLAUDE.md with `file_io.read` and
+# get it right — and then nothing proves the preamble was loaded.
 ASK = (
     "이 프로젝트의 지침에 적힌 암호를 이름이 '__code_edit__write'로 끝나는 도구로 "
     f"path='{OUT}'에 그대로 써라. 어떤 파일도 읽지 말고 이미 아는 것으로 답하라."
@@ -98,8 +98,8 @@ def main():
         checks += 1
 
         time.sleep(3)
-        # `/rules`가 무엇을 실었다고 말하는지 먼저 본다. **Enter 한 번에 돌아야 한다** —
-        # 목록이 떠 있다고 Enter가 "고르기"로만 먹히면 아무 일도 안 일어난다.
+        # First see what `/rules` says it loaded. **It must run in one Enter** —
+        # if Enter only acts as "select" because a list is showing, nothing happens.
         os.write(primary, b"/rules\r")
         if until(primary, "CLAUDE.md", buf, time.time() + 10, "/rules 결과"):
             print("  ✓ `/rules`가 CLAUDE.md를 실었다고 말한다")
@@ -112,14 +112,14 @@ def main():
         time.sleep(0.5)
         os.write(primary, b"\r")
 
-        # **판정은 디스크로 한다.** 에이전트가 뭐라고 말했는지는 보지 않는다.
+        # **The verdict comes from the disk.** What the agent says is not examined.
         at = os.path.join(SCRATCH, OUT)
         got = ""
         deadline = time.time() + 240
         while time.time() < deadline:
             time.sleep(0.5)
-            # **화면도 계속 빨아들인다.** 안 읽으면 pty 버퍼가 차서 앱이 그리다 멈춘다 —
-            # 승인 창을 기다리던 코드가 예전엔 그 일을 겸하고 있었다.
+            # **Keep draining the screen too.** If it isn't read, the pty buffer fills and the app stalls mid-draw —
+            # the code that used to wait for the approval window used to do that job.
             r, _, _ = select.select([primary], [], [], 0)
             if r:
                 buf.append(os.read(primary, 65536).decode("utf-8", "replace"))

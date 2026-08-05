@@ -1,8 +1,8 @@
-//! 세션 타임라인. **`seq`가 신원이고 `cursor`는 진행도다.**
+//! The session timeline. **`seq` is the identity and `cursor` is the progress.**
 //!
-//! attacca는 durable 이벤트를 제자리 갱신하면서 `cursor`만 새로 발급하고 라이브
-//! 구독자에게 다시 방송한다(`session_event_repo.rs`의 `cursor = nextval(...)`).
-//! 그래서 여기는 언제나 업서트다 — append하면 작업 카드가 턴마다 불어난다.
+//! attacca updates durable events in place, issuing a fresh `cursor` and re-broadcasting to live
+//! subscribers (`cursor = nextval(...)` in `session_event_repo.rs`).
+//! So this is always an upsert — appending would make work cards balloon every turn.
 
 use std::collections::BTreeMap;
 
@@ -12,27 +12,27 @@ use crate::event::{Entry, EntryKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
-    /// 이 도구 호출 이벤트의 seq. **접힘 상태의 키다** — 도구 줄마다 따로 펴진다.
+    /// The seq of this tool-call event. **It is the fold-state key** — each tool row folds independently.
     pub seq: i64,
-    /// 화면에 보이는 짧은 이름. `zyris__arch__terminal__exec`이 아니라 `exec`이다.
+    /// The short name shown on screen — `exec`, not `zyris__arch__terminal__exec`.
     pub name: String,
-    /// 이름 옆에 흐리게 붙는 한 조각 — 무엇에 대고 한 일인가.
+    /// A piece shown dimly next to the name — what the action was against.
     pub note: String,
     pub failed: bool,
-    /// 펼쳤을 때 보여 줄 것. 비면 펼칠 것이 없어 눌러도 아무 일이 없다.
+    /// What to show when expanded. Empty means there's nothing to expand, so pressing does nothing.
     pub detail: String,
-    /// 파일을 바꾼 도구면 여기 붙는다. 있으면 화면이 JSON 대신 이것을 그린다.
+    /// Attached when the tool changed files. If present, the screen draws this instead of JSON.
     pub diff: Option<crate::tools::diff::Diff>,
 }
 
-/// 작업 카드 안의 한 조각. **온 순서 그대로 늘어선다.**
+/// A piece inside a work card. **It lays out in the exact order it arrived.**
 ///
-/// 추론을 다 모아 놓고 도구를 그 아래에 몰아 두면 "무엇을 생각하다 무엇을 했는지"가
-/// 사라진다. 모델이 실제로 한 일은 생각 → 도구 → 생각 → 도구이므로 그대로 보여 준다.
+/// If all reasoning were gathered and tools stacked below it, "what was thought and what was done" would
+/// disappear. The model actually did think → tool → think → tool, so show it exactly that way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Part {
     Think(String),
-    /// 런 중에 에이전트가 한 말. 도구·추론과 함께 온 순서대로 선다.
+    /// What the agent said during a run. It stands in arrival order with tools and reasoning.
     Text(String),
     Step(Step),
 }
@@ -60,16 +60,16 @@ pub enum Item {
         seq: i64,
         summary: String,
     },
-    /// 에이전트가 물어본 것. 작업 카드 안이 아니라 **바깥에** 선다 — 답해야 하는 것이다.
+    /// What the agent asked. It stands **outside**, not inside the work card — it's something to answer.
     Question {
         seq: i64,
         steps: Vec<crate::question::Step>,
         answered: bool,
     },
-    /// 앱이 한 말. 슬래시 명령의 결과와 되돌림 알림이 여기로 온다.
+    /// What the app said. Slash-command results and revert notices land here.
     ///
-    /// **`Frame::Notice`와 다르다.** 그쪽은 6초 뒤 사라지는 상태 줄이고, 이것은 읽는
-    /// 동안 남아 있어야 하는 것이다 — `/mcp`의 목록을 6초 안에 읽으라고 할 수는 없다.
+    /// **Different from `Frame::Notice`.** That one is a status line that disappears after 6 seconds; this is meant
+    /// to remain while being read — you can't ask someone to read `/mcp`'s list within 6 seconds.
     System {
         seq: i64,
         text: String,
@@ -93,46 +93,46 @@ impl Item {
 #[derive(Debug, Default)]
 pub struct Timeline {
     entries: BTreeMap<i64, Entry>,
-    /// 아직 durable로 굳지 않은 답변 텍스트 토막. 앵커 순서로 쌓인다.
+    /// A snippet of answer text not yet solidified as durable. Stacked in anchor order.
     live_text: Vec<LiveText>,
-    /// 열려 있는 작업 카드의 추론 델타.
+    /// The reasoning delta of the open work card.
     live_reasoning: String,
-    /// 만들어 둔 항목들. **바뀐 게 없으면 다시 만들지 않는다.**
+    /// The items built so far. **If nothing changed, they are not rebuilt.**
     ///
-    /// 예전에는 프레임마다 새로 만들었는데, 그러면 모든 이벤트의 문자열을 매번 복제한다.
-    /// 대화가 길어질수록 그 비용이 선형으로 늘어 프레임 예산을 넘겼다 —
-    /// `tests/perf.rs`가 재는 것이 이것이다.
+    /// It used to rebuild every frame, which cloned every event's strings each time.
+    /// The longer the conversation, the more the cost grew linearly, blowing the frame budget —
+    /// this is what `tests/perf.rs` measures.
     cache: Vec<Item>,
     dirty: bool,
-    /// 실제로 다시 만든 횟수. 캐시가 정말 도는지 테스트가 이걸로 확인한다.
+    /// How many times it actually rebuilt. Tests use this to confirm the cache really works.
     rebuilds: u64,
-    /// 앱이 한 말. 서버 이벤트와 섞여 시간 순서대로 선다.
+    /// What the app said. It stands mixed with server events in time order.
     said: Vec<Said>,
-    /// 다음에 줄 앱 항목의 seq. **음수다** — 아래 설명을 볼 것.
+    /// The seq for the next app item. **It's negative** — see the explanation below.
     next_said: i64,
 }
 
-/// 스트리밍으로 흘러온 답변 텍스트 한 토막.
+/// A snippet of answer text that streamed in.
 ///
-/// durable 이벤트 사이에 흐른 텍스트라 아직 `entries`에 없다. 앵커(`after`) 뒤,
-/// 다음 이벤트 앞에 선다. durable `chat_agent`가 오면 그 자리를 넘겨받고 사라진다.
+/// Text that flowed between durable events, so it's not in `entries` yet. It stands after the anchor (`after`),
+/// before the next event. When a durable `chat_agent` arrives, it takes over that spot and this disappears.
 #[derive(Debug, Clone)]
 struct LiveText {
-    /// 이 토막이 흐르기 시작할 때의 마지막 durable seq.
+    /// The last durable seq when this snippet started flowing.
     after: i64,
     text: String,
 }
 
-/// 앱이 한 말 하나.
+/// One thing the app said.
 #[derive(Debug, Clone)]
 struct Said {
-    /// 말할 때 서버 이벤트가 어디까지 와 있었는가. 이 뒤, 다음 이벤트 앞에 놓인다.
+    /// How far the server events had arrived when it was said. It sits after this, before the next event.
     after: i64,
-    /// 화면 항목의 신원. **음수라 서버 seq와 절대 안 부딪힌다.**
+    /// The screen item's identity. **Negative, so it never collides with server seqs.**
     ///
-    /// 접힘 상태(`Folds`)와 줄 캐시(`rows::Cache`)가 seq를 키로 쓰기 때문에 겹치면
-    /// 두 항목이 한 자리를 두고 싸운다. 화면 순서는 seq가 아니라 `build`가 만든
-    /// 벡터 순서로 정해지므로, 음수라고 위로 올라가지 않는다.
+    /// Since fold state (`Folds`) and the row cache (`rows::Cache`) key on seq, a collision would make
+    /// two items fight over one spot. Screen order is decided by the vector `build` produces, not by seq,
+    /// so being negative doesn't push them upward.
     seq: i64,
     text: String,
 }
@@ -142,7 +142,7 @@ impl Timeline {
         Self { dirty: true, next_said: -1, ..Default::default() }
     }
 
-    /// 앱이 한마디 한다. 슬래시 명령의 결과와 되돌림 알림이 여기로 온다.
+    /// The app says something. Slash-command results and revert notices land here.
     pub fn say(&mut self, text: impl Into<String>) {
         let after = self.entries.keys().next_back().copied().unwrap_or(0);
         self.said.push(Said { after, seq: self.next_said, text: text.into() });
@@ -150,7 +150,7 @@ impl Timeline {
         self.dirty = true;
     }
 
-    /// 화면의 대화를 비운다. **서버의 기록은 그대로다** — `/clear`가 부른다.
+    /// Empties the on-screen conversation. **The server's record stays intact** — `/clear` calls this.
     pub fn clear(&mut self) {
         self.entries.clear();
         self.said.clear();
@@ -160,7 +160,7 @@ impl Timeline {
     }
 
     pub fn upsert(&mut self, entry: Entry) {
-        // 새 런이 열리면 앞 런의 추론이 딸려가면 안 된다.
+        // When a new run opens, the previous run's reasoning must not carry over.
         if let EntryKind::WorkStart(_) = &entry.kind {
             self.live_reasoning.clear();
         }
@@ -171,9 +171,9 @@ impl Timeline {
     pub fn push_delta(&mut self, kind: ZDeltaKind, text: &str) {
         match kind {
             ZDeltaKind::Assistant => {
-                // 토막의 앵커는 "지금 마지막 durable 이벤트 뒤"다. 사이에 durable
-                // 이벤트가 끼지 않았으면 같은 토막으로 합쳐져 하나의 답변으로 보이고,
-                // 도구 호출이 끼면 새 토막이 되어 그 도구 **앞에** 선다.
+                // The snippet's anchor is "after the last durable event so far". If no durable event
+                // intervened, it merges into the same snippet and reads as one answer;
+                // if a tool call intervenes, it becomes a new snippet that stands **before** that tool.
                 let after = self.entries.keys().next_back().copied().unwrap_or(0);
                 match self.live_text.last_mut() {
                     Some(seg) if seg.after == after => seg.text.push_str(text),
@@ -185,16 +185,16 @@ impl Timeline {
         self.dirty = true;
     }
 
-    /// 지금까지 항목을 다시 만든 횟수. 테스트 전용 관찰 창구다.
+    /// How many times the items have been rebuilt so far. A test-only observation window.
     pub fn rebuilds(&self) -> u64 {
         self.rebuilds
     }
 
-    /// 화면에 그릴 항목들, seq 순서. 바뀐 게 없으면 앞서 만든 것을 그대로 돌려준다.
+    /// The items to draw, in seq order. If nothing changed, the previously built ones are returned as-is.
     ///
-    /// 작업 카드의 경계는 서버가 정해 준 것을 그대로 쓴다 — `work_summary`의 `seq`보다
-    /// 크고 다음 `work_summary` 전까지인 thinking/tool/todo가 그 카드의 것이다.
-    /// attacca의 `WorkSummaryState.seq`가 "이 런에 속한 이벤트의 하한"인 것과 같다.
+    /// The work card's boundaries follow what the server defined — thinking/tool/todo events after the
+    /// `work_summary`'s `seq` and before the next `work_summary` belong to that card.
+    /// Same as attacca's `WorkSummaryState.seq` being "the lower bound of events in this run".
     pub fn items(&mut self) -> &[Item] {
         if self.dirty {
             self.cache = self.build();
@@ -207,21 +207,21 @@ impl Timeline {
     fn build(&mut self) -> Vec<Item> {
         let mut out: Vec<Item> = Vec::new();
         let mut open_work: Option<usize> = None;
-        // 스트리밍 텍스트 토막. 이벤트 사이 제자리에 끼운다 — 끝에 몰아 붙이면
-        // 뒤에 온 도구 줄 아래로 밀려 "순서가 뒤바뀐" 화면이 된다(실제로 그렇게
-        // 보였다). durable `chat_agent`가 와서 굳으면 그 자리를 넘겨받고 지워진다.
+        // Streaming text snippets. Insert them in place between events — appended at the end,
+        // they'd be pushed below the tool rows that came after, making the screen look out of order (it
+        // actually did). When a durable `chat_agent` arrives and solidifies, it takes over the spot and this is removed.
         let mut live: Vec<LiveText> = std::mem::take(&mut self.live_text);
-        // 이미 제자리에 놓은 토막까지. 이 build 안에서는 토막을 한 번만 배치한다.
+        // Up to the snippets already placed. Within one build, each snippet is placed only once.
         let mut flushed = 0usize;
 
         for entry in self.entries.values() {
             let seq = entry.seq;
-            // durable 답변이 왔으면 그보다 앞선 토막은 제 몫을 다했다 — 같은 글이
-            // 두 벌로 보이면 안 된다.
+            // Once a durable answer arrives, earlier snippets have done their part — the same text
+            // must not appear twice.
             if matches!(entry.kind, EntryKind::Agent(_)) {
                 live.retain(|s| s.after >= seq);
             }
-            // 이 이벤트 앞에 놓일 토막을 지금의 열린 카드에 끼운다.
+            // Insert the snippets that belong before this event into the currently open card.
             flush_live(&mut out, &mut open_work, &live, seq, &mut self.next_said, &mut flushed);
             match &entry.kind {
                 EntryKind::User(text) => {
@@ -229,9 +229,9 @@ impl Timeline {
                     out.push(Item::User { seq, text: text.clone() });
                 }
                 EntryKind::Agent(text) => {
-                    // **런 중에 온 답변은 카드 안에 선다** — 도구 사이 메시지가 카드
-                    // 밖으로 밀려나면 무엇을 말하다 무엇을 했는지가 흩어진다. 카드가
-                    // 없으면 평범한 답변으로.
+                    // **Answers that arrive mid-run stand inside the card** — if messages between tools were pushed
+                    // out of the card, what was said while doing what would scatter. With no card,
+                    // it's an ordinary answer.
                     if let Some(at) = open_work {
                         if let Item::Work { parts, .. } = &mut out[at] {
                             parts.push(Part::Text(text.clone()));
@@ -248,7 +248,7 @@ impl Timeline {
                     out.push(Item::Subagent { seq, summary: summary.clone() });
                 }
                 EntryKind::Question { steps, answered } => {
-                    // 질문은 카드 안에 묻히면 안 된다. 런을 닫고 바깥에 세운다.
+                    // A question must not be buried in a card. Close the run and stand it outside.
                     open_work = None;
                     out.push(Item::Question { seq, steps: steps.clone(), answered: *answered });
                 }
@@ -268,8 +268,8 @@ impl Timeline {
                         parts.push(Part::Step(Step {
                             seq,
                             name: short_name(name),
-                            // 파일을 바꾼 도구는 **바뀐 파일**이 요약이다 — 인자의
-                            // `path`는 상대경로일 수 있고 결과의 것이 정본이다.
+                            // For a tool that changed files, **the changed file** is the summary — the argument's
+                            // `path` may be relative, and the result's is authoritative.
                             note: match diff {
                                 Some(d) => d.path.clone(),
                                 None => summary.clone(),
@@ -296,29 +296,29 @@ impl Timeline {
             }
         }
 
-        // 끝까지 남은 토막 — 열린 카드 끝 또는 독립 답변으로.
+        // Snippets left at the end — appended to the open card's end or as a standalone answer.
         flush_live(&mut out, &mut open_work, &live, i64::MAX, &mut self.next_said, &mut flushed);
 
-        // 아직 durable로 굳지 않은 추론 델타를 열린 카드 **끝에** 얹는다. 도구를 쓴
-        // 뒤에 다시 생각하는 중이면 그 도구 아래에 붙어야 순서가 맞는다.
+        // Lay the not-yet-durable reasoning delta onto the **end** of the open card. If it's thinking again
+        // after using a tool, it must attach below that tool for the order to be right.
         if !self.live_reasoning.is_empty() {
             if let Some(Item::Work { parts, .. }) = open_work.map(|i| &mut out[i]) {
                 push_think(parts, &self.live_reasoning);
             }
         }
 
-        // 미래의 이벤트 뒤에 설 토막(아직 안 온 앵커)은 다시 들고 간다.
+        // Snippets meant to sit after future events (anchors not yet arrived) are carried over.
         self.live_text = live;
         self.weave_in_what_the_app_said(out)
     }
 
-    /// 앱이 한 말을 서버 이벤트 사이 제자리에 끼운다.
+    /// Weaves what the app said into its place among the server events.
     ///
-    /// **한 번에 훑으며 합친다.** 하나씩 `insert`하면 앞서 넣은 것이 뒤 계산을 밀어
-    /// 같은 자리에 말이 둘 이상 있을 때 순서가 뒤집힌다.
+    /// **Sweep once and merge.** Inserting one by one would let earlier inserts shift later positions,
+    /// flipping the order when two or more sayings share a spot.
     ///
-    /// 위치는 seq 비교가 아니라 **"after 항목 바로 뒤"**다 — 암시적 작업 카드처럼
-    /// 항목 seq가 양수 구간을 벗어나 있어도 말한 자리가 흔들리지 않는다.
+    /// Position is **"right after the after item"**, not a seq comparison — like the implicit work card,
+    /// even when an item's seq is outside the positive range, the said spot doesn't shift.
     fn weave_in_what_the_app_said(&self, items: Vec<Item>) -> Vec<Item> {
         if self.said.is_empty() {
             return items;
@@ -326,13 +326,13 @@ impl Timeline {
         let mut out = Vec::with_capacity(items.len() + self.said.len());
         let mut said = self.said.iter().peekable();
         let mine = |s: &Said| Item::System { seq: s.seq, text: s.text.clone() };
-        // 아무 이벤트도 없을 때 한 말은 맨 앞에 선다.
+        // What was said when no events existed stands at the very front.
         while said.peek().is_some_and(|s| s.after == 0) {
             out.push(mine(said.next().expect("방금 봤다")));
         }
         let mut pending: Vec<&Said> = Vec::new();
         for item in items {
-            // 이 항목 뒤에 놓일 말들 — after가 이 항목의 seq인 것.
+            // The sayings that go after this item — those whose after equals this item's seq.
             while said.peek().is_some_and(|s| s.after == item.seq()) {
                 pending.push(said.next().expect("방금 봤다"));
             }
@@ -346,31 +346,31 @@ impl Timeline {
     }
 }
 
-/// 화면에 보이는 도구 이름.
+/// The tool name shown on screen.
 ///
-/// attacca는 노드 도구를 `zyris__{노드}__{캐퍼빌리티}__{도구}`로 만들어 보낸다. 그대로 두면
-/// 그것만으로 한 줄을 다 먹고, 매 줄이 같은 앞머리로 시작해 **정작 다른 부분이 안 보인다.**
-/// 서버 빌트인(`todo_add`·`web_search`)에는 `__`가 없어 그대로 남는다.
+/// attacca builds node tools as `zyris__{node}__{capability}__{tool}`. Left as-is,
+/// it alone eats a whole line, and every row starts with the same prefix, so **the part that differs is invisible**.
+/// Server built-ins (`todo_add`·`web_search`) have no `__`, so they stay as-is.
 ///
-/// 같은 이름이 둘 있을 수 있지만(`file_io.read`와 `terminal.read`) 옆의 요약이 갈라 준다 —
-/// 하나는 경로고 하나는 PTY다.
+/// Two can share a name (`file_io.read` and `terminal.read`), but the summary beside them tells them apart —
+/// one is a path and the other a PTY.
 fn short_name(name: &str) -> String {
     name.rsplit("__").next().unwrap_or(name).to_string()
 }
 
-/// 암시적 작업 카드의 항목 seq. 서버 seq(양수)·앱 말(음수 소수)·라이브 답변과 겹치지
-/// 않도록 아주 먼 음수로 만든다 — 겹치면 접힘 상태와 줄 캐시가 두 항목을 한 자리로
-/// 본다.
+/// The item seq of an implicit work card. Made a very distant negative so it can't collide with server seqs
+/// (positive), app sayings (small negative), or live answers — a collision would make fold state and the row
+/// cache treat two items as one.
 fn implicit_seq(first: i64) -> i64 {
     i64::MIN + first
 }
 
-/// 앵커가 `up_to`보다 앞선 스트리밍 토막을 지금 자리에 밀어 넣는다.
+/// Pushes streaming snippets whose anchor is before `up_to` into their current spot.
 ///
-/// 카드가 열려 있으면 그 안에(첫 도구 앞, 아니면 끝), 없으면 독립 답변으로. 토막은
-/// 앵커 순서로 쌓이므로 앞에서부터 차례로 본다. **지우지 않는다** — durable가 오기
-/// 전까지는 이 토막이 그 텍스트의 유일한 자리이므로, 배치가 매번 처음부터 다시 하므로
-/// 두 벌이 될 일도 없다.
+/// With a card open, inside it (before the first tool, or at the end); without one, as a standalone answer. Snippets
+/// stack in anchor order, so they're examined in order from the front. **Don't remove them** — until durable
+/// arrives, this snippet is the only home of that text, and since placement starts over from scratch each time,
+/// it can't appear twice either.
 fn flush_live(
     out: &mut Vec<Item>,
     open_work: &mut Option<usize>,
@@ -379,8 +379,8 @@ fn flush_live(
     next_seq: &mut i64,
     from: &mut usize,
 ) {
-    // 토막은 앵커 순서로 쌓이고, `from`은 이 build에서 이미 배치한 만큼이다.
-    // 없으면 같은 토막이 이벤트마다 다시 들어가 두 벌이 된다.
+    // Snippets stack in anchor order, and `from` is how many this build has already placed.
+    // Without it, the same snippet would re-enter on every event and appear twice.
     while *from < live.len() {
         let seg = &live[*from];
         if seg.after >= up_to {
@@ -393,7 +393,7 @@ fn flush_live(
                 }
             }
             None => {
-                // 독립 답변은 앱 말과 같은 음수 seq 공간을 쓴다 — 겹치면 안 된다.
+                // Standalone answers share the negative seq space with app sayings — they must not collide.
                 out.push(Item::Agent { seq: *next_seq, text: seg.text.clone() });
                 *next_seq -= 1;
             }
@@ -402,8 +402,8 @@ fn flush_live(
     }
 }
 
-/// 토막을 카드 안 제자리에 끼운다 — 앵커(`after`) 뒤에 온 첫 도구 **앞**, 도구가
-/// 없으면 끝. 추론 줄 사이에 끼어 있어도 온 순서가 유지된다.
+/// Splices a snippet into its place in the card — **before** the first tool after the anchor (`after`), or
+/// at the end if there is none. Even wedged between reasoning rows, arrival order is preserved.
 fn splice_text(parts: &mut Vec<Part>, after: i64, text: &str) {
     let at = parts
         .iter()
@@ -412,25 +412,25 @@ fn splice_text(parts: &mut Vec<Part>, after: i64, text: &str) {
     parts.insert(at, Part::Text(text.to_string()));
 }
 
-/// 추론을 덧붙인다. 도구 없이 이어진 추론은 한 덩어리로 합친다 —
-/// 사이에 아무 일도 없었으면 나눠 봐야 읽기만 나빠진다.
-/// 지금 열려 있는 작업 카드. **없으면 만든다.**
+/// Appends reasoning. Reasoning that continues with no tool in between is merged into one block —
+/// if nothing happened in between, splitting it would only hurt readability.
+/// The currently open work card. **Creates one if there isn't.**
 ///
-/// attacca는 런이 시작될 때 `work_summary`를 만들지만, 첫 추론 델타가 그보다 먼저 닿는
-/// 턴이 있고 아예 `work_summary`가 없는 턴도 있다(도구를 안 쓰는 짧은 답). 예전에는 그때
-/// 추론과 도구 호출을 **조용히 버렸다** — 사람 눈에는 "프롬프트를 보냈는데 화면에 아무것도
-/// 안 뜬다"로 보인다. 접힌 것과 다르다. 아예 없다.
+/// attacca creates a `work_summary` when a run starts, but there are turns where the first reasoning delta
+/// arrives before it, and turns with no `work_summary` at all (short answers that use no tools). Previously
+/// reasoning and tool calls were **silently dropped** then — to the person it looks like "I sent a prompt
+/// and nothing appeared on screen". It's not folded; it's simply absent.
 ///
-/// 그래서 갈 곳이 없으면 제목 없는 카드를 연다. 제목은 `work_summary`가 뒤늦게 와도
-/// 붙는다 — 이벤트는 seq 순으로 다시 세워지므로 그때는 이 자리가 진짜 카드가 된다.
+/// So when there's nowhere to go, an untitled card is opened. The title attaches even if `work_summary`
+/// arrives late — events are reordered by seq, so by then this spot becomes the real card.
 fn card_for(out: &mut Vec<Item>, open_work: &mut Option<usize>, seq: i64) -> usize {
     if let Some(at) = *open_work {
         return at;
     }
     let at = out.len();
-    // **암시적 카드의 접힘 키를 첫 부분의 seq와 겹치지 않게** 만든다. 겹치면
-    // 카드를 펼 때 첫 도구의 상세도 같은 키를 공유해 같이 펼쳐진다(실제로 그렇게
-    // 보였다 — 추론 없는 툴 전용 턴에서 카드를 누르면 첫 도구의 인자·결과가 열린다).
+    // **Make the implicit card's fold key not collide with the first part's seq.** If they collided,
+    // expanding the card would also expand the first tool's detail under the same key (it actually
+    // looked that way — in tool-only turns with no reasoning, pressing the card opened the first tool's args and result).
     out.push(Item::Work { seq: implicit_seq(seq), title: String::new(), parts: Vec::new() });
     *open_work = Some(at);
     at
@@ -466,8 +466,8 @@ mod tests {
             .collect()
     }
 
-    /// **앱이 한 말은 말한 자리에 선다.** 맨 위나 맨 아래로 밀려나면 무엇에 대한
-    /// 답인지 알 수 없다.
+    /// **What the app says stands where it was said.** Pushed to the very top or bottom,
+    /// you couldn't tell what it was answering.
     #[test]
     fn what_the_app_says_lands_where_it_was_said() {
         let mut t = Timeline::new();
@@ -481,7 +481,7 @@ mod tests {
         );
     }
 
-    /// 같은 자리에 두 마디를 하면 **한 순서**여야 한다.
+    /// Two sayings in the same spot must keep **one order**.
     #[test]
     fn two_things_said_in_a_row_keep_their_order() {
         let mut t = Timeline::new();
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(texts(&mut t), vec!["안녕", "앱: 첫째", "앱: 둘째", "네"]);
     }
 
-    /// **seq가 서버 이벤트와 겹치면 안 된다.** 접힘 상태와 줄 캐시가 seq를 키로 쓴다.
+    /// **App seqs must not collide with server events.** Fold state and the row cache key on seq.
     #[test]
     fn what_the_app_says_never_collides_with_a_server_seq() {
         let mut t = Timeline::new();
@@ -505,7 +505,7 @@ mod tests {
         assert!(seqs.iter().filter(|s| **s < 0).count() == 2, "{seqs:?}");
     }
 
-    /// `/clear`는 **화면만** 비운다. 서버의 기록을 지우는 것이 아니다.
+    /// `/clear` empties **only the screen**. It does not delete the server's history.
     #[test]
     fn clearing_empties_the_screen() {
         let mut t = Timeline::new();
@@ -526,7 +526,7 @@ mod tests {
         }
     }
 
-    /// 갱신된 이벤트는 같은 seq로 다시 온다. append하면 카드가 둘이 된다.
+    /// An updated event comes again with the same seq. Appending would make two cards.
     #[test]
     fn re_receiving_the_same_seq_replaces_it_instead_of_appending() {
         let mut t = Timeline::new();
@@ -541,12 +541,12 @@ mod tests {
         }
     }
 
-    /// **작업 카드보다 먼저 온 추론도 보여야 한다.**
+    /// **Reasoning that arrives before any work card must show too.**
     ///
-    /// attacca는 런이 시작될 때 `work_summary`를 만들지만, 첫 추론 델타가 그보다 먼저
-    /// 닿는 턴이 있고 아예 `work_summary`가 없는 턴도 있다(도구를 안 쓰는 짧은 답).
-    /// 그때 추론을 버리면 사람 눈에는 **"프롬프트를 보냈는데 아무 일도 안 일어난다"**로
-    /// 보인다 — 접힌 것도 아니고 화면에 아무것도 없다.
+    /// attacca creates a `work_summary` when a run starts, but there are turns where the first reasoning delta
+    /// arrives before it, and turns with no `work_summary` at all (short answers that use no tools).
+    /// Dropping that reasoning would look to the person like **"I sent a prompt and nothing happened"** —
+    /// not folded, just nothing on screen.
     #[test]
     fn thinking_that_arrives_before_any_work_card_still_shows() {
         let mut t = Timeline::default();
@@ -562,7 +562,7 @@ mod tests {
         }
     }
 
-    /// 도구 호출도 같다. **버려지면 무엇을 했는지가 통째로 사라진다.**
+    /// Tool calls are the same. **Dropped, what was done disappears entirely.**
     #[test]
     fn a_tool_call_before_any_work_card_still_shows() {
         let mut t = Timeline::default();
@@ -583,9 +583,9 @@ mod tests {
         }
     }
 
-    /// **암시적 카드의 접힘 키는 첫 도구의 것과 겹치면 안 된다.** 겹치면 카드를
-    /// 펼 때 첫 도구의 상세도 같은 키를 공유해 같이 펼쳐진다 — 추론 없는 툴 전용
-    /// 턴에서 카드를 누르면 첫 도구의 인자·결과가 열린다(실제로 그렇게 보였다).
+    /// **An implicit card's fold key must not collide with its first tool's.** If it collided,
+    /// expanding the card would also expand the first tool's detail under the same key — in tool-only
+    /// turns with no reasoning, pressing the card opened the first tool's args and result (it actually looked that way).
     #[test]
     fn an_implicit_cards_fold_key_never_collides_with_its_first_tool() {
         let mut t = Timeline::new();
@@ -609,8 +609,8 @@ mod tests {
         assert_ne!(*seq, first.seq, "카드 접힘 키가 첫 도구와 겹친다");
     }
 
-    /// **스트리밍 답변은 턴이 시작된 자리에 선다.** 끝에 붙이면 그 뒤에 온 도구 줄
-    /// 아래로 밀려 순서가 뒤바뀐 것처럼 보인다(실제로 그렇게 보였다).
+    /// **The streaming answer stands where the turn started.** Appended at the end, it would be pushed
+    /// below the tool rows that came after, looking out of order (it actually did).
     #[test]
     fn the_streaming_answer_sits_where_the_turn_started() {
         let mut t = Timeline::new();
@@ -636,9 +636,9 @@ mod tests {
         assert!(agent_at.unwrap() < work_at.unwrap(), "텍스트가 도구 아래로 밀렸다: {items:?}");
     }
 
-    /// **뒤늦게 온 `work_summary`가 그 카드를 이어받는다.** 이벤트는 seq 순으로 다시
-    /// 세워지므로, 제목이 붙은 카드 하나로 합쳐져야 한다 — 둘로 갈라지면 같은 런이
-    /// 화면에서 두 덩이가 된다.
+    /// **A late `work_summary` takes over the card it belongs to.** Events are reordered by seq,
+    /// so it should merge into one titled card — split in two, the same run would look like
+    /// two blocks on screen.
     #[test]
     fn a_late_work_summary_takes_over_the_card_it_belongs_to() {
         let mut t = Timeline::default();
@@ -656,7 +656,7 @@ mod tests {
         }
     }
 
-    /// 카드의 경계는 서버가 정한다 — 다음 work_summary 전까지가 이 카드의 것이다.
+    /// The server defines the card's boundary — everything before the next work_summary belongs to this card.
     #[test]
     fn a_work_card_owns_the_steps_until_the_next_work_summary() {
         let mut t = Timeline::new();
@@ -704,8 +704,8 @@ mod tests {
         }
     }
 
-    /// **도구는 쓴 그 자리에 선다.** 추론을 다 모아 놓고 도구를 아래에 몰면
-    /// 무엇을 생각하다 무엇을 했는지가 사라진다.
+    /// **Tools stand where they were used.** Piling all the reasoning up and stacking the tools below
+    /// would lose what was thought while doing what.
     #[test]
     fn thinking_and_tools_stay_in_the_order_they_happened() {
         let mut t = Timeline::new();
@@ -747,7 +747,7 @@ mod tests {
         );
     }
 
-    /// 도구 없이 이어진 추론은 한 덩어리다. 사이에 아무 일도 없었으면 나눌 이유가 없다.
+    /// Reasoning that continues with no tool in between is one block. Nothing happened between, so there's no reason to split.
     #[test]
     fn back_to_back_thinking_merges_into_one_block() {
         let mut t = Timeline::new();
@@ -759,7 +759,7 @@ mod tests {
         assert_eq!(parts, &vec![Part::Think("첫 생각\n이어지는 생각".into())]);
     }
 
-    /// 도구를 쓴 뒤 흘러오는 추론 델타는 **그 도구 아래에** 붙어야 한다.
+    /// Reasoning deltas flowing in after a tool must attach **below that tool**.
     #[test]
     fn reasoning_deltas_after_a_tool_land_below_that_tool() {
         let mut t = Timeline::new();
@@ -783,7 +783,7 @@ mod tests {
         assert_eq!(parts[2], Part::Think("결과를 읽어 보니".into()));
     }
 
-    /// 답변 델타는 durable 이벤트가 오기 전까지 화면에 보여야 한다.
+    /// Answer deltas must show on screen until the durable event arrives.
     #[test]
     fn assistant_deltas_show_before_the_durable_event_arrives() {
         let mut t = Timeline::new();
@@ -796,7 +796,7 @@ mod tests {
         }
     }
 
-    /// durable 이벤트가 오면 델타 버퍼가 중복으로 남으면 안 된다.
+    /// When the durable event arrives, the delta buffer must not remain as a duplicate.
     #[test]
     fn the_durable_agent_event_supersedes_the_delta_buffer() {
         let mut t = Timeline::new();
@@ -807,7 +807,7 @@ mod tests {
         assert_eq!(agents, 1, "델타와 durable이 겹쳐 두 벌이 되면 안 된다");
     }
 
-    /// 추론 델타는 열려 있는 작업 카드 안으로 들어간다.
+    /// Reasoning deltas go into the open work card.
     #[test]
     fn reasoning_deltas_go_into_the_open_work_card() {
         let mut t = Timeline::new();
@@ -822,10 +822,10 @@ mod tests {
         }
     }
 
-    /// 바뀐 게 없으면 항목을 다시 만들지 않는다.
+    /// If nothing changed, the items are not rebuilt.
     ///
-    /// 프레임마다 다시 만들면 모든 이벤트의 문자열을 매번 복제한다. 대화가 길어질수록
-    /// 그 비용이 선형으로 늘어 화면이 밀린다 — 실제로 그것 때문에 랙이 걸렸다.
+    /// Rebuilding every frame clones every event's strings each time. The longer the conversation,
+    /// the more the cost grows linearly and the screen stutters — this actually caused lag once.
     #[test]
     fn items_are_not_rebuilt_when_nothing_changed() {
         let mut t = Timeline::new();
@@ -845,7 +845,7 @@ mod tests {
         assert_eq!(t.rebuilds(), 3, "이벤트가 오면 다시 만들어야 한다");
     }
 
-    /// 새 런이 시작되면 앞 런의 추론 델타가 딸려오면 안 된다.
+    /// When a new run starts, the previous run's reasoning deltas must not carry over.
     #[test]
     fn a_new_work_run_starts_with_empty_reasoning() {
         let mut t = Timeline::new();
@@ -866,7 +866,7 @@ mod tests {
                 name: name.into(),
                 summary: note.into(),
                 failed: false,
-                // `step_at` 기대값과 맞추기 위해 상세도 같은 꼴을 쓴다.
+                // Use the same shape for the detail to match `step_at`'s expected values.
                 detail: "인자\n{}".into(),
                 todo: None,
                 diff: None,
@@ -874,8 +874,8 @@ mod tests {
         )
     }
 
-    /// **런 중에 온 답변은 카드 안에 선다** — 도구 사이 메시지가 카드 밖으로
-    /// 밀려나면 "무엇을 말하다 무엇을 했는지"가 흩어진다. 카드도 조각나면 안 된다.
+    /// **Answers that arrive mid-run stand inside the card** — if messages between tools were pushed
+    /// out of the card, "what was said while doing what" would scatter. The card must not fragment either.
     #[test]
     fn agent_text_during_a_run_goes_into_the_card_in_order() {
         let mut t = Timeline::new();
@@ -902,7 +902,7 @@ mod tests {
         }
     }
 
-    /// **스트리밍 텍스트는 그 뒤에 오는 도구 앞에 선다** — 카드 안, 도구 줄 위.
+    /// **Streaming text stands before the tool that follows it** — inside the card, above the tool row.
     #[test]
     fn live_text_during_a_run_lands_before_the_following_tool() {
         let mut t = Timeline::new();
@@ -922,8 +922,8 @@ mod tests {
         );
     }
 
-    /// **도구로 갈라진 스트리밍 텍스트는 두 토막으로 나뉜다** — 하나로 합쳐지면
-    /// 두 메시지가 한 덩어리로 보인다.
+    /// **Streaming text split by a tool stays two segments** — merged into one,
+    /// the two messages would look like a single block.
     #[test]
     fn live_text_split_by_a_tool_stays_two_segments() {
         let mut t = Timeline::new();
@@ -945,7 +945,7 @@ mod tests {
         );
     }
 
-    /// **사용자가 끼어들면 그 뒤의 텍스트는 카드 밖 독립 답변이다.**
+    /// **When the user interrupts, the text after it is a standalone answer outside the card.**
     #[test]
     fn text_after_a_user_interrupt_stays_standalone() {
         let mut t = Timeline::new();
@@ -964,8 +964,8 @@ mod tests {
         assert!(user_at < agent_at, "답변이 사용자 말 뒤에 있어야 한다: {items:?}");
     }
 
-    /// **토막은 다시 만들어도 두 벌이 되지 않는다** — 배치가 매번 처음부터 다시 하므로
-    /// 토막이 남아 있어도 카드 안에는 한 번만 들어간다.
+    /// **Snippets don't duplicate across rebuilds** — placement starts over from scratch each time,
+    /// so even if a snippet remains, it enters the card only once.
     #[test]
     fn live_segments_are_not_duplicated_across_rebuilds() {
         let mut t = Timeline::new();

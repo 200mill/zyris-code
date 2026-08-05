@@ -1,11 +1,11 @@
-//! 등록 코드 창. 재등록이 시작되면 화면 가운데에 뜬다.
+//! Enrollment code window. Appears in the center of the screen when re-enrollment starts.
 //!
-//! 예전에는 코드가 stdout으로 나가 화면에 가려 못 봤다. 이제 `EnrollmentUi` 훅이
-//! 코드를 `Frame::Enroll`로 실어 보내므로(`enroll::ScreenEnroll`), 이 창이 그
-//! 자리를 차지한다 — 만료·거부 사정도 `EnrollPhase`로 여기 그린다.
+//! The code used to go to stdout where the screen hid it. Now the `EnrollmentUi` hook ships the
+//! code via `Frame::Enroll` (`enroll::ScreenEnroll`), and this window takes that spot — expiry and
+//! denial are also drawn here via `EnrollPhase`.
 //!
-//! **Esc로만 닫힌다.** 등록은 배경에서 계속 돌므로 닫아도 승인이 도착하면
-//! `EnrollDone`이 창을 닫는다.
+//! **It only closes with Esc.** Enrollment keeps running in the background, so even if closed, when
+//! approval arrives `EnrollDone` closes the window.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -17,7 +17,7 @@ use crate::app::{EnrollPhase, EnrollView};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, view: &EnrollView, lang: crate::lang::Lang) {
-    // 화면 가운데 상자. 코드가 크게 보여야 하므로 목록 창보다 넉넉히 준다.
+    // A box in the center of the screen. The code must show large, so give it more room than the list window.
     let h = 10.min(area.height.saturating_sub(2)).max(5);
     let w = 56.min(area.width.saturating_sub(4)).max(30);
     let box_area = Rect {
@@ -27,9 +27,9 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &EnrollView, lang: crate::lang:
         height: h,
     };
 
-    // 뒤를 지우지 않으면 대화가 비쳐 보인다.
+    // Without clearing the back, the conversation shows through.
     frame.render_widget(Clear, box_area);
-    // 경계에 걸친 전각 글자를 마저 지운다 — picker와 같은 이유.
+    // Scrub the rest of wide characters straddling the border — same reason as the picker.
     crate::widgets::picker::scrub_left_edge(frame, box_area);
 
     let block = Block::default()
@@ -51,8 +51,8 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &EnrollView, lang: crate::lang:
                 Style::default().fg(theme::TEXT),
             )));
             lines.push(Line::from(""));
-            // 코드는 크고 뚜렷하게. 하이픈을 그대로 두어 더블클릭으로 통째로
-            // 선택되게 한다 — 상류 상자와 같은 규칙이다.
+            // The code large and clear. Keep the hyphens so double-click selects it whole — same
+            // rule as the upstream box.
             lines.push(Line::from(Span::styled(
                 format!("   {}   ", view.code),
                 Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),

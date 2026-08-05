@@ -1,17 +1,17 @@
-//! 진단용. **같은 자격으로 두 번 붙으면 서버가 노드를 갈라 주는가**를 잰다.
+//! Diagnostic. **Measures whether the server splits nodes when the same credentials connect twice.**
 //!
-//! 이 물음이 zyris-code의 창 여럿 설계를 통째로 정한다. 서버가 연결마다 다른 `node_id`를
-//! 내주면 창은 그냥 각자 붙으면 되고(`sibling.rs`의 형제 노드 찍어내기가 통째로 필요 없다),
-//! 같은 `node_id`를 내주면 나중에 붙은 쪽이 먼저 붙은 쪽의 도구 호출을 통째로 가져간다.
+//! This question decides zyris-code's whole multi-window design. If the server gives a different
+//! `node_id` per connection, windows can each just connect (`sibling.rs`'s sibling-node cloning
+//! becomes unnecessary); same `node_id` means the later connection takes over all the earlier one's tool calls.
 //!
-//! **추측하지 말 것.** attacca가 `register_node`를 `MethodNotFound`로 답하는 것은 확인했고
-//! (2026-08-03), 그러면 남은 길은 이것뿐이라 여기서 실제로 재 본다.
+//! **Don't guess.** It's confirmed that attacca answers `register_node` with `MethodNotFound`
+//! (2026-08-03), so this is the only road left and it's actually re-tested here.
 //!
 //! ```bash
 //! ZYRIS_PROFILE=zyris-code cargo run -p zyris-code --example nodes_probe
 //! ```
 //!
-//! `node_id`가 **서버가 ack로 준 값**이라는 것이 요점이다(`connection.rs`의 `ack.node_id`).
+//! The point is that `node_id` is **the value the server gave in the ack** (`ack.node_id` in `connection.rs`).
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -20,14 +20,14 @@ use std::time::Duration;
 use zyris::runtime::{credentials::Credentials, RunConfig, Runner};
 use zyris::NodeKind;
 
-/// 둘째 연결이 첫째를 밀어내는지 보려면 첫째가 살아 있는 동안 붙어야 한다.
+/// To see whether the second connection displaces the first, it must connect while the first is alive.
 const OVERLAP: Duration = Duration::from_secs(12);
 
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt().with_env_filter("nodes_probe=info,zyris=warn").init();
 
-    // 앱과 **같은 자격 파일**을 봐야 한다. `main.rs`가 하는 것과 같은 자리다.
+    // Must look at the **same credential file** as the app. Same spot `main.rs` uses.
     if std::env::var_os("ZYRIS_CONFIG_DIR").is_none() {
         if let Some(dir) = zyris_code::conn::credential_dir() {
             std::env::set_var("ZYRIS_CONFIG_DIR", dir);
@@ -50,7 +50,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    // 자격 하나를 둘이 나눠 쓴다 — 창 둘이 같은 파일을 보는 것과 같은 모양이다.
+    // Two share one credential — the same shape as two windows reading the same file.
     let first = dial("첫째", creds.clone());
     tokio::time::sleep(Duration::from_secs(3)).await;
     let second = dial("둘째", creds.clone());
@@ -70,7 +70,7 @@ fn dial(label: &'static str, creds: Arc<dyn Credentials>) -> tokio::task::JoinHa
             move |conn| async move {
                 let info = conn.info();
                 println!("{label}: node_id={} conn_id={}", info.node_id, info.conn_id);
-                // 붙은 채로 있어야 겹친다. 끊으면 밀어내는지 볼 수가 없다.
+                // Must stay connected for the overlap. If it drops, there's no way to see displacement.
                 conn.closed().await;
                 println!("{label}: 연결이 끊겼다");
             },

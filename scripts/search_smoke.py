@@ -31,17 +31,17 @@ import time
 
 BIN = "target/debug/zyris-code"
 SCRATCH = "/tmp/zyris-code-search"
-# **도구 이름을 실제 모양으로 말해 준다.** 와이어 이름은
-# `zyris__{노드}__{캐퍼빌리티}__{도구}`라 `search.grep`이라고 부르면 모델이 못 찾는다.
+# **Say the tool name in its real form.** The wire name is
+# `zyris__{node}__{capability}__{tool}`, so calling it `search.grep` makes the model fail to find it.
 ASK = (
     "두 가지를 순서대로 하라. "
     "(1) 이름이 '__search__grep'으로 끝나는 도구를 pattern='자물쇠를여는열쇠'로 호출한다. "
     "(2) 이름이 '__code_edit__write'로 끝나는 도구로 path='결과.txt'에 "
     "(1)에서 찾은 파일 경로를 그대로 써 넣는다. 설명은 하지 마라."
 )
-# **판정은 여기서 한다.** 에이전트가 무슨 말을 했는지가 아니라 디스크에 무엇이 남았는지다.
+# **The verdict is made here.** Not what the agent said, but what remains on disk.
 OUT = "결과.txt"
-# 어디에도 없을 낱말. 다른 데서 우연히 걸리면 검사가 거짓 양성이 된다.
+# A token that is nowhere else. If it happens to match elsewhere, the check becomes a false positive.
 NEEDLE = "자물쇠를여는열쇠"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
@@ -75,7 +75,7 @@ def main():
     os.makedirs(os.path.join(SCRATCH, "src"))
     with open(os.path.join(SCRATCH, "src", "찾을것.rs"), "w") as f:
         f.write(f"fn a() {{}}\nlet {NEEDLE} = 1;\n")
-    # **`.gitignore`가 실제로 걸리는지도 본다.** 여기 것이 결과에 나오면 안 된다.
+    # **Also checks that `.gitignore` actually applies.** Its contents must not appear in the result.
     with open(os.path.join(SCRATCH, ".gitignore"), "w") as f:
         f.write("target/\n")
     os.makedirs(os.path.join(SCRATCH, "target"))
@@ -112,21 +112,21 @@ def main():
         print("  ✓ 떴다")
         checks += 1
 
-        # 붙자마자 보내면 도구 목록이 비어 있을 수 있다 — 서버는 handshake 뒤 500ms 안에
-        # capability를 스냅숏한다.
+        # Sending immediately after connect could catch an empty tool list — the server
+        # snapshots capabilities within 500ms after the handshake.
         time.sleep(3)
         os.write(primary, ASK.encode())
         time.sleep(1.0)
         os.write(primary, b"\r")
 
-        # **여기가 유일한 판정이다.** 비지 않자마자 읽으면 안 된다 — 에이전트가
-        # 자리표시자를 먼저 쓰고 고치는 일이 실제로 있었다(`PLACEHOLDER`를 잡았다).
+        # **This is the only verdict.** Do not read the moment it appears — the agent has
+        # actually written a placeholder first and then fixed it (we caught `PLACEHOLDER`).
         out = os.path.join(SCRATCH, OUT)
         found = ""
         deadline = time.time() + 240
         while time.time() < deadline:
             time.sleep(0.5)
-            # 화면도 계속 빨아들인다 — 안 읽으면 pty 버퍼가 차서 앱이 멈춘다.
+            # Keep draining the screen too — if it is not read, the pty buffer fills and the app freezes.
             r, _, _ = select.select([primary], [], [], 0)
             if r:
                 buf.append(os.read(primary, 65536).decode("utf-8", "replace"))
@@ -142,7 +142,7 @@ def main():
             print(f"  ✗ 찾은 것이 우리가 심은 파일이 아니다: {found!r}")
             ok = False
 
-        # `.gitignore`에 걸린 것이 결과에 있으면 안 된다.
+        # Nothing caught by `.gitignore` may appear in the result.
         if "숨을것" in found:
             print("  ✗ gitignore에 걸린 파일이 결과에 나왔다")
             ok = False
@@ -150,7 +150,7 @@ def main():
             print("  ✓ gitignore에 걸린 파일은 안 나온다")
             checks += 1
 
-        # **아무것도 묻지 않는다.** 승인은 없앴으므로 창이 떴다면 회귀다.
+        # **Nothing is asked.** Approval was removed, so any window appearing is a regression.
         if "승인이 필요합니다" not in ANSI.sub("", "".join(buf)):
             print("  ✓ 아무것도 묻지 않는다")
             checks += 1
@@ -158,13 +158,13 @@ def main():
             print("  ✗ 없앤 승인 창이 떴다")
             ok = False
 
-        # **`/undo`도 부작용으로 판정한다.** 없던 파일을 만든 편집이므로 되돌리면 지워진다.
+        # **`/undo` is also judged by its side effect.** The edit created a file that did not exist, so undoing deletes it.
         if not os.path.exists(out):
             print("  ✗ 되돌릴 파일이 없어 /undo를 못 봤다")
             ok = False
         else:
-            # **여러 번 눌러야 할 수 있다.** 에이전트가 같은 파일을 두 번 썼으면 한 번
-            # 되돌리기는 앞 판으로 돌아갈 뿐이다 — 없어질 때까지 거슬러 올라간다.
+            # **May need several presses.** If the agent wrote the same file twice, one undo
+            # only goes back one version — walk back until it is gone.
             time.sleep(1.0)
             gone = False
             for _ in range(4):

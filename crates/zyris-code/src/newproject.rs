@@ -1,14 +1,14 @@
-//! 새 프로젝트 양식. ← 목록에서 "＋ 새 프로젝트" 줄을 고르면 열린다.
+//! The new-project form. ← Opens when the "+ new project" row is picked in the list.
 //!
-//! **이름과 설명을 두 칸에 나눠 받는다.** 예전에는 `/project `를 입력란에 넣어 주고
-//! 이름을 이어 치게 했는데 설명을 받을 자리가 없었다. 양식이 그 자리를 대신한다 —
-//! Enter로 만들고 Esc로 닫으면 목록(아래에 그대로 열려 있다)으로 돌아온다.
+//! **Name and description are collected in two fields.** It used to drop `/project ` into the
+//! input and let you keep typing the name, but there was no room for a description. The form
+//! takes that place — Enter creates, Esc closes and returns to the list (still open below).
 //!
-//! 여기는 순수하다. 서버를 부르는 것은 I/O 자리가 한다(`app.rs`의 `project_out`).
+//! This stays pure. Calling the server is the I/O site's job (`project_out` in `app.rs`).
 
 use crate::input::Input;
 
-/// 양식의 칸.
+/// A field of the form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Field {
     #[default]
@@ -16,13 +16,13 @@ pub enum Field {
     Description,
 }
 
-/// 새 프로젝트 양식 상태.
+/// State of the new-project form.
 #[derive(Debug, Clone, Default)]
 pub struct Form {
     pub name: Input,
     pub description: Input,
     pub field: Field,
-    /// 만들기를 눌렀다가 서버가 거절한 사유. **칸을 옮기면 지운다.**
+    /// Why the server rejected a create attempt. **Cleared when the field changes.**
     pub error: Option<String>,
 }
 
@@ -31,7 +31,7 @@ impl Form {
         Self::default()
     }
 
-    /// 지금 글자가 들어갈 칸.
+    /// The field the current keystrokes go into.
     pub fn active(&mut self) -> &mut Input {
         match self.field {
             Field::Name => &mut self.name,
@@ -39,7 +39,7 @@ impl Form {
         }
     }
 
-    /// 다음 칸으로. 끝이면 처음으로 돌아온다.
+    /// Move to the next field. Wraps to the start at the end.
     pub fn next(&mut self) {
         self.field = match self.field {
             Field::Name => Field::Description,
@@ -48,7 +48,7 @@ impl Form {
         self.error = None;
     }
 
-    /// 앞 칸으로.
+    /// Move to the previous field.
     pub fn prev(&mut self) {
         self.field = match self.field {
             Field::Name => Field::Description,
@@ -57,9 +57,9 @@ impl Form {
         self.error = None;
     }
 
-    /// 만들기. **이름이 비면 서버를 부르지 않는다** — 무엇을 만들지 모르고, 목록에
-    /// 이름 없는 줄이 하나 생기면 지우는 길이 이 앱에 없다. 비었으면 사유를 담고
-    /// `None`을 준다. 설명은 비워도 된다.
+    /// Submit. **An empty name never calls the server** — we would not know what to create, and
+    /// once an unnamed row appears in the list there is no way to remove it in this app. If
+    /// empty, carries the reason and returns `None`. The description may be empty.
     pub fn submit(&mut self, lang: crate::lang::Lang) -> Option<(String, String)> {
         let name = self.name.text.trim().to_string();
         if name.is_empty() {
@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(f.field, Field::Description);
     }
 
-    /// **이름이 비면 만들지 않는다.** 목록에 이름 없는 줄이 생기면 지우는 길이 없다.
+    /// **An empty name is not created.** An unnamed row in the list could never be removed.
     #[test]
     fn an_empty_name_is_refused_on_the_spot() {
         let mut f = form();
@@ -117,7 +117,7 @@ mod tests {
         assert!(f.error.is_none());
     }
 
-    /// 설명은 비워도 된다 — 이름만 있으면 만든다.
+    /// The description may be empty — a name alone is enough to create.
     #[test]
     fn an_empty_description_is_fine() {
         let mut f = form();
@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(f.submit(crate::lang::Lang::Ko), Some(("이름만".into(), String::new())));
     }
 
-    /// 오류는 칸을 옮기면 지운다 — 사유가 남은 채 다시 만들면 헷갈린다.
+    /// The error is cleared when the field changes — creating again with a stale reason left up would confuse.
     #[test]
     fn switching_fields_clears_the_error() {
         let mut f = form();

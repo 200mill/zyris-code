@@ -1,11 +1,11 @@
-//! 이 컴퓨터에 놓인 스킬 — 에이전트가 필요할 때 읽어 따라가는 절차서.
+//! Skills placed on this machine — procedures the agent reads and follows when needed.
 //!
-//! **목록과 본문을 갈라 놓는 것이 요점이다.** 이름과 설명은 세션 preamble로 한 번 가고,
-//! 본문은 `skill.load`를 부를 때만 간다. 다 실어 보내면 쓰지도 않을 절차서가 매 턴
-//! 컨텍스트를 먹는다.
+//! **The point is to keep the list separate from the bodies.** Names and descriptions go once into the session preamble;
+//! bodies go only when `skill.load` is called. Loading them all would make procedures we never use
+//! eat context every turn.
 //!
-//! 읽기만 하므로 승인 게이트가 통과시킨다(`gate::decide`) — 내 컴퓨터의 내 파일이고,
-//! 그러라고 둔 것이다.
+//! It only reads, so the approval gate lets it through (`gate::decide`) — my files on my computer,
+//! and that is what they are there for.
 
 use std::path::PathBuf;
 
@@ -31,16 +31,16 @@ pub trait Skill {
     async fn load(&self, name: String) -> zyris::Result<String>;
 }
 
-/// 찾아 둔 스킬들. **한 번 훑고 기억한다** — 매 호출마다 디스크를 훑을 이유가 없다.
+/// Skills found ahead of time. **Scan once and remember** — no reason to scan the disk on every call.
 #[derive(Debug, Clone, Default)]
 pub struct Skills {
     found: Vec<(SkillInfo, PathBuf)>,
 }
 
 impl Skills {
-    /// 준 디렉터리들에서 `<슬러그>/SKILL.md`를 찾는다. 없는 디렉터리는 그냥 넘어간다.
+    /// Finds `<slug>/SKILL.md` in the given directories. Missing directories are simply skipped.
     ///
-    /// 뒤 디렉터리가 이긴다 — 프로젝트가 홈보다 구체적이다.
+    /// Later directories win — the project is more specific than home.
     pub fn new(dirs: Vec<PathBuf>) -> Skills {
         let mut found: Vec<(SkillInfo, PathBuf)> = Vec::new();
         for dir in dirs {
@@ -60,7 +60,7 @@ impl Skills {
         Skills { found }
     }
 
-    /// 기본 자리 둘. 뒤가 이긴다.
+    /// The two default locations. Later wins.
     pub fn discover(cwd: &std::path::Path) -> Skills {
         let mut dirs = Vec::new();
         if let Some(home) = std::env::var_os("HOME") {
@@ -78,8 +78,8 @@ impl Skills {
         self.found.is_empty()
     }
 
-    /// 본문. 없는 이름이면 **무엇이 있는지 알려 준다** — "없다"만으로는 다음에 무엇을
-    /// 부를지 알 수 없다.
+    /// The body. For an unknown name, **say what is there** — "none" alone does not say what
+    /// to call next.
     pub fn load(&self, name: &str) -> Result<String, WireError> {
         match self.found.iter().find(|(i, _)| i.name == name) {
             Some((_, path)) => std::fs::read_to_string(path)
@@ -104,12 +104,12 @@ impl Skill for Skills {
     }
 }
 
-/// 세션을 만들 때 실을 스킬 목록.
+/// The skill list to load when creating a session.
 ///
-/// **이름과 설명만이다.** 본문까지 실으면 쓰지도 않을 절차서가 매 턴 컨텍스트를 먹는다.
-/// 본문은 `skill.load`를 부를 때 간다.
+/// **Only names and descriptions.** Loading bodies would make procedures we never use eat context every turn.
+/// Bodies go when `skill.load` is called.
 ///
-/// 스킬이 하나도 없으면 `None`이다 — 빈 목록을 실어 봐야 자리만 먹는다.
+/// `None` when there are no skills — a list with nothing in it would only take up space.
 pub fn preamble(skills: &Skills) -> Option<String> {
     let list = skills.list();
     if list.is_empty() {
@@ -125,9 +125,9 @@ pub fn preamble(skills: &Skills) -> Option<String> {
     Some(out)
 }
 
-/// `---`로 둘러싼 머리말에서 `name`과 `description`을 읽는다.
+/// Reads `name` and `description` from the front matter wrapped in `---`.
 ///
-/// 없으면 디렉터리 이름을 쓴다 — **머리말을 안 썼다고 스킬이 사라지면 안 된다.**
+/// Falls back to the directory name — **a skill must not vanish just because no front matter was written.**
 fn front_matter(body: &str, slug: &str) -> SkillInfo {
     let mut info = SkillInfo { name: slug.to_string(), description: String::new() };
     for line in head_lines(body) {
@@ -151,13 +151,13 @@ fn head_lines(body: &str) -> Vec<&str> {
     lines.take_while(|l| l.trim() != "---").collect()
 }
 
-/// 본문만. 머리말은 사람이 쓰는 메타데이터지 모델이 따라갈 절차가 아니다.
+/// Just the body. Front matter is metadata for humans, not a procedure for the model to follow.
 fn strip_front_matter(body: &str) -> &str {
     if body.lines().next().map(str::trim) != Some("---") {
         return body;
     }
     let mut rest = body;
-    // 첫 `---` 줄을 건너뛴 뒤 닫는 `---`를 찾는다.
+    // Skip the opening `---` line, then find the closing `---`.
     if let Some(at) = rest.find('\n') {
         rest = &rest[at + 1..];
     }
@@ -167,7 +167,7 @@ fn strip_front_matter(body: &str) -> &str {
     }
 }
 
-/// 플러그인들이 얹는 스킬 디렉터리. 정의는 `plugin`에 있고 여기서는 이름만 빌린다.
+/// Skill directories contributed by plugins. The definition lives in `plugin`; here we only borrow the name.
 pub fn plugin_skill_dirs(cwd: &std::path::Path) -> Vec<PathBuf> {
     crate::plugin::skill_dirs(&crate::plugin::discover(cwd))
 }
@@ -182,7 +182,7 @@ mod tests {
         std::fs::write(path.join("SKILL.md"), body).unwrap();
     }
 
-    /// 머리말의 name과 description이 목록에 뜬다.
+    /// The front matter's name and description show up in the list.
     #[test]
     fn a_skill_is_found_by_its_frontmatter() {
         let dir = tempfile::tempdir().unwrap();
@@ -197,7 +197,7 @@ mod tests {
         assert!(skills.load("검색").unwrap().contains("본문"));
     }
 
-    /// 본문만 간다. 머리말은 사람이 쓰는 메타데이터지 따라갈 절차가 아니다.
+    /// Only the body goes. Front matter is metadata for humans, not a procedure to follow.
     #[test]
     fn loading_a_skill_leaves_the_frontmatter_behind() {
         let dir = tempfile::tempdir().unwrap();
@@ -207,7 +207,7 @@ mod tests {
         assert!(!body.contains("description:"), "{body:?}");
     }
 
-    /// **머리말을 안 썼다고 스킬이 사라지면 안 된다.** 디렉터리 이름으로 부른다.
+    /// **A skill must not vanish just because no front matter was written.** It is called by its directory name.
     #[test]
     fn a_skill_without_frontmatter_is_still_found() {
         let dir = tempfile::tempdir().unwrap();
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(skills.load("고치기").unwrap(), "그냥 본문입니다\n");
     }
 
-    /// preamble에는 이름과 설명만 싣는다. 본문까지 실으면 매 턴 컨텍스트를 먹는다.
+    /// The preamble carries only names and descriptions. Loading bodies would eat context every turn.
     #[test]
     fn the_preamble_lists_skills_without_their_bodies() {
         let dir = tempfile::tempdir().unwrap();
@@ -232,13 +232,13 @@ mod tests {
         assert!(!p.contains("아주 긴 본문"), "본문이 실리면 안 된다:\n{p}");
     }
 
-    /// 스킬이 하나도 없으면 preamble을 붙이지 않는다. 빈 목록은 자리만 먹는다.
+    /// No skills means no preamble. An empty list would only take up space.
     #[test]
     fn no_skills_means_no_preamble() {
         assert_eq!(preamble(&Skills::new(vec![])), None);
     }
 
-    /// 없는 이름을 불렀을 때 **무엇이 있는지** 말해야 다음에 무엇을 부를지 안다.
+    /// When an unknown name is requested, **say what is there** so the caller knows what to call next.
     #[test]
     fn asking_for_a_missing_skill_says_what_is_there() {
         let dir = tempfile::tempdir().unwrap();
@@ -247,7 +247,7 @@ mod tests {
         assert!(e.message.contains("검색"), "{}", e.message);
     }
 
-    /// 뒤 디렉터리가 이긴다 — 프로젝트가 홈보다 구체적이다.
+    /// Later directories win — the project is more specific than home.
     #[test]
     fn a_project_skill_overrides_the_one_from_home() {
         let home = tempfile::tempdir().unwrap();
@@ -260,7 +260,7 @@ mod tests {
         assert!(skills.load("검색").unwrap().contains("새 본문"));
     }
 
-    /// 스킬 디렉터리가 아예 없는 것이 정상이다. 그때 죽으면 앱을 못 쓴다.
+    /// Having no skill directories at all is normal. Dying on that would make the app unusable.
     #[test]
     fn a_missing_directory_is_not_an_error() {
         assert!(Skills::new(vec![PathBuf::from("/이런건/없다")]).is_empty());

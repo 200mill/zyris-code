@@ -1,12 +1,12 @@
-//! 파일을 찾는다. **이 컴퓨터의 파일시스템을 아는 것은 이 노드뿐이다.**
+//! Finds files. **Only this node knows this computer's filesystem.**
 //!
-//! 이게 없으면 에이전트는 `terminal.exec`로 `rg`를 부르는 수밖에 없고, 그 길은 넷이 샌다 —
-//! 수동 모드에서 읽기인데도 매번 승인을 묻고, `rg`가 없는 머신에서는 실패하고, 결과가
-//! 통짜 문자열이라 접을 수 없고, 큰 트리에서 55초 마감에 걸린다.
+//! Without this the agent would have to call `rg` via `terminal.exec`, and that path leaks in four ways —
+//! it asks for approval every time even for a read in manual mode, it fails on machines without `rg`, the
+//! result is one big string that can't be folded, and it hits the 55-second deadline on large trees.
 //!
-//! **읽기만 한다.** 그래서 `gate.rs`가 `file_io`·`skill`과 나란히 무조건 통과시킨다.
+//! **Read-only.** That's why `gate.rs` unconditionally passes it, alongside `file_io`·`skill`.
 //!
-//! 메서드의 doc 주석만 와이어로 나가 에이전트가 읽는 설명이 된다. **그래서 주석이 곧 규약이다.**
+//! Only the methods' doc comments go out on the wire as the description the agent reads. **So the comment is the contract.**
 
 use std::path::{Path, PathBuf};
 
@@ -14,15 +14,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use zyris::WireError;
 
-/// 한 번에 돌려주는 최대 파일 수.
+/// Maximum number of files returned at once.
 const GLOB_LIMIT: u32 = 200;
-/// 한 번에 돌려주는 최대 매치 수.
+/// Maximum number of matches returned at once.
 const GREP_LIMIT: u32 = 100;
-/// 한 파일에서 가져오는 최대 매치 수. 한 파일이 결과를 통째로 먹으면 안 된다.
+/// Maximum matches taken from one file. One file must not eat the whole result.
 const PER_FILE: usize = 20;
-/// 매치 한 줄의 최대 길이. 미니파이된 파일 한 줄이 화면을 덮는다.
+/// Maximum length of one match line. One line of a minified file would cover the screen.
 const LINE_LIMIT: usize = 400;
-/// 바이너리인지 보는 앞부분.
+/// The prefix examined to tell whether something is binary.
 const SNIFF: usize = 8192;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -79,8 +79,8 @@ impl LocalSearch {
         LocalSearch { root }
     }
 
-    /// 뒤질 자리. 상대경로는 root 기준, `/`로 시작하면 그대로다 — capkit의 경로 규칙과
-    /// 같게 둔다. **감옥이 아니다**(막는 것은 `Gate`다).
+    /// Where to search. Relative paths are rooted at root; paths starting with `/` are used as-is —
+    /// kept the same as capkit's path rules. **Not a jail** (what stops things is `Gate`).
     fn at(&self, path: Option<&str>) -> PathBuf {
         match path {
             Some(p) if p.starts_with('/') => PathBuf::from(p),
@@ -89,33 +89,33 @@ impl LocalSearch {
         }
     }
 
-    /// 결과에 실을 이름. root 안쪽이면 상대경로로 줄인다.
+    /// The name put on a result. Inside root, it shrinks to a relative path.
     ///
-    /// **절대경로를 그대로 주면** 홈 디렉터리 이름이 매 결과에 실려 컨텍스트를 먹고,
-    /// 화면에서도 앞부분이 다 똑같아 어느 파일인지 보기 어렵다.
+    /// **Given as an absolute path**, the home directory name rides on every result eating context,
+    /// and on screen all the prefixes look the same, making it hard to tell which file it is.
     fn show(&self, p: &Path) -> String {
         p.strip_prefix(&self.root).unwrap_or(p).to_string_lossy().into_owned()
     }
 }
 
-/// glob 하나로 순회를 거른다.
+/// Filters the walk with a single glob.
 ///
-/// **직접 짜지 않는다.** `**` 규칙을 손으로 짜면 반드시 틀리고, 여기 것은 ripgrep이
-/// 쓰는 바로 그 구현이다.
+/// **Not written by hand.** Hand-rolling the `**` rules is guaranteed to be wrong; what's here is
+/// exactly the implementation ripgrep uses.
 fn matcher(root: &Path, pattern: &str) -> Result<ignore::overrides::Override, WireError> {
     let mut b = ignore::overrides::OverrideBuilder::new(root);
     b.add(pattern).map_err(|e| WireError::invalid_params(format!("패턴이 잘못됐습니다: {e}")))?;
     b.build().map_err(|e| WireError::invalid_params(format!("패턴이 잘못됐습니다: {e}")))
 }
 
-/// 순회를 만든다.
+/// Builds the walk.
 ///
-/// 세 가지를 기본값에서 비튼다:
+/// Three things are twisted from the defaults:
 ///
-/// - `hidden(false)` — `.github/`·`.cargo/`는 진짜 코드다. 숨김이라고 빼면 안 찾힌다.
-/// - `require_git(false)` — **기본값은 git 저장소 안에서만 `.gitignore`를 본다.** 작업
-///   디렉터리가 git이 아니면 `target/`을 그대로 뒤지는데, 이 머신에서 그건 수십 초다.
-/// - `.git/`은 손으로 뺀다 — 숨김을 켰으니 안 빼면 `.git/objects` 수만 개를 읽는다.
+/// - `hidden(false)` — `.github/`·`.cargo/` are real code. Skipped as hidden, they'd never be found.
+/// - `require_git(false)` — **by default `.gitignore` is only honored inside a git repo.** If the
+///   working directory isn't git, `target/` gets searched as-is, which on this machine is tens of seconds.
+/// - `.git/` is removed by hand — with hidden files on, skipping it would read tens of thousands of entries.
 fn walk(at: &Path) -> ignore::Walk {
     ignore::WalkBuilder::new(at)
         .hidden(false)
@@ -124,12 +124,12 @@ fn walk(at: &Path) -> ignore::Walk {
         .build()
 }
 
-/// 앞부분에 NUL이 있으면 바이너리로 본다. 그대로 실으면 화면과 컨텍스트가 쓰레기로 찬다.
+/// A NUL in the prefix marks it as binary. Carried as-is, it would fill the screen and context with garbage.
 fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(SNIFF).any(|b| *b == 0)
 }
 
-/// 너무 긴 줄은 자른다. 문자 경계에서만 자른다 — 바이트로 자르면 한글이 깨진다.
+/// Overlong lines are clipped. Only at character boundaries — cutting by byte would mangle Korean.
 fn clip_line(s: &str) -> String {
     if s.chars().count() <= LINE_LIMIT {
         return s.to_string();
@@ -156,8 +156,8 @@ impl LocalSearch {
             if !only.matched(entry.path(), false).is_whitelist() {
                 continue;
             }
-            // `metadata()`는 `ignore::Error`, `modified()`는 `io::Error`라 `and_then`으로
-            // 잇지 못한다. 어느 쪽이 실패하든 "아주 오래된 것"으로 두고 뒤로 민다.
+            // `metadata()` returns `ignore::Error` and `modified()` returns `io::Error`, so they
+            // can't be chained with `and_then`. Whichever fails, treat it as "very old" and push it back.
             let at = entry
                 .metadata()
                 .ok()
@@ -165,7 +165,7 @@ impl LocalSearch {
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
             found.push((at, self.show(entry.path())));
         }
-        // 최근에 고친 것부터. 지금 만지고 있는 파일이 위에 와야 쓸모가 있다.
+        // Most recently modified first. The file being worked on now must come to the top to be useful.
         found.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
         found.truncate(limit as usize);
         Ok(found.into_iter().map(|(_, p)| p).collect())
@@ -179,7 +179,7 @@ impl LocalSearch {
         limit: u32,
     ) -> Result<Found, WireError> {
         let re = regex::Regex::new(pattern)
-            // **에이전트가 읽고 고칠 수 있는 문장이어야 한다.**
+            // **Must be a sentence the agent can read and fix.**
             .map_err(|e| WireError::invalid_params(format!("정규식이 잘못됐습니다: {e}")))?;
         let at = self.at(path);
         let only = glob.map(|g| matcher(&at, g)).transpose()?;
@@ -215,7 +215,7 @@ impl LocalSearch {
                 }
                 hits.push(Hit { path: name.clone(), line: i as u32 + 1, text: clip_line(line) });
                 here += 1;
-                // 한 파일이 결과를 통째로 먹으면 나머지 파일이 안 보인다.
+                // If one file ate the whole result, the other files wouldn't be seen.
                 if here >= PER_FILE {
                     truncated = true;
                     break;
@@ -238,8 +238,8 @@ impl Search for LocalSearch {
         path: Option<String>,
         limit: Option<u32>,
     ) -> zyris::Result<Vec<String>> {
-        // **순회와 읽기는 블로킹이다.** 안 옮기면 큰 트리에서 런타임 워커를 막고,
-        // 그동안 화면도 다른 도구도 멈춘다.
+        // **Walking and reading are blocking.** Left where they are, they'd stall the runtime worker
+        // on large trees, and meanwhile the screen and every other tool would freeze.
         let me = LocalSearch { root: self.root.clone() };
         let limit = limit.unwrap_or(GLOB_LIMIT).max(1);
         tokio::task::spawn_blocking(move || me.glob_now(&pattern, path.as_deref(), limit))
@@ -268,8 +268,8 @@ impl Search for LocalSearch {
 mod tests {
     use super::*;
 
-    /// 트리를 하나 만든다. **진짜 파일이어야 한다** — 모의 파일시스템으로는 `.gitignore`
-    /// 해석과 경로 정규화 실수가 안 잡힌다.
+    /// Makes a tree. **Must be real files** — a mock filesystem wouldn't catch mistakes in
+    /// `.gitignore` interpretation and path normalization.
     fn tree() -> tempfile::TempDir {
         let d = tempfile::tempdir().unwrap();
         let w = |p: &str, s: &str| {
@@ -293,7 +293,7 @@ mod tests {
         assert!(!out.iter().any(|p| p.starts_with("target/")), "gitignore가 안 걸렸다: {out:?}");
     }
 
-    /// **경로는 상대경로다.** 절대경로를 주면 홈 디렉터리 이름이 매 결과에 실린다.
+    /// **Paths are relative.** Given an absolute path, the home directory name rides on every result.
     #[tokio::test]
     async fn paths_come_back_relative_to_the_working_dir() {
         let d = tree();
@@ -315,7 +315,7 @@ mod tests {
         assert!(!f.truncated);
     }
 
-    /// glob으로 대상을 좁힐 수 있어야 한다. 못 좁히면 큰 트리에서 마감에 걸린다.
+    /// Must be able to narrow the target with a glob. Without it, large trees hit the deadline.
     #[tokio::test]
     async fn grep_can_be_narrowed_by_a_glob() {
         let d = tree();
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(f.hits[0].path, "src/rows.rs");
     }
 
-    /// **잘렸으면 잘렸다고 말해야 한다.** 모르면 에이전트가 "없다"로 읽는다.
+    /// **If truncated, it must say so.** Otherwise the agent reads it as "absent".
     #[tokio::test]
     async fn a_truncated_search_says_so() {
         let d = tree();
@@ -335,7 +335,7 @@ mod tests {
         assert!(f.truncated, "잘렸는데 말하지 않았다");
     }
 
-    /// 바이너리를 그대로 실으면 화면과 컨텍스트가 쓰레기 바이트로 찬다.
+    /// Carrying binaries as-is would fill the screen and context with garbage bytes.
     #[tokio::test]
     async fn binary_files_are_skipped() {
         let d = tempfile::tempdir().unwrap();
@@ -345,7 +345,7 @@ mod tests {
         assert!(f.hits.is_empty(), "{:?}", f.hits);
     }
 
-    /// 잘못된 정규식은 **에이전트가 고칠 수 있는 문장**으로 돌아와야 한다.
+    /// A bad regex must come back as **a sentence the agent can fix**.
     #[tokio::test]
     async fn a_bad_pattern_explains_itself() {
         let d = tree();
@@ -353,7 +353,7 @@ mod tests {
         assert!(s.grep("fn (".into(), None, None, None).await.is_err());
     }
 
-    /// 이 캐퍼빌리티는 읽기만 한다. 쓰는 도구가 섞이면 게이트를 여는 근거가 무너진다.
+    /// This capability is read-only. A writing tool mixed in would undermine the case for opening the gate.
     #[test]
     fn it_announces_only_read_only_tools() {
         use zyris::ServeCapability;

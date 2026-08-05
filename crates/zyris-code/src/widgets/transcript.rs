@@ -1,5 +1,5 @@
-//! 대화 영역. `rows`가 만든 줄을 스크롤 창만큼 잘라 그린다 —
-//! 세는 것과 그리는 것이 같은 `Vec<Line>`이라 어긋날 수 없다.
+//! The conversation area. Draws the lines `rows` built, clipped to the scroll window —
+//! counting and drawing share the same `Vec<Line>`, so they cannot drift apart.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -12,17 +12,17 @@ use crate::markdown::display_width;
 use crate::selection;
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &mut State) {
-    // 지금 아래 패널에서 답하고 있는 질문은 대화 안에 또 그리지 않는다.
+    // The question being answered in the panel below is not drawn again inside the conversation.
     let skip = state.asking.as_ref().map(|(seq, _)| *seq);
     {
-        // 필드를 따로 빌린다 — `timeline`과 `rows_cache`를 동시에 잡아야 한다.
+        // Borrow the fields separately — `timeline` and `rows_cache` must be held at the same time.
         let State { timeline, rows_cache, folds, .. } = &mut *state;
         rows_cache.layout(timeline.items(), area.width, folds, skip);
     }
 
     let total = state.rows_cache.total();
     let height = area.height as usize;
-    // 휠 처리가 읽을 뷰포트 크기를 남긴다 — `apply`는 순수해서 이걸 스스로 알 수 없다.
+    // Leave the viewport size for wheel handling to read — `apply` is pure and cannot know it itself.
     state.view_total = total;
     state.view_height = height;
     state.view_origin = (area.x, area.y);
@@ -32,17 +32,17 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut State) {
     let (start, end) = state.scroll.window(total, height);
     state.view_top = start;
 
-    // **보이는 줄만 만든다.** 전부 만들면 대화 길이에 비례해 무거워져 프레임을 넘긴다.
+    // **Build only the visible lines.** Building all of them would grow with the conversation length and blow the frame budget.
     let mut shown = state.rows_cache.window(start, end);
-    // 배경이 얹힌 줄을 화면 끝까지 늘린다. **반전보다 먼저** 한다 — 여러 줄에 걸친
-    // 선택이 한 덩어리로 보여야 하고, 늘린 자리도 그 덩어리에 들어가야 한다.
+    // Stretch lines with a background to the screen edge. **Do this before inverting** — a
+    // selection spanning multiple lines must look like one block, with the stretched space in it.
     for line in shown.iter_mut() {
         if line.style.bg.is_some() {
             *line = stretch(std::mem::take(line), area.width as usize);
         }
     }
-    // 고른 구간을 반전시켜 보여준다. **열 단위로 자른다** — 줄 통째로 반전하면 고른 것과
-    // 보이는 것이 달라진다.
+    // Show the selected span inverted. **Clip by column** — inverting whole lines would make
+    // what was selected differ from what is shown.
     if let Some(drag) = state.drag.filter(|d| !d.is_click()) {
         for (i, line) in shown.iter_mut().enumerate() {
             if let Some((from, to)) = selection::highlight_span(&drag, start + i) {
@@ -53,10 +53,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut State) {
     frame.render_widget(Paragraph::new(shown), area);
 }
 
-/// 배경이 얹힌 줄을 화면 폭까지 늘린다.
+/// Stretches a line with a background to the screen width.
 ///
-/// **여기서 늘린다.** `rows`에서 늘리면 그 공백이 `Rendered::plain()`을 타고 클립보드로
-/// 나가 붙여넣은 코드가 망가진다. 그리는 자리만 폭을 알면 되고, 세는 자리는 몰라도 된다.
+/// **Stretch here.** Stretching in `rows` would carry that padding through `Rendered::plain()`
+/// to the clipboard and break pasted code. Only the drawing side needs the width, not the counting side.
 fn stretch(line: Line<'static>, width: usize) -> Line<'static> {
     let used: usize = line.spans.iter().map(|s| display_width(&s.content)).sum();
     if used >= width {
@@ -64,8 +64,8 @@ fn stretch(line: Line<'static>, width: usize) -> Line<'static> {
     }
     let bg = line.style.bg;
     let mut spans = line.spans;
-    // **fg를 반드시 준다.** 안 주면 터미널 자체의 기본 전경색이 새어 나오고,
-    // 그 자리가 반전되면 엉뚱한 색이 뜬다(`theme.rs`의 규칙).
+    // **Must set fg.** Without it, the terminal's own default foreground bleeds through, and
+    // inverting that space shows the wrong color (the rule in `theme.rs`).
     let mut style = Style::default().fg(crate::theme::TEXT);
     if let Some(bg) = bg {
         style = style.bg(bg);
@@ -74,9 +74,9 @@ fn stretch(line: Line<'static>, width: usize) -> Line<'static> {
     Line::from(spans).style(line.style)
 }
 
-/// 화면 열 `[from, to)`만 반전시킨 줄. 경계에 걸친 span은 쪼갠다.
+/// A line with only screen columns `[from, to)` inverted. Spans crossing the boundary are split.
 ///
-/// 원래 색을 잃지 않으려고 span을 다시 칠하지 않고 나눠서 modifier만 얹는다.
+/// To keep original colors, spans are split rather than repainted and only a modifier is applied.
 fn reverse_cols(line: &Line<'static>, from: usize, to: usize) -> Line<'static> {
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut col = 0usize;

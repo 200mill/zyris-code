@@ -1,5 +1,5 @@
-//! 새 프로젝트 양식. 화면 가운데에 겹쳐 띄운다 — 목록 위에 얹히므로 Esc로 닫으면
-//! 그대로 목록이 보인다.
+//! New-project form. Overlaid in the center of the screen — it sits on top of the list, so Esc
+//! closes it and the list is right there underneath.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -12,7 +12,7 @@ use crate::newproject::{Field, Form};
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, form: &Form, lang: crate::lang::Lang) {
-    // 이름·설명 두 칸 + 안내 줄 + (오류 줄) + 테두리 두 줄.
+    // Name and description fields + hint line + (error line) + two border lines.
     let h = 5u16.saturating_add(form.error.is_some() as u16);
     let h = h.min(area.height.saturating_sub(2)).max(5);
     let w = 60.min(area.width.saturating_sub(4)).max(24);
@@ -23,10 +23,10 @@ pub fn draw(frame: &mut Frame, area: Rect, form: &Form, lang: crate::lang::Lang)
         height: h,
     };
 
-    // 뒤를 지우지 않으면 목록이 비쳐 보인다.
+    // Without clearing the back, the list shows through.
     frame.render_widget(Clear, box_area);
-    // **경계에 걸친 전각 글자를 마저 지운다.** 목록의 글이 상자 왼쪽 바깥에 앞 절반만
-    // 남아 있으면 테두리가 깨진다.
+    // **Scrub the rest of wide characters straddling the border.** If the list's text leaves only
+    // its first half outside the box's left edge, the border looks broken.
     crate::widgets::picker::scrub_left_edge(frame, box_area);
 
     let block = Block::default()
@@ -66,10 +66,10 @@ pub fn draw(frame: &mut Frame, area: Rect, form: &Form, lang: crate::lang::Lang)
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// 양식의 한 줄: 칸 이름 + 값. **활성 칸에는 커서가 선다.**
+/// One line of the form: field name + value. **The active field gets the cursor.**
 ///
-/// 값이 비면 무엇을 쓰는 자리인지 흐리게 말해 준다 — 빈 칸은 이유를 모르면 고장으로
-/// 보인다. 값은 폭에 맞춰 자르고, 칸이 활성이면 끝에 커서를 붙인다.
+/// When the value is empty, dimly say what belongs there — without a reason, an empty field looks
+/// broken. The value is truncated to the width, and a cursor is appended when the field is active.
 fn field_line(
     label: &'static str,
     placeholder: &'static str,
@@ -82,7 +82,7 @@ fn field_line(
     if input.text.is_empty() {
         spans.push(Span::styled(placeholder, Style::default().fg(theme::BORDER_LIGHT)));
     } else {
-        // 붙여넣기로 줄바꿈이 들어올 수 있다 — 한 줄 칸이므로 공백으로 보여준다.
+        // A paste can bring newlines — since it's a single-line field, show them as spaces.
         let shown = truncate(&input.text.replace('\n', " "), width.saturating_sub(3));
         spans.push(Span::styled(shown, Style::default().fg(theme::TEXT)));
     }
@@ -92,7 +92,7 @@ fn field_line(
     Line::from(spans)
 }
 
-/// 칸 수에 맞춰 자른다. 자르면 `…`를 붙여 잘렸다는 것을 보인다.
+/// Truncates to fit the field. When cut, appends `…` to show something was cut.
 fn truncate(s: &str, limit: usize) -> String {
     if display_width(s) <= limit {
         return s.to_string();

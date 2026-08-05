@@ -28,19 +28,19 @@ import termios
 import time
 
 BIN = "target/debug/zyris-code"
-# 앱이 도는 자리. 여기와 그 아래만 만질 수 있어야 한다.
+# Where the app runs. Only this and what's below it must be touchable.
 INSIDE = "/tmp/zyris-code-sandbox/안"
-# 그 밖. 승인 없이는 못 읽어야 한다.
+# Outside of it. Must not be readable without approval.
 OUTSIDE = "/tmp/zyris-code-sandbox/밖"
 SECRET = "울타리너머의비밀"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[()][A-Z0-9]|\x1b[=>]")
 
-# 1단계: 안쪽만 만진다. 아무것도 묻지 않아야 한다.
+# Step 1: touch only the inside. It must not ask anything.
 STEP1 = (
     "이름이 '__code_edit__write'로 끝나는 도구로 path='안것.txt'에 '안녕'이라고 써라. "
     "설명은 하지 마라."
 )
-# 2단계: 밖으로 나간다. 반드시 물어야 한다.
+# Step 2: go outside. It must ask.
 STEP2 = (
     f"이름이 '__file_io__read'로 끝나는 도구로 path='{OUTSIDE}/비밀.txt'를 읽고, "
     "그 안에 적힌 낱말을 이름이 '__code_edit__write'로 끝나는 도구로 path='밖것.txt'에 써라."
@@ -122,7 +122,7 @@ def main():
         print("  ✓ 떴다")
         checks += 1
 
-        # ── 안쪽: 아무것도 묻지 않아야 한다 ──
+        # ── Inside: must not ask anything ──
         time.sleep(3)
         os.write(primary, STEP1.encode())
         time.sleep(1.0)
@@ -142,7 +142,7 @@ def main():
             print("  ✗ 안쪽인데 승인을 물었다")
             ok = False
 
-        # ── 밖으로: 반드시 물어야 한다 ──
+        # ── Outside: must ask ──
         buf.clear()
         time.sleep(2)
         os.write(primary, STEP2.encode())
@@ -155,7 +155,7 @@ def main():
         else:
             return finish(proc, primary, checks, total, False)
 
-        # **묻는 동안은 아무 일도 없어야 한다.** 이미 새어 나왔으면 승인이 무의미하다.
+        # **Nothing may happen while it's asking.** If it already leaked, approval is meaningless.
         out = os.path.join(INSIDE, "밖것.txt")
         leaked = os.path.exists(out) and SECRET in open(out).read()
 

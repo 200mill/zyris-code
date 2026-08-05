@@ -1,7 +1,7 @@
-//! 항목을 화면 줄로 편다. **대화 화면의 유일한 정본이다.**
+//! Lays items out into screen lines. **The single source of truth for the conversation screen.**
 //!
-//! 위젯이 그리는 것, 스크롤 창 계산, 카드 접힘 높이가 전부 여기서 나온 같은
-//! `Vec<Line>`을 쓴다. 그리는 코드와 세는 코드가 갈라지면 스크롤이 조용히 어긋난다.
+//! What the widget draws, the scroll-window math, and the folded-card heights all use the same
+//! `Vec<Line>` produced here. If the drawing code and the measuring code diverge, scrolling quietly drifts.
 
 use std::collections::HashMap;
 
@@ -12,34 +12,34 @@ use crate::markdown;
 use crate::theme;
 use crate::timeline::{Item, Part};
 
-/// 대화 좌우 여백.
+/// Horizontal padding of the conversation.
 ///
-/// **마커가 이 여백을 쓴다.** `▌`·`│`·`●`·`▸`는 여백 자리에 서고 글은 그 안쪽에서
-/// 시작한다 — 그래서 글은 가지런한데 마커는 눈에 띄게 튀어나온다.
+/// **The markers use this padding.** `▌`·`│`·`●`·`▸` stand in the padding and the text starts inside
+/// it — so the text is tidy while the markers visibly stick out.
 pub const PAD: u16 = 2;
 
 fn pad() -> Span<'static> {
     Span::styled(" ".repeat(PAD as usize), Style::default().fg(theme::TEXT))
 }
 
-/// 글이 실제로 쓸 수 있는 폭.
+/// The width text can actually use.
 ///
-/// 왼쪽 여백만 뺀다 — **오른쪽 여백은 `transcript`가 그리는 자리 자체를 줄여서** 준다.
-/// 여기서 또 빼면 오른쪽만 두 배로 벌어진다.
+/// Only the left padding is subtracted — **the right padding is given by `transcript` shrinking the drawing area
+/// itself**. Subtracting again here would double the gap on the right only.
 fn body_width(width: u16) -> u16 {
     width.saturating_sub(PAD)
 }
 
-/// 카드 하나의 접힘 상태.
+/// One card's fold state.
 ///
-/// **기본은 접힘이다.** 추론은 훑어보는 것이지 읽는 것이 아니라, 답을 보러 온 화면을
-/// 생각 더미가 밀어내면 안 된다. **접혀도 도구 줄은 보인다** — 숨기는 것은 추론
-/// 본문뿐이다. 무슨 일을 했는지까지 가리면 사람은 에이전트가 뭘 하는지 모른다.
-/// 펴는 것은 사람이 Ctrl+O로 한다.
+/// **The default is folded.** Reasoning is for skimming, not reading, and a wall of thinking must not
+/// push away the screen the person came to for answers. **Even folded, the tool rows show** — only the reasoning
+/// body is hidden. Hiding what was done would leave the person not knowing what the agent is up to.
+/// Opening is done by the person with Ctrl+O.
 ///
-/// **저절로 바뀌는 일은 없다.** 예전에는 추론 중에 펴고 답이 시작되면 접었는데, 그러면
-/// 읽고 있던 화면이 스스로 움직이고 "늦게 온 추론이 도로 펴면 안 된다" 같은 예외가
-/// 계속 붙었다. 그 알고리즘을 통째로 걷어냈다.
+/// **Nothing changes by itself.** It used to unfold during reasoning and fold when the answer started, but that
+/// made the screen being read move on its own and kept sprouting exceptions like "late reasoning must not
+/// unfold again". That algorithm was removed wholesale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Fold {
     pub open: bool,
@@ -47,28 +47,28 @@ pub struct Fold {
 
 pub type Folds = HashMap<i64, Fold>;
 
-/// 답 텍스트에서 "직접 입력"을 표시하는 머리말. `question::answer_text`가 붙인다.
+/// The prefix in the answer text that marks a "direct input". `question::answer_text` attaches it.
 pub const FREE_MARK: &str = "직접 입력:";
 
-/// 그려낸 결과. 줄과 함께 **어느 줄이 어느 작업 카드의 머리인지**를 준다.
+/// The rendered result. Along with the lines it gives **which line is the head of which work card**.
 ///
-/// 클릭으로 카드를 접으려면 화면의 그 줄이 무엇인지 알아야 하는데, 그것을 아는 곳은
-/// 줄을 만든 여기뿐이다. 위젯이 따로 세면 그리는 것과 어긋난다.
+/// Folding a card by click requires knowing what a given screen line is, and the only place that knows
+/// is here, where the lines are made. If the widget counted separately, it would drift from what's drawn.
 #[derive(Debug, Default)]
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
-    /// 행 인덱스 → 그 행을 누르면 접히고 펴지는 카드의 seq.
+    /// Row index → the seq of the card that clicking that row folds and unfolds.
     pub cards: HashMap<usize, i64>,
 }
 
 impl Rendered {
-    /// 각 줄의 평문. 선택 추출이 쓴다.
+    /// Plain text of each line. Used by selection extraction.
     pub fn plain(&self) -> Vec<String> {
         self.lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
     }
 }
 
-/// 지금 답하고 있는 질문. 그 카드만 커서와 체크를 그린다.
+/// The question currently being answered. Only that card gets the cursor and checkmark.
 pub struct Active<'a> {
     pub seq: i64,
     pub answering: &'a crate::question::Answering,
@@ -78,10 +78,10 @@ pub fn rows(items: &[Item], width: u16, folds: &Folds) -> Rendered {
     rows_with(items, width, folds, None)
 }
 
-/// 항목 전체를 한 번에 편다. 테스트와 작은 화면이 쓴다.
+/// Lays out all items at once. Used by tests and small screens.
 ///
-/// 실제 그리기는 `Cache`를 지나간다 — 대화가 길어지면 이 함수는 매번 전부를 다시
-/// 만들어 프레임 예산을 넘긴다.
+/// Real drawing goes through `Cache` — as the conversation grows, this function rebuilds everything
+/// every time and blows the frame budget.
 pub fn rows_with(
     items: &[Item],
     width: u16,
@@ -93,21 +93,21 @@ pub fn rows_with(
     Rendered { lines: cache.window(0, cache.total()), cards: cache.cards().clone() }
 }
 
-/// 항목 하나를 그린 결과.
+/// The result of rendering one item.
 #[derive(Debug, Clone)]
 struct Made {
     lines: Vec<Line<'static>>,
-    /// 눌러서 접었다 폈다 하는 줄들. (이 항목 안에서 몇 번째 줄, 어느 seq).
+    /// The lines that fold/unfold when clicked. (which line within this item, which seq).
     ///
-    /// 작업 카드 머리가 하나 있고, 그 안의 도구 줄마다 하나씩 더 있다 —
-    /// **도구는 저마다 따로 펴진다.**
+    /// There's one work-card head, plus one per tool row inside it —
+    /// **each tool unfolds separately.**
     heads: Vec<(usize, i64)>,
 }
 
-/// 이 항목을 그리는 데 영향을 주는 접힘 상태 전부. 캐시 비교가 이걸 본다.
+/// Every fold state that affects how this item is drawn. The cache comparison looks at this.
 ///
-/// 항목 자기 것만 보면 도구 줄 하나를 폈을 때 캐시가 "안 바뀌었다"고 여겨 화면이
-/// 그대로 있는다.
+/// Looking only at the item's own would make the cache think "nothing changed" when one tool row
+/// is unfolded, and the screen would stay put.
 type Affecting = Vec<(i64, Fold)>;
 
 fn affecting(item: &Item, folds: &Folds) -> Affecting {
@@ -122,12 +122,12 @@ fn affecting(item: &Item, folds: &Folds) -> Affecting {
     out
 }
 
-/// 항목이 놓인 자리. `begin`은 **앞의 구분 빈 줄을 포함한** 시작이다.
+/// Where an item sits. `begin` is the start **including the separator blank line before it**.
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     seq: i64,
     begin: usize,
-    /// 앞에 구분 빈 줄이 있는가. 첫 항목만 없다.
+    /// Whether a separator blank line precedes it. Only the first item lacks one.
     lead_blank: bool,
     len: usize,
 }
@@ -136,17 +136,17 @@ impl Slot {
     fn end(&self) -> usize {
         self.begin + self.lead_blank as usize + self.len
     }
-    /// 이 항목의 첫 실제 줄.
+    /// The item's first real line.
     fn first_line(&self) -> usize {
         self.begin + self.lead_blank as usize
     }
 }
 
-/// 만들어 둔 줄을 항목별로 들고 있다가 **바뀐 것만** 다시 만든다.
+/// Holds made lines per item and remakes **only what changed**.
 ///
-/// 예전에는 프레임마다 모든 항목의 마크다운을 다시 파싱했다. 대화가 길어질수록 비용이
-/// 선형으로 늘어, 16턴쯤에서 한 프레임이 20fps 예산의 1.7배가 됐다 — 다 그리기 전에
-/// 다음 프레임이 겹쳐 찍히면서 글자가 깨졌다. `tests/perf.rs`가 그 수치를 잰다.
+/// It used to re-parse every item's markdown each frame. As the conversation grew, the cost rose
+/// linearly, and around 16 turns one frame hit 1.7× the 20fps budget — the next frame stamped on top
+/// before drawing finished, garbling text. `tests/perf.rs` measures those numbers.
 #[derive(Debug, Default)]
 pub struct Cache {
     width: u16,
@@ -154,7 +154,7 @@ pub struct Cache {
     slots: Vec<Slot>,
     total: usize,
     cards: HashMap<usize, i64>,
-    /// 실제로 다시 그린 항목 수. 캐시가 정말 도는지 테스트가 이걸로 확인한다.
+    /// How many items were actually redrawn. Tests use this to confirm the cache really works.
     renders: u64,
 }
 
@@ -175,12 +175,12 @@ impl Cache {
         self.renders
     }
 
-    /// 어느 항목이 몇 번째 줄에 놓이는지 정한다. 바뀐 항목만 다시 그린다.
+    /// Decides which item lands on which line. Only redraws changed items.
     ///
-    /// `skip`은 지금 아래 패널에서 답하고 있는 질문의 seq다 — 대화 안에 또 그리면
-    /// 같은 질문이 두 벌로 보인다.
+    /// `skip` is the seq of the question currently being answered in the lower panel — drawing it again
+    /// in the transcript would show the same question twice.
     pub fn layout(&mut self, items: &[Item], width: u16, folds: &Folds, skip: Option<i64>) {
-        // 폭이 바뀌면 줄바꿈 자리가 전부 달라진다. 통째로 버린다.
+        // A width change moves every wrap point. Throw it all away.
         if self.width != width {
             self.width = width;
             self.made.clear();
@@ -215,14 +215,14 @@ impl Cache {
         }
         self.total = pos;
 
-        // 화면에서 사라진 항목의 줄까지 들고 있을 이유는 없다.
+        // No reason to keep lines for items that have left the screen.
         if self.made.len() > self.slots.len() * 2 + 8 {
             let live: std::collections::HashSet<i64> = self.slots.iter().map(|s| s.seq).collect();
             self.made.retain(|seq, _| live.contains(seq));
         }
     }
 
-    /// `[from, to)` 구간의 줄만 만들어 낸다. **보이는 만큼만 하는 것이 요점이다.**
+    /// Produces only the lines in `[from, to)`. **Doing only what's visible is the point.**
     pub fn window(&self, from: usize, to: usize) -> Vec<Line<'static>> {
         let to = to.min(self.total);
         if from >= to {
@@ -249,7 +249,7 @@ impl Cache {
         out
     }
 
-    /// 모든 줄의 평문. **선택을 복사할 때만 부른다** — 프레임마다 부르면 안 된다.
+    /// Plain text of all lines. **Only called when copying a selection** — never per frame.
     pub fn plain(&self) -> Vec<String> {
         self.window(0, self.total)
             .iter()
@@ -262,7 +262,7 @@ fn blank() -> Line<'static> {
     Line::from(Span::styled("", Style::default().fg(theme::TEXT)))
 }
 
-/// 항목 하나를 줄로 편다. 여기가 마크다운을 파싱하는 유일한 자리다.
+/// Lays one item out into lines. This is the only place markdown is parsed.
 fn make(item: &Item, width: u16, folds: &Folds) -> Made {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut heads: Vec<(usize, i64)> = Vec::new();
@@ -270,10 +270,10 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
     match item {
         Item::User { text, .. } => {
             for (i, raw) in text.lines().enumerate() {
-                // **직접 써 넣은 답은 다르게 보인다.** 선택지에 없던 답이라는 사실
-                // 자체가 정보이고, 고른 것과 섞여 보이면 그 구별이 사라진다.
-                // 답 줄은 `  - 직접 입력: …` 꼴로 온다 — 목록 기호를 먼저 벗겨야
-                // 머리말이 보인다.
+                // **Typed-in answers look different.** The fact that the answer wasn't among the options is itself
+                // information, and if it blends in with the picked ones that distinction disappears.
+                // Answer lines come in the form `  - 직접 입력: …` — the list marker must be stripped first
+                // for the prefix to show.
                 let bare = raw.trim_start().trim_start_matches("- ").trim_start();
                 let typed = bare.starts_with(FREE_MARK);
                 let body = if typed { bare.trim_start_matches(FREE_MARK).trim() } else { raw };
@@ -282,8 +282,8 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                 } else {
                     Style::default().fg(theme::TEXT)
                 };
-                // **막대는 모든 줄에 선다.** 첫 줄에만 세우면 두 번째 줄부터
-                // 답변과 구별되지 않는다 — 긴 질문일수록 그 구간이 길다.
+                // **The bar stands on every line.** Set only on the first line, the second line onward
+                // wouldn't be distinguishable from an answer — the longer the question, the longer that stretch.
                 let _ = i;
                 let mut spans = vec![Span::styled("▌ ", Style::default().fg(theme::ACCENT))];
                 if typed {
@@ -298,22 +298,22 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                             sp
                         }
                     }));
-                    // **배경은 span이 아니라 줄에 얹는다.** span에 칠하면 글자 폭에서
-                    // 끊겨 얼룩이 되고, 폭을 채우려고 공백을 넣으면 그 공백이
-                    // `plain()`을 타고 클립보드로 나간다. 화면 폭까지 늘리는 일은
-                    // 그리는 자리(`widgets::transcript::stretch`)가 한다.
+                    // **The background rides on the line, not the spans.** Painted on a span it breaks at glyph widths
+                    // into blotches, and padding with spaces to fill the width lets those spaces
+                    // travel through `plain()` into the clipboard. Stretching to the screen width is
+                    // done where it draws (`widgets::transcript::stretch`).
                     out.push(Line::from(row).style(Style::default().bg(theme::USER_BG)));
                     spans = vec![Span::styled("▌ ", Style::default().fg(theme::ACCENT))];
                 }
             }
         }
         Item::Agent { text, .. } => {
-            // 본문은 여백 안쪽에서 시작한다. 마커가 붙는 줄들과 글이 같은 열에 서야
-            // 눈이 편하다 — 여백 바깥으로 나오는 것은 마커뿐이다.
+            // The body starts inside the padding. The lines carrying markers and the text must stand in the same
+            // column for the eye's comfort — only markers come out beyond the padding.
             //
-            // **첫 줄에만 마커를 둔다.** 모든 줄에 붙이면 인용문처럼 읽히고, 답변은
-            // 대화에서 가장 긴 덩어리라 그 효과가 화면을 덮는다. 마커가 아예 없으면
-            // 답변만 표식이 없어 "기본값이라 깨끗한" 게 아니라 그냥 안 갈린다.
+            // **The marker goes on the first line only.** On every line it reads like a blockquote, and since an answer is
+            // the longest chunk in the conversation, that effect would cover the screen. With no marker at all,
+            // only the answer lacks a sign — not "clean by default" but simply undifferentiated.
             for (i, line) in markdown::render(text, body_width(width)).into_iter().enumerate() {
                 let mut spans = match i {
                     0 => vec![Span::styled("◆ ", Style::default().fg(theme::ACCENT))],
@@ -329,11 +329,11 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                 Span::styled(message.clone(), Style::default().fg(theme::DANGER)),
             ]));
         }
-        // 지금 답하고 있는 질문은 여기 오지 않는다 — `layout`이 걸러 낸다.
+        // The question being answered doesn't come here — `layout` filters it out.
         Item::Question { steps, answered, .. } => {
             out.extend(question_rows(steps, *answered, width));
         }
-        // 앱이 한 말. 사람도 에이전트도 아닌 제3의 목소리라 마커를 따로 준다.
+        // What the app said. It's a third voice that is neither person nor agent, so it gets its own marker.
         Item::System { text, .. } => {
             for (i, line) in markdown::render(text, body_width(width)).into_iter().enumerate() {
                 let mut spans = vec![Span::styled(
@@ -352,10 +352,10 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
         }
         Item::Work { seq, title, parts } => {
             let marker = if fold.open { "▾ " } else { "▸ " };
-            // 제목은 런 시작 시점에 비어 있고 작은 모델이 나중에 채운다.
+            // The title is empty when the run starts and a small model fills it in later.
             let head = if title.is_empty() { "작업 중…" } else { title.as_str() };
-            // 이 줄을 누르면 이 카드가 접히고 펴진다. 어느 화면 줄인지는
-            // 배치를 아는 `layout`이 정한다.
+            // Pressing this line folds and unfolds this card. Which screen line it is
+            // is decided by `layout`, which knows the layout.
             heads.push((0, *seq));
             let tools = parts.iter().filter(|p| matches!(p, Part::Step(_))).count();
             let mut card = vec![
@@ -369,9 +369,9 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                     Style::default().fg(theme::TEXT_MUTED),
                 ),
             ];
-            // **접혀도 무엇이 바뀌었는지는 보인다.** 수치는 도구 줄에만 있고 그건 카드를
-            // 펴야 보이므로, 턴이 끝나 카드가 접히면 흔적이 통째로 사라진다.
-            // 아무것도 안 바꾼 카드에 `+0 −0`을 붙이면 그건 그것대로 시끄럽다.
+            // **Even folded, what changed is visible.** The numbers only live on tool rows, which need the card
+            // unfolded, so when the turn ends and the card folds, the trace would vanish entirely.
+            // Sticking `+0 −0` on a card that changed nothing is its own kind of noise.
             let (added, removed) = parts.iter().fold((0u32, 0u32), |(a, r), p| match p {
                 Part::Step(s) => match &s.diff {
                     Some(d) => (a + d.added, r + d.removed),
@@ -384,25 +384,25 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
             }
             out.push(Line::from(card));
 
-            // **도구 줄은 접혀도 보인다.** 카드 접힘은 추론을 숨기는 것이지 무슨
-            // 일을 했는지까지 가리는 것이 아니다 — 툴 사용은 대화의 흐름이라
-            // 생각 더미에 묻히면 사람은 에이전트가 뭘 하는지 모른다. 펼치면
-            // 생각 줄이 그 자리에 끼어들어 "생각 → 도구 → 생각 → 도구" 순서가
-            // 그대로 보인다.
+            // **Tool rows show even when folded.** Folding a card hides reasoning, not what was
+            // done — tool use is part of the conversation's flow, and buried under thinking
+            // the person wouldn't know what the agent is doing. Unfolded, the
+            // thinking lines interleave in place and the "think → tool → think → tool" order
+            // shows as is.
             for part in parts {
                 match part {
                     Part::Think(text) if fold.open => {
-                        // **추론 줄도 눌러서 카드를 접고 펼 수 있다.** Ctrl+O와 같은
-                        // 동작 — 클릭은 카드 접힘을 토글하지 도구 상세를 열지 않는다.
+                        // **Thinking lines can fold and unfold the card by click too.** The same action
+                        // as Ctrl+O — a click toggles the card fold, it doesn't open tool detail.
                         for line in markdown::render(text, body_width(width)) {
                             heads.push((out.len(), *seq));
                             let mut spans = vec![Span::styled(
                                 "┊ ",
                                 Style::default().fg(theme::BORDER_LIGHT),
                             )];
-                            // 본문을 통째로 흐리게 다시 칠한다. 답변과 같은 밝기면
-                            // 무엇이 결론인지 안 보인다 — 추론 안의 강조나 인라인
-                            // 코드 색을 잃는 것은 그 대가로 치른다.
+                            // The whole body is repainted dim. At the same brightness as the answer,
+                            // the conclusion wouldn't be visible — losing emphasis and inline
+                            // code colours inside reasoning is the price paid for that.
                             spans.extend(line.spans.into_iter().map(|s| {
                                 Span::styled(
                                     s.content.to_string(),
@@ -413,10 +413,9 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                         }
                     }
                     Part::Text(text) => {
-                        // **런 중의 메시지.** 접혀도 보인다 — 카드 접힘은 추론을
-                        // 숨기는 것이지 대화 흐름까지 가리는 것이 아니다. 도구 줄과
-                        // 같은 정책. 클릭 대상은 아니다 — 추론 줄과 달리 메시지는
-                        // 내용이지 손잡이가 아니다.
+                        // **A run-time message.** It shows even when folded — folding a card hides reasoning,
+                        // not the conversation flow. Same policy as tool rows. Not a click target — unlike thinking lines,
+                        // a message is content, not a handle.
                         for (i, line) in
                             markdown::render(text, body_width(width)).into_iter().enumerate()
                         {
@@ -430,20 +429,20 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                     }
                     Part::Step(step) => {
                         let dot = if step.failed { theme::DANGER } else { theme::SUCCESS };
-                        // 펼칠 것이 있는 줄만 누를 수 있다. 눌러도 아무 일이
-                        // 없으면 고장으로 보인다.
+                        // Only rows with something to unfold are clickable. Pressing one and having
+                        // nothing happen looks like a bug.
                         let can_open = !step.detail.is_empty() || step.diff.is_some();
-                        // **접힌 카드의 도구는 상세를 열 수 없다** — 카드를 접었다는
-                        // 것은 다 접었다는 뜻이다. 접혀 있는데 눌러도 아무 일 없는
-                        // 줄은 클릭 대상이 아니다.
+                        // **Tools of a folded card can't open their detail** — folding the card means
+                        // folding everything. A row that does nothing while folded is
+                        // not a click target.
                         let open =
                             fold.open && can_open && folds.get(&step.seq).is_some_and(|f| f.open);
                         if fold.open && can_open {
                             heads.push((out.len(), step.seq));
                         }
-                        // **이름과 요약을 따로 칠한다.** 추론이 흐린 색으로 화면을
-                        // 채우는데 도구까지 같은 색이면 "무엇을 했는가"가 생각
-                        // 더미에 묻힌다. 훑을 때 눈이 잡는 것은 이 이름이다.
+                        // **Name and summary are painted separately.** Reasoning fills the screen in a dim colour; if tools
+                        // shared that colour, "what was done" would be buried in the thinking pile.
+                        // When skimming, the eye catches this name.
                         let mut head = vec![
                             Span::styled("● ", Style::default().fg(dot)),
                             Span::styled(
@@ -457,12 +456,12 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                                 Style::default().fg(theme::TOOL_ARG),
                             ));
                         }
-                        // **접혀 있어도 얼마나 바뀌었는지는 보인다.** 펴야 알 수
-                        // 있으면 훑어보는 것만으로는 무슨 일이 있었는지 모른다.
+                        // **Even folded, how much changed is visible.** If it took unfolding to know,
+                        // a skim alone wouldn't tell what happened.
                         if let Some(d) = &step.diff {
                             head.extend(counts(d.added, d.removed));
                         }
-                        // 펼칠 수 있다는 것을 알려 준다. 모르면 아무도 안 누른다.
+                        // Signals that it can be unfolded. Not knowing, nobody would click.
                         head.push(Span::styled(
                             match (fold.open && can_open, open) {
                                 (false, _) => "",
@@ -474,19 +473,17 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
                         out.push(Line::from(head));
                         if open {
                             match &step.diff {
-                                // **diff가 있으면 그것만 보여 준다.** 같은 내용을
-                                // JSON으로 한 번 더 얹으면 화면만 두 배로 길어지고
-                                // 사람이 읽는 것은 diff 쪽이다.
+                                // **When a diff exists, only it is shown.** Layering the same content as JSON once more
+                                // just doubles the screen length, and what the person reads is the diff.
                                 Some(d) => {
                                     for line in &d.lines {
                                         out.push(diff_line(line, body_width(width) as usize));
                                     }
                                 }
-                                // 상세는 **섹션별로** 그린다. `event::tool_detail`이
-                                // "인자/출력/결과/오류" 머리말로 조립하므로 그것을
-                                // 색·마커로 갈라 보여 준다 — JSON 덤프와 셸 출력이
-                                // 한 덩어리로 보이면 무엇이 인자고 무엇이 결과인지
-                                // 눈이 매번 읽어야 한다.
+                                // Detail is drawn **per section**. `event::tool_detail` assembles it with
+                                // the "Args/Output/Result/Error" heads, so they're set apart by colour and markers — if JSON dumps and shell output
+                                // looked like one lump, the eye would have to re-read every time
+                                // what's an argument and what's a result.
                                 None => {
                                     out.extend(tool_detail_lines(
                                         &step.detail,
@@ -505,10 +502,10 @@ fn make(item: &Item, width: u16, folds: &Folds) -> Made {
     Made { lines: out, heads }
 }
 
-/// 요약 줄에 붙는 `  +12 −3`.
+/// The `  +12 −3` attached to summary lines.
 ///
-/// **두 수를 따로 칠한다.** 한 색으로 붙여 두면 어느 쪽이 는 것인지 눈이 한 번 더
-/// 읽어야 안다. 빼기는 하이픈이 아니라 U+2212라 더하기와 폭이 같다 — 숫자가 가지런하다.
+/// **The two numbers are painted separately.** Painted one colour, the eye has to read once more
+/// which side grew. The minus is U+2212, not a hyphen, so it has the same width as the plus — the numbers line up.
 fn counts(added: u32, removed: u32) -> Vec<Span<'static>> {
     vec![
         Span::styled(format!("  +{added}"), Style::default().fg(theme::DIFF_ADD)),
@@ -516,12 +513,12 @@ fn counts(added: u32, removed: u32) -> Vec<Span<'static>> {
     ]
 }
 
-/// diff 한 줄. **색만 칠하고 배경은 칠하지 않는다** — 배경을 칠하면 선택 영역과 싸운다.
+/// One diff line. **Only colour, no background** — a background would fight the selection.
 ///
-/// 승인 화면(`widgets/approve.rs`)도 이것을 쓴다. 실행 전 미리보기와 실행 뒤 기록이
-/// 다르게 보이면 사람이 같은 것인 줄 모른다. `pub(crate)`인 이유다.
+/// The approval screen (`widgets/approve.rs`) uses this too. If the pre-run preview and the post-run
+/// record looked different, the person wouldn't know they're the same. That's why it's `pub(crate)`.
 ///
-/// `width`는 글이 쓸 수 있는 폭(`body_width`)이고 들여쓰기 두 칸은 여기서 뺀다.
+/// `width` is the width text can use (`body_width`); the two-space indent is subtracted here.
 pub(crate) fn diff_line(line: &crate::tools::diff::DiffLine, width: usize) -> Line<'static> {
     use crate::tools::diff::DiffLine;
     let (text, colour) = match line {
@@ -536,8 +533,8 @@ pub(crate) fn diff_line(line: &crate::tools::diff::DiffLine, width: usize) -> Li
     ])
 }
 
-/// 폭을 넘으면 자른다. **접지 않는다** — 코드 한 줄이 화면 몇 줄로 늘어나면 무엇이
-/// 바뀌었는지 훑어보기 어렵고, 접힌 뒷부분이 다음 줄의 `+`/`-`처럼 읽힌다.
+/// Clips when wider than the limit. **No wrapping** — if one code line grew into several screen lines,
+/// skimming what changed gets hard, and the wrapped tail reads like the next line's `+`/`-`.
 fn clip_to(text: String, width: usize) -> String {
     let limit = width.max(8);
     if markdown::display_width(&text) <= limit {
@@ -557,8 +554,8 @@ fn clip_to(text: String, width: usize) -> String {
     out
 }
 
-/// 폭에 맞춰 접는다. **칸 수로만 자른다** — 도구 상세는 JSON이나 원문이라
-/// 마크다운으로 해석하면 안 된다.
+/// Wraps to fit the width. **Cuts only by column count** — tool detail is JSON or raw text, so it
+/// must not be parsed as markdown.
 fn wrap_plain(text: &str, width: u16) -> Vec<String> {
     let limit = (width as usize).max(8);
     let mut out = Vec::new();
@@ -583,33 +580,33 @@ fn wrap_plain(text: &str, width: u16) -> Vec<String> {
     out
 }
 
-/// 도구 상세의 섹션 머리말. `event::tool_detail`이 이 이름으로 조립한다.
+/// Section heads of tool detail. `event::tool_detail` assembles them under these names.
 const TOOL_SECTIONS: [&str; 4] = ["인자", "출력", "결과", "오류"];
 
-/// 도구 상세("인자\n…\n\n출력\n…")를 **박스로** 그린다.
+/// Draws the tool detail ("인자\n…\n\n출력\n…") **as a box**.
 ///
-/// 그대로 평문으로 늘어놓으면 JSON 덤프와 셸 출력이 구분되지 않는다. 상세 전체를
-/// 테두리로 감싸 도구 줄의 아래쪽 공간과 갈라 보이고, "인자/출력/결과/오류" 머리말은
-/// 색·마커로 따로 칠한다. 실패한 도구는 테두리까지 위험색이다. 마크다운으로 해석하지
-/// 않는 것은 예전과 같다 — JSON의 `*`·`_`가 강조로 먹히면 원문이 망가진다.
+/// Laid out as plain text, JSON dumps and shell output wouldn't be told apart. The whole detail is
+/// wrapped in a border to separate it from the space below the tool row, and the "인자/출력/결과/오류" heads are
+/// painted separately in colour and markers. A failed tool is danger-coloured down to its border. Not parsing
+/// it as markdown is as before — if JSON's `*`·`_` got eaten as emphasis, the original text would break.
 fn tool_detail_lines(detail: &str, width: u16, failed: bool) -> Vec<Line<'static>> {
     let border = if failed { theme::DANGER } else { theme::BORDER_LIGHT };
-    // "│ " 거터를 뺀 안쪽 폭. 테두리까지 합치면 화면 폭과 같다.
+    // Inner width after removing the "│ " gutter. Together with the borders it equals the screen width.
     let inner = width.saturating_sub(2).max(8);
     let mut out: Vec<Line<'static>> = Vec::new();
-    // 위 테두리.
+    // Top border.
     out.push(Line::from(Span::styled(
         format!("┌{}┐", "─".repeat(inner as usize)),
         Style::default().fg(border),
     )));
     let mut section: Option<&'static str> = None;
-    // 머리말은 앞이 빈 줄(또는 첫 줄)에서만 인정한다 — 본문에 같은 단어가 있어도
-    // 섞이지 않게.
+    // A head is only recognized after a blank line (or at the first line) — so a same word in the
+    // body doesn't mix in.
     let mut prev_blank = true;
     for raw in detail.lines() {
         let trimmed = raw.trim();
-        // 머리말은 `TOOL_SECTIONS`의 원소를 그대로 집는다 — `detail`에서 빌린 조각을 담으면
-        // `section`이 `detail`보다 오래 살 수 없다.
+        // A head picks a `TOOL_SECTIONS` element verbatim — storing a slice borrowed from `detail`
+        // would let `section` outlive `detail`.
         let head = TOOL_SECTIONS.iter().copied().find(|s| *s == trimmed);
         if let (Some(head), true) = (head, prev_blank) {
             section = Some(head);
@@ -642,7 +639,7 @@ fn tool_detail_lines(detail: &str, width: u16, failed: bool) -> Vec<Line<'static
         }
         prev_blank = trimmed.is_empty();
     }
-    // 아래 테두리.
+    // Bottom border.
     out.push(Line::from(Span::styled(
         format!("└{}┘", "─".repeat(inner as usize)),
         Style::default().fg(border),
@@ -650,7 +647,7 @@ fn tool_detail_lines(detail: &str, width: u16, failed: bool) -> Vec<Line<'static
     out
 }
 
-/// 질문 카드. 답을 기다리는 동안은 고를 수 있고, 답이 간 뒤에는 읽기만 한다.
+/// Question card. While awaiting an answer it can be chosen; after the answer it's read-only.
 fn question_rows(
     steps: &[crate::question::Step],
     answered: bool,
@@ -692,7 +689,7 @@ mod tests {
         r.plain()
     }
 
-    /// 도구 줄 하나. **카드의 seq와 겹치지 않아야 한다** — 캐시 키가 seq다.
+    /// One tool row. **Must not collide with the card's seq** — the cache key is the seq.
     fn step_at(seq: i64, label: &str) -> Step {
         Step {
             seq,
@@ -719,9 +716,9 @@ mod tests {
         work_at(1)
     }
 
-    /// **접혀도 도구 줄은 보인다.** 카드 접힘은 추론을 숨기는 것이지 무슨 일을
-    /// 했는지까지 가리는 것이 아니다 — 툴 사용은 대화의 흐름이라 생각 더미에
-    /// 묻히면 사람은 에이전트가 뭘 하는지 모른다.
+    /// **Even folded, the tool rows show.** Folding a card hides reasoning, not what was
+    /// done — tool use is part of the conversation's flow, and buried under thinking the
+    /// person wouldn't know what the agent is doing.
     #[test]
     fn a_folded_card_hides_thinking_but_shows_tools() {
         let folds = Folds::from([(1, Fold::default())]);
@@ -734,7 +731,7 @@ mod tests {
         );
     }
 
-    /// 펼치면 생각이 도구 사이에 끼어든다 — 온 순서 그대로다.
+    /// Unfolded, thinking interleaves between tools — in the order it came.
     #[test]
     fn an_open_card_interleaves_thinking_with_tools() {
         let folds = Folds::from([(1, Fold { open: true })]);
@@ -752,8 +749,8 @@ mod tests {
         assert!(out.iter().any(|l| l.contains("grep")), "{out:?}");
     }
 
-    /// **머리줄은 도구를 몇 번 썼는지 말한다.** 세는 것이 `Part::Step`, 곧 도구 호출이라
-    /// "단계"는 그것을 가리키지 않는다.
+    /// **The head line says how many times tools were used.** What's counted is `Part::Step`, i.e. tool calls,
+    /// so the "steps" suffix doesn't point at them.
     #[test]
     fn a_card_head_counts_tools_not_steps() {
         let out = plain(&rows(&[work()], 60, &Folds::new()));
@@ -761,8 +758,8 @@ mod tests {
         assert!(!out[0].contains("단계"), "{out:?}");
     }
 
-    /// 접힘 상태를 모르는 카드는 접혀 있어야 한다 — 기본은 조용한 화면이다.
-    /// (도구 줄은 그 화면에도 선다.)
+    /// A card with no fold state must be folded — the default is a quiet screen.
+    /// (Tool rows still stand on that screen.)
     #[test]
     fn a_card_with_no_fold_state_defaults_to_folded() {
         let out = plain(&rows(&[work()], 40, &Folds::new()));
@@ -777,9 +774,8 @@ mod tests {
         assert!(out[0].starts_with('▌'), "{out:?}");
     }
 
-    /// **도구 줄은 와이어 이름을 그대로 쓰지 않는다.** `zyris__arch__terminal__exec`을
-    /// 그대로 두면 그것만으로 한 줄을 다 먹고, 매 줄이 같은 앞머리로 시작해 정작
-    /// 다른 부분이 안 보인다.
+    /// **Tool rows don't use the wire name as is.** Left as `zyris__arch__terminal__exec`, it alone
+    /// eats a whole line, and every row starting with the same prefix hides the part that differs.
     #[test]
     fn a_tool_row_shows_the_short_name() {
         let items = [work_at(1)];
@@ -789,8 +785,8 @@ mod tests {
         assert!(!row.contains("zyris__"), "와이어 이름이 그대로 나온다: {row:?}");
     }
 
-    /// **도구는 추론과 다른 색이어야 한다.** 펼친 카드에서 추론이 화면을 채우는데
-    /// 도구까지 흐린 색이면 "무엇을 했는가"가 생각 더미에 묻힌다.
+    /// **Tools must be a different colour from reasoning.** In an open card, reasoning fills the screen;
+    /// if tools are also dim, "what was done" gets buried in the thinking pile.
     #[test]
     fn a_tool_row_stands_out_from_the_reasoning_around_it() {
         let items = [work_at(1)];
@@ -806,7 +802,7 @@ mod tests {
         assert_ne!(name.style.fg, Some(theme::TEXT_MUTED), "추론과 같은 색이면 안 된다");
     }
 
-    /// 이름과 요약은 **따로 칠해진다** — 한 span이면 색을 나눌 수 없다.
+    /// The name and its summary are **coloured separately** — one span can't split colours.
     #[test]
     fn the_name_and_its_summary_are_coloured_apart() {
         let items = [work_at(1)];
@@ -821,7 +817,7 @@ mod tests {
         assert_eq!(note.style.fg, Some(theme::TOOL_ARG));
     }
 
-    /// **접혀도 무엇이 바뀌었는지는 보인다.** 머리줄과 도구 줄 양쪽에 수치가 있다.
+    /// **Even folded, how much changed is visible.** Both the head line and tool rows carry the numbers.
     #[test]
     fn a_folded_card_still_shows_how_much_changed() {
         let d = crate::tools::diff::Diff::parse("-a\n+b\n", "src/app.rs", 12, 3).unwrap();
@@ -846,15 +842,15 @@ mod tests {
         );
     }
 
-    /// 아무것도 안 바꾼 카드에 `+0 −0`을 붙이면 그건 그것대로 시끄럽다.
+    /// Sticking `+0 −0` on a card that changed nothing is its own kind of noise.
     #[test]
     fn a_card_that_changed_nothing_gets_no_counts() {
         let out = plain(&rows(&[work()], 60, &Folds::new()));
         assert!(!out[0].contains('+'), "{out:?}");
     }
 
-    /// **복사에 꼬리 공백이 섞이면 안 된다.** 배경을 칠하려고 줄을 채운 것이 클립보드로
-    /// 새어 나가면 붙여넣은 코드가 망가진다. 채우는 일은 `transcript`가 그릴 때만 한다.
+    /// **Trailing spaces must not leak into the copy.** If the padding used to paint the background seeps
+    /// into the clipboard, pasted code breaks. Padding is only done when `transcript` draws.
     #[test]
     fn the_band_never_leaks_trailing_spaces_into_the_copy() {
         let items = [Item::User { seq: 1, text: "안녕".into() }];
@@ -863,7 +859,7 @@ mod tests {
         }
     }
 
-    /// 배경은 span이 아니라 줄에 얹혀야 한다 — span에 칠하면 글자 폭에서 끊긴다.
+    /// The background must ride on the line, not the spans — painted on a span, it breaks at glyph widths.
     #[test]
     fn the_user_band_rides_on_the_line_not_the_spans() {
         let items = [Item::User { seq: 1, text: "안녕".into() }];
@@ -872,7 +868,7 @@ mod tests {
         assert!(r.lines[0].spans.iter().all(|s| s.style.bg.is_none()), "span에 배경이 칠해졌다");
     }
 
-    /// **막대는 모든 줄에 선다.** 첫 줄에만 있으면 두 번째 줄부터는 답변과 구별되지 않는다.
+    /// **The bar runs down every line.** Only on the first line, the second line onward wouldn't be distinguishable from an answer.
     #[test]
     fn the_user_bar_runs_down_every_line() {
         let items = [Item::User { seq: 1, text: "첫 줄\n둘째 줄".into() }];
@@ -881,7 +877,7 @@ mod tests {
         assert!(out.iter().all(|l| l.starts_with('▌')), "{out:?}");
     }
 
-    /// 줄바꿈으로 이어진 줄에도 막대가 서야 한다 — 긴 문장 하나가 여러 줄이 되는 쪽이다.
+    /// The bar must also stand on wrapped continuation lines — when one long sentence becomes several lines.
     #[test]
     fn the_user_bar_also_runs_down_wrapped_lines() {
         let long = "아주 긴 문장을 하나 적어서 좁은 폭에서 반드시 여러 줄로 접히게 만든다";
@@ -891,8 +887,8 @@ mod tests {
         assert!(out.iter().all(|l| l.starts_with('▌')), "{out:?}");
     }
 
-    /// **답변에도 마커가 있어야 한다.** 다른 것에는 다 있는데 답변만 없으면
-    /// "기본값이라 깨끗한" 게 아니라 그냥 안 갈린다.
+    /// **Answers need a marker too.** Everything else has one; an answer without one isn't "clean by default"
+    /// — it's just not differentiated.
     #[test]
     fn an_agent_answer_is_marked_too() {
         let items = [Item::Agent { seq: 1, text: "그건 rows.rs가 정합니다.".into() }];
@@ -901,7 +897,7 @@ mod tests {
         assert!(out[0].contains("rows.rs가 정합니다"), "{out:?}");
     }
 
-    /// 마커는 첫 줄에만. 모든 줄에 붙이면 그건 인용문처럼 읽힌다.
+    /// The marker only on the first line. On every line it reads like a blockquote.
     #[test]
     fn only_the_first_line_of_an_answer_is_marked() {
         let items = [Item::Agent { seq: 1, text: "첫 줄\n\n둘째 문단".into() }];
@@ -909,8 +905,8 @@ mod tests {
         assert_eq!(out.iter().filter(|l| l.starts_with('◆')).count(), 1, "{out:?}");
     }
 
-    /// **추론은 코드블록과 다른 거터를 쓴다.** 둘 다 `│ `면 같은 것으로 읽힌다 —
-    /// 답변 안의 코드블록이 `markdown.rs`에서 `│ `를 쓰고 있다.
+    /// **Reasoning uses a different gutter from code blocks.** If both used `│ `, they'd read as the same —
+    /// code blocks inside answers use `│ ` in `markdown.rs`.
     #[test]
     fn reasoning_does_not_use_the_code_block_gutter() {
         let folds = Folds::from([(1, Fold { open: true })]);
@@ -919,12 +915,12 @@ mod tests {
         assert!(think.starts_with('┊'), "{think:?}");
     }
 
-    /// 추론은 답변보다 흐려야 한다. 같은 밝기면 무엇이 결론인지 안 보인다.
+    /// Reasoning must be dimmer than the answer. At the same brightness, the conclusion isn't visible.
     #[test]
     fn reasoning_is_dimmer_than_the_answer() {
         let folds = Folds::from([(1, Fold { open: true })]);
         let r = rows(&[work()], 40, &folds);
-        // 마크다운은 낱말을 여러 span으로 쪼갠다 — span 하나에서 찾으면 못 만난다.
+        // Markdown splits words into several spans — searching a single span won't find it.
         let joined =
             |l: &Line<'static>| -> String { l.spans.iter().map(|s| s.content.as_ref()).collect() };
         let line = r
@@ -932,7 +928,7 @@ mod tests {
             .iter()
             .find(|l| joined(l).contains("먼저 구조를 보자"))
             .expect("추론 줄이 없다");
-        // 거터(`┊`)는 글이 아니라 선이라 그대로 BORDER_LIGHT다. 본문만 본다.
+        // The gutter (`┊`) is a line, not text, so it stays BORDER_LIGHT. Only the body is checked.
         assert!(
             line.spans
                 .iter()
@@ -944,7 +940,7 @@ mod tests {
         );
     }
 
-    /// 오류는 절대 조용히 지나가면 안 된다.
+    /// An error must never pass quietly.
     #[test]
     fn an_error_is_always_visible_and_red() {
         let items = [Item::Error { seq: 1, message: "크레딧이 부족합니다".into() }];
@@ -956,8 +952,8 @@ mod tests {
         );
     }
 
-    /// 실제 화면에 서는 것들을 섞어 놓은 대화. **`seq`는 서로 달라야 한다** —
-    /// `Timeline`이 BTreeMap 키로 보장하는 성질이고, 겹치면 캐시가 서로를 밀어낸다.
+    /// A conversation mixing what actually stands on screen. **`seq`s must differ** —
+    /// a property `Timeline` guarantees via its BTreeMap keys; overlapping ones would make the cache evict each other.
     fn mixed() -> Vec<Item> {
         vec![
             Item::User { seq: 1, text: "표 좀 그려 줘".into() },
@@ -971,7 +967,7 @@ mod tests {
         ]
     }
 
-    /// **캐시가 예전과 똑같이 그려야 한다.** 빨라졌는데 다르게 그리면 아무 소용이 없다.
+    /// **The cache must draw exactly like the plain path.** Faster but different is useless.
     #[test]
     fn the_cache_draws_exactly_what_the_plain_path_draws() {
         let items = mixed();
@@ -986,7 +982,7 @@ mod tests {
         }
     }
 
-    /// 창은 그 구간만 준다. 화면 밖까지 만들면 대화 길이만큼 무거워진다.
+    /// A window gives back only that slice. Building past the screen gets heavier with conversation length.
     #[test]
     fn a_window_gives_back_only_that_slice() {
         let items = mixed();
@@ -1007,7 +1003,7 @@ mod tests {
         assert_eq!(cache.window(0, 9999).len(), cache.total(), "끝을 넘겨도 잘려야 한다");
     }
 
-    /// **바뀐 항목만 다시 그린다.** 이게 깨지면 대화 길이만큼 다시 느려진다.
+    /// **Only the changed item is drawn again.** If this breaks, it's slow again proportional to conversation length.
     #[test]
     fn only_the_changed_item_is_drawn_again() {
         let mut items = mixed();
@@ -1021,7 +1017,7 @@ mod tests {
         cache.layout(&items, 40, &folds, None);
         assert_eq!(cache.renders(), first, "안 바뀌었으면 한 줄도 다시 그리지 않는다");
 
-        // 답변에 델타가 붙었다 — 그 항목 하나만 다시 그려야 한다.
+        // A delta was appended to the answer — only that item should be redrawn.
         if let Item::Agent { text, .. } = &mut items[2] {
             text.push_str("| c | 3 |\n");
         }
@@ -1029,7 +1025,7 @@ mod tests {
         assert_eq!(cache.renders(), first + 1, "바뀐 하나만 다시 그린다");
     }
 
-    /// 접었다 펴면 그 카드만 다시 그린다.
+    /// Folding or unfolding redraws only that card.
     #[test]
     fn folding_a_card_redraws_only_that_card() {
         let items = mixed();
@@ -1046,7 +1042,7 @@ mod tests {
         );
     }
 
-    /// 폭이 바뀌면 줄바꿈 자리가 전부 달라진다 — 통째로 다시 그려야 한다.
+    /// A width change moves every wrap point — everything must be redrawn.
     #[test]
     fn a_width_change_redraws_everything() {
         let items = mixed();
@@ -1060,7 +1056,7 @@ mod tests {
         assert_eq!(cache.plain(), rows(&items, 80, &folds).plain());
     }
 
-    /// 지금 답하고 있는 질문은 대화 안에 그리지 않는다 — 아래 패널에 있다.
+    /// The question being answered isn't drawn in the transcript — it's in the lower panel.
     #[test]
     fn the_question_being_answered_is_left_out_of_the_transcript() {
         let steps = vec![crate::question::Step {
@@ -1088,7 +1084,7 @@ mod tests {
         );
     }
 
-    /// 도구는 처음엔 한 줄이고, 펴면 인자와 결과가 나온다.
+    /// A tool starts as one line; unfolded, its args and result come out.
     #[test]
     fn a_tool_row_starts_as_one_line_and_opens_into_its_detail() {
         let items = [work_at(1)];
@@ -1112,28 +1108,28 @@ mod tests {
         assert!(open.iter().any(|l| l.contains("viewport")), "{open:?}");
     }
 
-    /// 도구 줄을 눌러 펼 수 있어야 한다 — 누를 자리를 `cards`가 알려 준다.
+    /// A tool row must be openable by click — `cards` tells where to click.
     #[test]
     fn a_tool_row_is_clickable_on_its_own() {
         let items = [work_at(1)];
         let folds = Folds::from([(1, Fold { open: true })]);
         let r = rows(&items, 60, &folds);
 
-        // 추론 줄도 카드 접힘을 토글하므로 같은 seq가 여러 줄에 걸린다 — 보는 것은
-        // "어느 seq를 누를 수 있는가"이지 줄 수가 아니다.
+        // Since thinking lines also toggle the card fold, the same seq spans several lines — what we check is
+        // "which seqs are clickable", not the number of lines.
         let mut by_seq: Vec<i64> = r.cards.values().copied().collect();
         by_seq.sort();
         by_seq.dedup();
         assert_eq!(by_seq, vec![1, 100], "카드 머리와 도구 줄 둘 다 눌려야 한다");
 
-        // 도구 줄의 행이 실제로 그 도구 줄이어야 한다 — 어긋나면 엉뚱한 게 펴진다.
+        // The tool row's index must actually be that tool row — off by one and the wrong thing unfolds.
         let lines = r.plain();
         let row = r.cards.iter().find(|(_, s)| **s == 100).map(|(r, _)| *r).unwrap();
         assert!(lines[row].contains("grep"), "{:?}", lines[row]);
     }
 
-    /// **접힌 카드의 도구 줄은 누를 수 없다** — 상세는 카드를 펴야 열리므로,
-    /// 접힌 상태에서 눌러도 아무 일 없는 줄은 클릭 대상이 아니다.
+    /// **Tool rows of a folded card aren't clickable** — detail only opens with the card unfolded, so
+    /// a row that does nothing when clicked while folded is not a click target.
     #[test]
     fn folded_tool_rows_are_not_clickable() {
         let items = [work_at(1)];
@@ -1143,13 +1139,13 @@ mod tests {
         assert_eq!(by_seq, vec![1], "접힌 카드에서는 머리만 눌려야 한다");
     }
 
-    /// **접힌 카드에서는 도구 상세가 열려 있어도 보이지 않는다** — 카드를 접었다는
-    /// 것은 다 접었다는 뜻이다. (추론 클릭으로 카드를 접으면 아래 도구 상세가 다
-    /// 펼쳐진 채 남는 것이 사용자가 본 증상이다.)
+    /// **In a folded card, open tool details aren't visible either** — folding the card means
+    /// folding everything. (The symptom users saw was that clicking reasoning to fold the card left the
+    /// tool details below fully expanded.)
     #[test]
     fn a_folded_card_hides_open_tool_details() {
         let items = [work_at(1)];
-        // 도구 상세는 열려 있는데 카드는 접혀 있다.
+        // The tool detail is open, but the card is folded.
         let folds = Folds::from([(100, Fold { open: true })]);
         let out = plain(&rows(&items, 60, &folds));
         assert!(out.iter().any(|l| l.contains("grep")), "도구 줄은 보여야 한다: {out:?}");
@@ -1159,8 +1155,8 @@ mod tests {
         );
     }
 
-    /// **런 중 메시지는 접혀도 보인다** — 카드 접힘은 추론을 숨기는 것이지 대화
-    /// 흐름까지 가리는 것이 아니다.
+    /// **Run-time messages show even when folded** — folding a card hides reasoning, not the whole
+    /// conversation flow.
     #[test]
     fn a_text_part_shows_even_when_the_card_is_folded() {
         let items = [Item::Work {
@@ -1179,8 +1175,8 @@ mod tests {
         assert!(out.iter().any(|l| l.contains("exec")), "{out:?}");
     }
 
-    /// **런 중 메시지는 클릭 대상이 아니다** — 누르면 카드가 접히는 추론 줄과
-    /// 달리 메시지는 내용이다.
+    /// **Run-time messages aren't click targets** — unlike thinking lines, which fold the card when
+    /// pressed, a message is content.
     #[test]
     fn a_text_part_is_not_clickable() {
         let items = [Item::Work {
@@ -1201,8 +1197,8 @@ mod tests {
         );
     }
 
-    /// **메시지·추론·도구가 온 순서 그대로 선다.** 펼친 카드에서 셋이 섞여 보여야
-    /// 무엇을 생각하다 무엇을 말하고 무엇을 했는지 읽힌다.
+    /// **Messages, thinking, and tools stand in the order they came.** In an open card the three must interleave
+    /// to show what was thought, what was said, and what was done.
     #[test]
     fn text_thinking_and_tools_interleave_in_the_card() {
         let items = [Item::Work {
@@ -1222,8 +1218,8 @@ mod tests {
         assert!(think < text && text < tool, "온 순서가 어긋났다: {out:?}");
     }
 
-    /// **추론 줄도 누를 수 있어야 한다** — 클릭하면 카드가 접히고 펴진다(Ctrl+O와
-    /// 같은 동작). 도구 상세를 여는 것이 아니다.
+    /// **Thinking lines must be clickable too** — clicking folds and unfolds the card (the same
+    /// action as Ctrl+O). It doesn't open tool detail.
     #[test]
     fn a_thinking_line_maps_to_the_card_fold() {
         let items = [work_at(1)];
@@ -1234,9 +1230,8 @@ mod tests {
         assert_eq!(seq, 1, "추론 줄 클릭은 카드를 접고 펴야 한다");
     }
 
-    /// **펼친 도구 상세는 박스로 갈라 보인다.** "인자/출력/결과/오류" 머리말이
-    /// 색·마커로 또렷하게, 본문은 그 아래로. 무엇이 인자고 무엇이 결과인지
-    /// 눈이 한 번에 읽혀야 한다.
+    /// **Open tool detail is set apart in a box.** The "Args/Output/Result/Error" heads stand out in
+    /// colour and markers, with the body below. The eye must read at a glance what's an argument and what's a result.
     #[test]
     fn tool_detail_lines_label_their_sections() {
         let out = tool_detail_lines("인자\n{\"cmd\": \"git push\"}\n\n출력\nUp to date", 60, false);
@@ -1251,7 +1246,7 @@ mod tests {
         assert!(plain.iter().any(|l| l.contains("git push")), "인자 본문이 없다: {plain:?}");
         assert!(plain.iter().any(|l| l.contains("Up to date")), "출력 본문이 없다: {plain:?}");
 
-        // 오류 섹션은 위험색으로 칠한다.
+        // The error section is painted in the danger colour.
         let err = tool_detail_lines("오류\nboom", 60, false);
         assert!(
             err.iter().any(|l| {
@@ -1261,8 +1256,8 @@ mod tests {
         );
     }
 
-    /// **실패한 도구의 상세는 테두리까지 위험색이다.** 성공한 것과 다르게 보여야
-    /// 무엇이 잘못됐는지 훑을 때 잡힌다.
+    /// **A failed tool's detail is danger-coloured down to its border.** It must look different from a successful
+    /// one so a skim catches what went wrong.
     #[test]
     fn a_failed_tools_detail_box_is_red() {
         let out = tool_detail_lines("인자\n{}", 60, true);
@@ -1276,7 +1271,7 @@ mod tests {
         );
     }
 
-    /// 펼칠 것이 없는 도구는 눌러도 아무 일이 없어야 하니 누를 수 있는 척도 하지 않는다.
+    /// A tool with nothing to unfold should do nothing when pressed, so it doesn't pretend to be clickable.
     #[test]
     fn a_tool_with_nothing_to_show_is_not_clickable() {
         let items = [Item::Work {
@@ -1305,8 +1300,8 @@ mod tests {
         );
     }
 
-    /// **도구 하나를 펴면 그 항목이 다시 그려져야 한다.**
-    /// 항목 자기 접힘만 보면 캐시가 "안 바뀌었다"고 여겨 화면이 그대로 있는다.
+    /// **Unfolding one tool must redraw that item.**
+    /// Looking only at the item's own fold would make the cache think "nothing changed" and the screen stays put.
     #[test]
     fn opening_a_tool_row_redraws_the_card() {
         let items = [work_at(1)];
@@ -1322,7 +1317,7 @@ mod tests {
         assert!(cache.plain().iter().any(|l| l.contains("인자")), "{:?}", cache.plain());
     }
 
-    /// 제목이 아직 안 온 카드도 자리를 지켜야 한다.
+    /// A card whose title hasn't arrived yet must still hold its place.
     #[test]
     fn a_work_card_without_a_title_yet_says_it_is_working() {
         let items = [Item::Work { seq: 1, title: String::new(), parts: vec![] }];

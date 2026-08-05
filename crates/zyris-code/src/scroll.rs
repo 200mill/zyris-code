@@ -1,15 +1,15 @@
-//! 뷰포트. 줄 단위로 움직인다.
+//! Viewport. Moves in units of lines.
 //!
-//! "부드럽게"는 픽셀 단위 스크롤이 아니라 **지연 없음**이다 — 노치가 온 만큼 즉시
-//! 반영하고, 그리기는 프레임 단위로 합쳐 한 번만 한다.
+//! "Smooth" here is not pixel scrolling but **no delay** — as many notches as arrive are applied
+//! immediately, and drawing is batched once per frame.
 
 pub const LINES_PER_NOTCH: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Scroll {
-    /// 화면 맨 위에 보이는 줄의 인덱스.
+    /// Index of the line visible at the top of the screen.
     pub top: usize,
-    /// 바닥에 붙어 있는가. 붙어 있으면 새 줄이 와도 계속 바닥이다.
+    /// Whether it sticks to the bottom. When stuck, new lines keep it at the bottom.
     pub stick: bool,
 }
 
@@ -24,7 +24,7 @@ impl Scroll {
         Self::default()
     }
 
-    /// 휠. 양수가 위로 간다.
+    /// Wheel. Positive goes up.
     pub fn wheel(&mut self, notches: i32, total: usize, height: usize) {
         let max_top = total.saturating_sub(height);
         let delta = notches.unsigned_abs() as usize * LINES_PER_NOTCH;
@@ -33,11 +33,11 @@ impl Scroll {
         } else {
             (self.top + delta).min(max_top)
         };
-        // 바닥에 닿으면 고정이 되살아난다.
+        // Reaching the bottom revives stickiness.
         self.stick = self.top >= max_top;
     }
 
-    /// 내용이 바뀌었을 때 부른다.
+    /// Called when the content changes.
     pub fn on_content(&mut self, total: usize, height: usize) {
         if self.stick {
             self.top = total.saturating_sub(height);
@@ -46,7 +46,7 @@ impl Scroll {
         }
     }
 
-    /// 지금 그려야 할 줄 범위 `[start, end)`.
+    /// The line range `[start, end)` to draw now.
     pub fn window(&self, total: usize, height: usize) -> (usize, usize) {
         let start = self.top.min(total.saturating_sub(height));
         (start, (start + height).min(total))
@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(s.window(100, 10), (90, 100));
     }
 
-    /// 바닥에 붙어 있으면 새 줄이 와도 계속 바닥이다.
+    /// Stuck to the bottom, new lines keep it at the bottom.
     #[test]
     fn new_content_keeps_a_stuck_view_at_the_bottom() {
         let mut s = Scroll::new();
@@ -73,12 +73,12 @@ mod tests {
         assert_eq!(s.window(120, 10), (110, 120));
     }
 
-    /// 위로 올려 뒀으면 새 줄이 와도 그 자리를 지킨다 — 읽는 중에 화면이 튀면 안 된다.
+    /// If scrolled up, new lines keep the position — the screen must not jump while reading.
     #[test]
     fn new_content_does_not_move_a_scrolled_up_view() {
         let mut s = Scroll::new();
         s.on_content(100, 10);
-        s.wheel(3, 100, 10); // 위로 3노치 = 9줄
+        s.wheel(3, 100, 10); // 3 notches up = 9 lines
         let before = s.window(100, 10);
         s.on_content(120, 10);
         assert_eq!(s.window(120, 10), before, "위로 올려 둔 자리를 지켜야 한다");
@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(s.top, 0);
     }
 
-    /// 바닥까지 다시 내려가면 고정이 되살아난다.
+    /// Scrolling back down to the bottom revives stickiness.
     #[test]
     fn scrolling_back_to_the_bottom_restores_stickiness() {
         let mut s = Scroll::new();

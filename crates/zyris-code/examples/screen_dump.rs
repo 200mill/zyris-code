@@ -1,14 +1,14 @@
-//! 진단용. 화면을 떠서 **어느 칸에 무슨 배경색이 깔리는지**를 그림으로 찍는다.
+//! Diagnostic. Dumps the screen and renders **which background color lands in which cell** as a picture.
 //!
-//! 여백이 어디서 생기는지, 배경이 안 깔린 칸이 있는지는 눈으로 봐야 안다 — 셀 단언은
-//! "무엇이 어느 줄에 있는가"만 보므로 색과 빈칸을 못 잡는다.
+//! Where the margins come from and whether any cell misses its background can only be seen by eye —
+//! cell assertions only see "what is on which line", so they miss colors and blanks.
 //!
 //! ```bash
 //! cargo run -p zyris-code --example screen_dump            # 100x30
-//! cargo run -p zyris-code --example screen_dump -- 60 20   # 크기를 정해서
+//! cargo run -p zyris-code --example screen_dump -- 60 20   # with a chosen size
 //! ```
 //!
-//! 기호: `.`=배경 없음(터미널 기본이 샌다) `#`=페이지 배경 `U`=사용자 밴드 `?`=그 밖
+//! Legend: `.`=no background (terminal default shows through) `#`=page background `U`=user band `?`=other
 
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;

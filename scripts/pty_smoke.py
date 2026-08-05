@@ -65,10 +65,10 @@ def main():
         print(f"{BIN}이 없다. 먼저 `cargo build -j2` 할 것.")
         return 1
 
-    # 자가 치유를 짧게 잡아 검사 4번 전에 반드시 한 번은 돌게 한다.
+    # Keep self-healing short so it definitely runs at least once before check 4.
     #
-    # 와이어 마감도 극단으로 줄여 둔다. 이 값은 승인을 기다리는 자리에서만 쓰이지만,
-    # 작은 값이 시작 경로 어딘가를 물게 하면 아래 검사가 통째로 무너진다 — 그걸 본다.
+    # Also cut the wire deadline to an extreme. This value is only used where approval is awaited,
+    # but if the small value bites somewhere in the startup path, the checks below collapse entirely — that is what we watch for.
     env = dict(
         os.environ,
         ZYRIS_PROFILE="zyris-code",
@@ -77,9 +77,9 @@ def main():
         ZYRIS_CODE_WIRE_DEADLINE_SECS="1",
     )
     primary, replica = pty.openpty()
-    # **창 크기를 반드시 정한다.** `pty.openpty()`가 만든 pty는 0×0이고, ratatui는 그릴
-    # 자리가 없다고 보아 아무것도 내보내지 않는다 — 앱이 멀쩡한데 "화면이 안 뜬다"로
-    # 오진하기 딱 좋다. 실제로 한 번 걸렸다.
+    # **The window size must be set.** The pty `pty.openpty()` creates is 0×0, and ratatui sees
+    # no room to draw and emits nothing — a perfect setup for misdiagnosing a healthy app as
+    # "no screen". It actually caught us once.
     fcntl.ioctl(replica, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     proc = subprocess.Popen(
         [BIN], stdin=replica, stdout=replica, stderr=replica, env=env, close_fds=True
@@ -92,28 +92,28 @@ def main():
     checks = 0
 
     try:
-        # 1. 첫 프레임이 나왔다 = 대체 화면을 잡고 그리기 시작했다.
+        # 1. The first frame appeared = it grabbed the alternate screen and started drawing.
         #
-        # 예전에는 머리글("zyris-code")을 봤는데 그 줄을 없앴다. 하단 바의 모드는
-        # 붙었든 안 붙었든 늘 그려지므로 이쪽이 낫다 — 상태 줄 글자는 연결 여부에
-        # 따라 "연결 중…"과 "쉬는 중" 사이를 오간다.
+        # We used to look for the header ("zyris-code") but removed that line. The mode in the
+        # bottom bar is always drawn whether connected or not, so it is the better target — the
+        # status line text swings between "connecting…" and "idle" depending on the connection.
         if read_until(primary, "기본", buf, deadline, "첫 프레임"):
             print("  ✓ 첫 프레임이 그려진다")
             checks += 1
         else:
             ok = False
 
-        # 2. 입력란 프롬프트가 있다.
+        # 2. The input field prompt is there.
         #
-        # **기다려서 읽어야 한다.** 1번 검사는 상태 줄을 보자마자 멈추므로 그 시점의
-        # 버퍼에는 첫 프레임이 아직 다 안 들어와 있다 — 이미 읽은 것만 뒤지면 없다고 나온다.
+        # **It has to be read by waiting.** Check 1 stops as soon as it sees the status line, so
+        # the buffer at that point does not yet hold the whole first frame — searching only what was already read says it is not there.
         if read_until(primary, "> ", buf, time.time() + 5, "입력란"):
             print("  ✓ 입력란이 있다")
             checks += 1
         else:
             ok = False
 
-        # 3. 한글을 쳐도 죽지 않고 그대로 보인다.
+        # 3. Typing Korean does not crash it and it shows up as-is.
         os.write(primary, "안녕".encode())
         if read_until(primary, "안녕", buf, time.time() + 5, "한글 입력"):
             print("  ✓ 한글 입력이 보인다")
@@ -121,11 +121,11 @@ def main():
         else:
             ok = False
 
-        # 4. **자가 치유가 한 번 돈 뒤에도 살아 있다.**
+        # 4. **Still alive after self-healing has run once.**
         #
-        # 이 pty는 커서 위치를 물어봐도(DSR) 대답하지 않는다 — 답이 늦거나 없는 원격
-        # 터미널과 같다. 예전에 `Terminal::clear()`를 쓸 때는 여기서 앱이 통째로 멈췄다.
-        # 자가 치유 간격을 짧게 잡아 반드시 한 번은 돌게 한 뒤, 키가 아직 먹는지 본다.
+        # This pty does not answer cursor position queries (DSR) — like a remote terminal that is
+        # slow or silent. When we used `Terminal::clear()` before, the app froze entirely here.
+        # With the self-healing interval kept short so it definitely runs once, check whether keys still work.
         time.sleep(1.0)
         os.write(primary, "하세요".encode())
         if read_until(primary, "하세요", buf, time.time() + 5, "치유 뒤 입력"):
@@ -134,18 +134,18 @@ def main():
         else:
             ok = False
 
-        # 5. **사이드바가 도구의 작업 디렉터리를 말한다.**
+        # 5. **The sidebar states the tool's working directory.**
         #
-        # 에이전트가 이 컴퓨터를 만지는 지금, 어느 자리에서 만지는지가 화면에 없으면
-        # 승인 화면에 뜬 상대경로를 읽을 수 없다. 셀 단언도 보는 것이지만 여기서는
-        # **진짜 터미널의 폭 계산**을 지난 뒤에도 남아 있는지가 요점이다.
+        # While the agent is touching this computer, if where it is working is not on screen, the
+        # relative path shown on the approval screen cannot be read. The cell assertions look
+        # too, but here the point is whether it survives **real terminal width calculation**.
         if read_until(primary, "zyris-code", buf, time.time() + 5, "작업 디렉터리"):
             print("  ✓ 사이드바가 작업 디렉터리를 보여준다")
             checks += 1
         else:
             ok = False
 
-        # 6. Ctrl+C 한 번으로는 안 끝나고, 예고가 뜬다.
+        # 6. One Ctrl+C does not end it; a notice appears.
         os.write(primary, b"\x03")
         if read_until(primary, "한 번 더 Ctrl+C", buf, time.time() + 5, "종료 예고"):
             print("  ✓ Ctrl+C 한 번은 예고만 한다")
@@ -157,7 +157,7 @@ def main():
             print("  ✗ 한 번에 꺼져 버렸다")
             ok = False
 
-        # 7. 1.5초 안에 한 번 더 누르면 끝난다.
+        # 7. Pressing again within 1.5 seconds ends it.
         os.write(primary, b"\x03")
         for _ in range(40):
             if proc.poll() is not None:
@@ -170,9 +170,9 @@ def main():
             print("  ✗ 두 번 눌러도 안 끝난다")
             ok = False
 
-        # 8. 대체 화면을 되돌렸다. 안 되돌리면 셸이 망가진 채 남는다.
+        # 8. The alternate screen was restored. Without it, the shell is left broken.
         raw = "".join(buf)
-        # 나가면서 남긴 바이트도 읽어 둔다.
+        # Also read the bytes left behind on exit.
         r, _, _ = select.select([primary], [], [], 1.0)
         if r:
             try:

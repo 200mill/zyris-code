@@ -1,14 +1,14 @@
-//! 파일이 어떻게 바뀌었는가. 계산은 여기서만 하고 화면은 결과만 그린다.
+//! How a file changed. All computation happens here; the screen just draws the result.
 //!
-//! **diff는 도구 결과에 실려 서버를 한 바퀴 돌아온다.** 그래야 세션을 다시 열었을 때
-//! 히스토리 재생으로도 같은 것이 보인다. 로컬 기억에만 두면 앱을 끄는 순간 사라진다.
-//! 그래서 글자로 굳혔다 다시 읽는 왕복이 있고, `a_diff_survives_the_round_trip_through_text`가
-//! 그 왕복을 잠근다 — 깨지면 diff가 조용히 JSON 덤프로 떨어진다.
+//! **The diff rides in a tool result and does a round trip through the server.** That way,
+//! reopening a session shows the same thing through history replay. Kept only in local memory,
+//! it vanishes the moment the app closes. Hence the round trip of hardening it into text and
+//! reading it back, locked in by `a_diff_survives_the_round_trip_through_text` — if it breaks, the diff silently degrades to a JSON dump.
 
 use similar::{ChangeTag, TextDiff};
 
-/// 변경 주위로 남길 문맥 줄 수. 이보다 멀리 떨어진 `Keep`은 접는다 — 안 그러면 파일
-/// 하나 고칠 때 화면이 그 파일로 가득 찬다.
+/// Context lines to keep around a change. `Keep`s farther than this are folded — otherwise
+/// fixing one file would fill the screen with that file.
 const CONTEXT: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum DiffLine {
     Add(String),
     Del(String),
     Keep(String),
-    /// 접은 문맥 줄 수.
+    /// Number of folded context lines.
     Skip(u32),
 }
 
@@ -50,7 +50,7 @@ pub fn diff(old: &str, new: &str, path: &str) -> Diff {
     Diff { path: path.to_string(), added, removed, lines: fold_context(all) }
 }
 
-/// 변경에서 `CONTEXT`줄보다 멀리 떨어진 `Keep`을 `Skip`으로 접는다.
+/// Folds `Keep`s farther than `CONTEXT` lines from a change into `Skip`.
 fn fold_context(lines: Vec<DiffLine>) -> Vec<DiffLine> {
     if lines.is_empty() {
         return lines;
@@ -82,7 +82,7 @@ fn fold_context(lines: Vec<DiffLine>) -> Vec<DiffLine> {
 }
 
 impl Diff {
-    /// 도구 결과에 실을 글자 모양. `@@ N줄 생략 @@`이 접힌 자리를 나타낸다.
+    /// Text shape to carry in a tool result. `@@ N lines omitted @@` marks a folded spot.
     pub fn to_unified(&self) -> String {
         let mut out = String::new();
         for line in &self.lines {
@@ -96,8 +96,8 @@ impl Diff {
         out
     }
 
-    /// `to_unified`가 쓴 것을 다시 읽는다. 모양이 아니면 `None` — 그러면 화면은 지금처럼
-    /// JSON 덤프로 떨어진다. **죽지 않는 것이 요점이다.**
+    /// Reads back what `to_unified` wrote. `None` if it does not look right — then the screen
+    /// falls back to a JSON dump as today. **The point is not to die.**
     pub fn parse(text: &str, path: &str, added: u32, removed: u32) -> Option<Diff> {
         let mut lines = Vec::new();
         for raw in text.lines() {
@@ -128,8 +128,8 @@ mod tests {
         assert_eq!((d.added, d.removed), (1, 1));
     }
 
-    /// 문맥은 3줄까지만 남기고 그 사이는 접는다. 안 그러면 파일 하나 고칠 때
-    /// 화면이 그 파일로 가득 찬다.
+    /// Keep at most 3 lines of context and fold the rest. Otherwise fixing one file
+    /// would fill the screen with that file.
     #[test]
     fn far_away_context_is_folded() {
         let old: String = (0..40).map(|i| format!("{i}\n")).collect();
@@ -139,7 +139,7 @@ mod tests {
         assert!(d.lines.len() < 20, "40줄짜리가 그대로 나오면 안 된다: {}", d.lines.len());
     }
 
-    /// 끝줄 개행이 없는 파일을 고쳐도 마지막 줄이 바뀐 것으로 잡히면 안 된다.
+    /// Fixing a file without a trailing newline must not count the last line as changed.
     #[test]
     fn a_missing_trailing_newline_is_not_a_change() {
         let d = diff("a\nb", "a\nb", "x.rs");
@@ -152,7 +152,7 @@ mod tests {
         assert_eq!((d.added, d.removed), (2, 0));
     }
 
-    /// 결과에 실어 보낸 diff를 화면 쪽이 다시 읽어야 한다. 왕복이 깨지면 diff가 안 보인다.
+    /// The screen side must read back the diff sent in the result. If the round trip breaks, the diff is not shown.
     #[test]
     fn a_diff_survives_the_round_trip_through_text() {
         let d = diff("a\nb\nc\n", "a\nB\nc\n", "x.rs");
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(back.lines, d.lines);
     }
 
-    /// 접힘 표시도 왕복해야 한다 — 긴 파일의 diff는 거의 항상 접힘을 포함한다.
+    /// The fold markers must survive the round trip too — diffs of long files almost always include folds.
     #[test]
     fn a_folded_diff_also_survives_the_round_trip() {
         let old: String = (0..40).map(|i| format!("{i}\n")).collect();
@@ -170,7 +170,7 @@ mod tests {
         assert_eq!(back.lines, d.lines);
     }
 
-    /// diff가 아닌 글자를 넣으면 조용히 틀린 것을 그리는 대신 None이어야 한다.
+    /// Feeding it non-diff text must yield `None` instead of quietly drawing something wrong.
     #[test]
     fn something_that_is_not_a_diff_is_not_read_as_one() {
         assert_eq!(Diff::parse("그냥 문장입니다", "x.rs", 0, 0), None);

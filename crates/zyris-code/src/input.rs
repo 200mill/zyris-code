@@ -1,14 +1,14 @@
-//! 입력란의 편집 상태. 화면 맨 아래에 고정되고 내용에 따라 높이가 자란다.
+//! The input field's editing state. Fixed at the bottom of the screen; its height grows with the content.
 //!
-//! **커서는 문자(char) 인덱스다.** 바이트 인덱스로 다루면 한글에서 문자 경계를
-//! 벗어나 패닉한다.
+//! **The cursor is a character (char) index.** Handled as a byte index, it would leave character
+//! boundaries in Korean and panic.
 
 use crate::markdown::display_width;
 
 #[derive(Debug, Default, Clone)]
 pub struct Input {
     pub text: String,
-    /// 문자 단위 위치.
+    /// Position in characters.
     pub cursor: usize,
 }
 
@@ -38,7 +38,7 @@ impl Input {
         std::mem::take(&mut self.text)
     }
 
-    /// 커서 앞의 글자 수.
+    /// Number of characters before the cursor.
     pub fn len_chars(&self) -> usize {
         self.text.chars().count()
     }
@@ -59,7 +59,7 @@ impl Input {
         self.cursor = self.len_chars();
     }
 
-    /// 커서 자리의 글자를 지운다(`Delete`). 끝에서는 아무 일도 없다.
+    /// Deletes the character under the cursor (`Delete`). At the end, does nothing.
     pub fn delete(&mut self) {
         if self.cursor >= self.len_chars() {
             return;
@@ -69,9 +69,9 @@ impl Input {
         self.text.replace_range(from..to, "");
     }
 
-    /// 앞 단어를 지운다(`Ctrl+W`). readline과 같이 **삭제**다.
+    /// Deletes the previous word (`Ctrl+W`). Like readline, it's a **delete**.
     pub fn delete_word(&mut self) {
-        // 커서 바로 앞의 공백을 먼저 먹고, 그다음 공백이 아닌 덩어리를 먹는다.
+        // First swallow the whitespace right before the cursor, then the run of non-whitespace.
         let chars: Vec<char> = self.text.chars().collect();
         let mut i = self.cursor;
         while i > 0 && chars[i - 1].is_whitespace() {
@@ -86,33 +86,33 @@ impl Input {
         self.cursor = i;
     }
 
-    /// 붙여넣기. 여러 줄이 와도 그대로 넣는다.
+    /// Paste. Even multi-line text goes in as-is.
     pub fn insert_str(&mut self, s: &str) {
         let byte = self.byte_at(self.cursor);
         self.text.insert_str(byte, s);
         self.cursor += s.chars().count();
     }
 
-    /// 커서 왼쪽 텍스트가 차지하는 칸 수. 커서를 **전각 기준 제자리**에 그리기 위한 값이다.
+    /// Columns taken by the text left of the cursor. Used to draw the cursor **in place by wide-character width**.
     ///
-    /// 글자 수로 그리면 한글 앞에서 커서가 왼쪽으로 밀린다.
+    /// Drawn by character count, the cursor shifts left in front of Korean.
     pub fn cursor_col(&self) -> usize {
         display_width(&self.text.chars().take(self.cursor).collect::<String>())
     }
 
-    /// 이 폭에서 입력란이 차지하는 줄 수. 최소 한 줄이다.
+    /// Rows the input occupies at this width. At least one.
     pub fn height(&self, width: u16) -> u16 {
         self.wrapped(width).0.len() as u16
     }
 
-    /// 이 폭에서 줄로 접은 결과와 **커서가 앉을 (줄, 칸)**.
+    /// The wrapped result at this width and **the (row, column) where the cursor sits**.
     ///
-    /// 접는 쪽과 커서를 놓는 쪽이 갈라지면 긴 글에서 커서가 엉뚱한 자리에 선다. 그래서
-    /// 한 번에 같이 돌려준다 — `height`도 이걸 쓴다.
+    /// If the wrapping and the cursor placement disagree, the cursor lands in the wrong spot on long
+    /// text. So both come back together — `height` uses this too.
     ///
-    /// **낱글자 단위로 접는다.** 단어 단위로 접으면 긴 URL 하나가 줄을 통째로 밀어내고,
-    /// 무엇보다 커서 자리 계산이 훨씬 까다로워진다. 터미널이 하는 방식과도 같다.
-    /// 넘겨받는 폭은 프롬프트(`"> "`)를 뺀 **안쪽 폭**이다.
+    /// **Wraps per character.** Wrapping per word would let one long URL push an entire line out, and
+    /// cursor placement math would get far trickier. It's also how terminals do it.
+    /// The width passed in is the **inner width**, minus the prompt (`"> "`).
     pub fn wrapped(&self, width: u16) -> (Vec<String>, (u16, u16)) {
         let limit = width.max(1) as usize;
         let mut lines = vec![String::new()];
@@ -120,7 +120,7 @@ impl Input {
         let mut at = (0u16, 0u16);
 
         for (i, ch) in self.text.chars().enumerate() {
-            // 붙여넣기로 줄바꿈이 들어올 수 있다. 그 자리는 그대로 끊는다.
+            // Pasting can bring in newlines. Break the line right there.
             if ch == '\n' {
                 if i == self.cursor {
                     at = (row, col as u16);
@@ -142,7 +142,7 @@ impl Input {
             lines.last_mut().expect("줄은 하나 이상이다").push(ch);
             col += w;
         }
-        // 커서가 맨 끝이면 마지막 줄의 끝이다.
+        // If the cursor is at the very end, it's the end of the last line.
         if self.cursor >= self.text.chars().count() {
             at = (row, col as u16);
         }
@@ -158,7 +158,7 @@ impl Input {
 mod tests {
     use super::*;
 
-    /// 커서는 문자(char) 단위다. 바이트 인덱스로 세면 한글에서 패닉한다.
+    /// The cursor is in characters (char). Counted in byte indices, it panics on Korean.
     #[test]
     fn backspace_removes_one_korean_character_not_one_byte() {
         let mut i = Input::new();
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(i.cursor, 0);
     }
 
-    /// 입력이 길면 입력란이 자라고 대화 영역이 그만큼 줄어든다.
+    /// A long input grows the field taller and shrinks the conversation area by the same amount.
     #[test]
     fn a_long_input_grows_taller() {
         let mut i = Input::new();
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(Input::new().height(40), 1);
     }
 
-    /// **긴 입력은 다음 줄로 내려간다.** 잘려 나가면 무엇을 치고 있는지 알 수 없다.
+    /// **A long input wraps onto the next line.** Cut off, you can't tell what you're typing.
     #[test]
     fn a_long_input_wraps_onto_the_next_line() {
         let mut i = Input::new();
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(at, (2, 2), "커서는 마지막 줄 끝이다");
     }
 
-    /// 접히는 자리와 커서 자리가 갈라지면 긴 글에서 커서가 엉뚱한 곳에 선다.
+    /// If the wrap point and the cursor spot disagree, the cursor stands in the wrong place on long text.
     #[test]
     fn the_cursor_follows_the_line_it_wrapped_onto() {
         let mut i = Input::new();
@@ -227,11 +227,11 @@ mod tests {
         for _ in 0..5 {
             i.right();
         }
-        // 다섯 글자 앞이면 폭 4에서는 둘째 줄의 둘째 칸이다.
+        // Five characters in, at width 4 that's the second column of the second line.
         assert_eq!(i.wrapped(4).1, (1, 1));
     }
 
-    /// 전각은 두 칸이라 폭 안에 반만 들어간다. 글자 수로 접으면 오른쪽이 넘친다.
+    /// A wide character takes two columns, so only half fits inside the width. Wrapping by character count overflows on the right.
     #[test]
     fn wide_characters_wrap_by_columns_not_by_character_count() {
         let mut i = Input::new();
@@ -241,7 +241,7 @@ mod tests {
         assert_eq!(i.wrapped(4).0, vec!["가나", "다라"]);
     }
 
-    /// 붙여넣기로 들어온 줄바꿈은 그 자리에서 끊긴다.
+    /// A newline that came in through paste breaks the line right there.
     #[test]
     fn a_pasted_newline_breaks_the_line_there() {
         let mut i = Input::new();
@@ -258,7 +258,7 @@ mod tests {
         i
     }
 
-    /// 중간 글자를 고칠 수 있어야 한다. 이게 없으면 오타를 지우려고 뒤를 다 지워야 한다.
+    /// You must be able to fix a character in the middle. Without this, fixing a typo means deleting everything after it.
     #[test]
     fn text_can_be_edited_in_the_middle() {
         let mut i = typed("안녕하세요");
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(i.text, "한");
     }
 
-    /// Ctrl+W는 readline 표준대로 **삭제**다.
+    /// Ctrl+W is a **delete**, per the readline standard.
     #[test]
     fn ctrl_w_deletes_the_previous_word() {
         let mut i = typed("hello world");
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(i.cursor, 2);
     }
 
-    /// 커서 열은 전각을 2칸으로 센다. 글자 수로 그리면 한글 앞에서 왼쪽으로 밀린다.
+    /// The cursor column counts wide characters as two. Drawn by character count, it shifts left in front of Korean.
     #[test]
     fn the_cursor_column_counts_wide_characters_as_two() {
         let mut i = typed("한a");

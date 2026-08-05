@@ -1,27 +1,27 @@
-//! 모드 — 에이전트가 이 컴퓨터에 손댈 수 있는가, 그리고 내 말이 어디로 가는가.
+//! Mode — whether the agent may touch this computer, and where my words go.
 //!
-//! **서버로 보내지 않는다. 보낼 이유가 없다.** 도구를 실제로 돌리는 것이 이 노드이므로
-//! 돌릴지 말지도 여기서 정한다 — attacca는 이 결정을 모르고 알 필요도 없다.
-//! 뜻을 주는 곳은 `tools::gate::decide`이고, 게이트까지 나르는 것은 `tools::bridge`다.
+//! **It is not sent to the server. There is no reason to send it.** This node is what actually runs
+//! tools, so whether to run them is decided here too — attacca doesn't know about this decision and
+//! doesn't need to. The decision is made in `tools::gate::decide` and carried to the gate by `tools::bridge`.
 //!
-//! **묻는 모드는 없앴다**(2026-08-02 사용자 결정). 도구를 쓸 때마다 승인을 받는 것이
-//! 실제로는 흐름을 끊기만 했다.
+//! **The ask mode was removed** (2026-08-02 user decision). Asking for approval on every tool use
+//! only broke the flow in practice.
 //!
-//! 모드가 정하는 것은 **둘**이다. 오래도록 하나뿐이었다가 2026-08-03에 하나가 늘었다.
+//! The mode decides **two** things. For a long time there was only one; on 2026-08-03 a second one was added.
 //!
 //! ```text
 //!            gate::decide        Route
-//!            (도구를 돌릴까)     (내 말이 어디로)
-//! normal     통과                지금 대화 그대로     ← 기본값
-//! plan       쓰기 거부           지금 대화 그대로
-//! work       통과                create_work → planner 세션
-//! job        통과                create_job  → job 세션
+//!            (run the tool?)    (where my words go)
+//! normal     pass               same conversation     ← default
+//! plan       deny writes        same conversation
+//! work       pass               create_work → planner session
+//! job        pass               create_job  → job session
 //! ```
 //!
-//! **`Normal`과 `Plan`의 route가 같다는 것이 요점이다.** 그래서 둘 사이를 오가도 대화가
-//! 안 끊기고, 하던 얘기에 계획 모드를 잠깐 걸 수 있다 — 그것이 계획 모드가 쓸모 있는
-//! 유일한 방식이다. `Work`·`Job`은 반대로 **서버에 새 것을 만든다** — 그것도 첫 메시지
-//! 한 번뿐이고, 그 뒤는 열린 세션에 이어 붙는다.
+//! **The point is that `Normal` and `Plan` share the same route.** So moving between the two
+//! doesn't break the conversation, and plan mode can be switched on briefly mid-conversation —
+//! that is the only way plan mode is useful. `Work`·`Job`, by contrast, **create something new on
+//! the server** — and only once, from the first message; after that they append to an open session.
 
 use ratatui::style::Color;
 
@@ -29,35 +29,35 @@ use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// 묻지 않고 실행한다. 기본값이다. 맨 세션 하나로 얘기한다.
+    /// Runs without asking. The default. Talks in one plain session.
     #[default]
     Normal,
-    /// 실행하지 않고 무엇을 할지 먼저 내놓는다.
+    /// Does not run; lays out what to do first.
     Plan,
-    /// 다음 메시지를 목표로 삼아 attacca에 work를 연다. 관문 둘과 태스크 그래프가 붙는다.
+    /// Opens a work on attacca with the next message as the goal. Two gates and a task graph are attached.
     Work,
-    /// 다음 메시지를 시켜 놓는다. attacca가 job 하나로 끝까지 해낸다.
+    /// Hands off the next message as a task. attacca carries it to the end as one job.
     Job,
 }
 
-/// 다음에 여는 것이 무엇인가. **모드가 뜻을 얻는 두 번째 자리다.**
+/// What the next one opens. **The second place where mode gets its meaning.**
 ///
-/// 셋 다 끝에는 **평범한 세션 id**가 나온다(`ZJob::session_id`,
-/// `ZWork::planner_session_id`). 그래서 화면·타임라인·접힘은 무엇을 열었든 모르고 지나간다 —
-/// 그리는 쪽을 하나도 안 건드린 이유가 이것이다.
+/// All three end in a **plain session id** (`ZJob::session_id`,
+/// `ZWork::planner_session_id`). So the screen, timeline, and folding pass by without knowing what was
+/// opened — that is why no drawing code had to be touched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Route {
-    /// 지금 세션에 이어 붙인다. 세션이 없으면 그때 하나 만든다.
+    /// Appends to the current session. Creates one on the spot if there is none.
     #[default]
     Session,
-    /// `create_work`. 첫 메시지가 목표가 된다.
+    /// `create_work`. The first message becomes the goal.
     Work,
-    /// `create_job`. 첫 메시지가 시킬 일이 된다.
+    /// `create_job`. The first message becomes the task.
     Job,
 }
 
 impl Mode {
-    /// 화면에 보이는 이름. 문구는 `lang.rs`가 들고 있다.
+    /// The name shown on screen. The wording lives in `lang.rs`.
     pub fn label(self, lang: crate::lang::Lang) -> &'static str {
         match self {
             Mode::Normal => lang.mode_normal(),
@@ -67,17 +67,17 @@ impl Mode {
         }
     }
 
-    /// 하단 바의 모드 색.
+    /// The mode color in the bottom bar.
     ///
-    /// **넷 다 색을 가진다.** 기본 모드를 흐린 회색으로 두면 하단 바가 통째로 배경처럼
-    /// 읽혀, 정작 "지금 무슨 모드인가"가 눈에 안 들어온다 — 그 줄에서 색이 있는 것은
-    /// 모드뿐이므로 그것이 눈이 잡는 자리다.
+    /// **All four have colors.** If the default mode were a dull gray, the whole bottom bar would
+    /// read as background and "what mode am I in right now" wouldn't catch the eye — the only colored
+    /// thing on that line is the mode, so that is what the eye grabs.
     ///
-    /// **순환에서 이웃한 둘은 서로 먼 색이어야 한다.** 한 번에 하나만 보이므로 눈이
-    /// 견주는 것은 방금 전 색이다: 초록 → 주황 → 파랑 → 노랑 → 초록.
+    /// **Neighbors in the cycle must be far apart in color.** Only one shows at a time, so the
+    /// eye compares against the color just before: green → orange → blue → yellow → green.
     pub fn color(self) -> Color {
         match self {
-            // 도구가 그냥 도는 상태. 초록이 "가도 된다"로 읽힌다.
+            // The state where tools just run. Green reads as "go ahead".
             Mode::Normal => theme::SUCCESS,
             Mode::Plan => theme::ACCENT,
             Mode::Work => theme::TOOL,
@@ -85,7 +85,7 @@ impl Mode {
         }
     }
 
-    /// 내 말이 어디로 가는가.
+    /// Where my words go.
     pub fn route(self) -> Route {
         match self {
             Mode::Normal | Mode::Plan => Route::Session,
@@ -94,11 +94,11 @@ impl Mode {
         }
     }
 
-    /// Shift+Tab이 도는 차례.
+    /// The order Shift+Tab cycles through.
     ///
-    /// **여기 있는 것과 없는 것 사이에 선이 있다.** 앞의 둘은 지금 대화에 걸리는 것이고
-    /// (세션을 안 건드린다), 뒤의 둘은 서버에 새 것을 만든다. 순서가 그 선을 넘는
-    /// 방향으로 한 번만 지나가므로, 실수로 지나쳐도 한 바퀴 더 돌면 제자리다.
+    /// **There is a line between the ones here and the ones not here.** The first two apply to the
+    /// current conversation (they don't touch the session); the last two create something new on the
+    /// server. The order crosses the line in one direction only once, so an overshoot just needs one more lap.
     pub fn next(self) -> Mode {
         match self {
             Mode::Normal => Mode::Plan,
@@ -108,7 +108,7 @@ impl Mode {
         }
     }
 
-    /// 넷 전부. 테스트와 `/mode` 목록이 쓴다 — **빠뜨린 모드가 생기지 않게 한 자리에서 센다.**
+    /// All four. Used by tests and the `/mode` listing — **counted in one place so no mode gets missed.**
     pub const ALL: [Mode; 4] = [Mode::Normal, Mode::Plan, Mode::Work, Mode::Job];
 }
 
@@ -122,7 +122,7 @@ mod tests {
         assert_eq!(Mode::default().route(), Route::Session);
     }
 
-    /// 한 바퀴 돌면 제자리다. **모드를 더하고 `next`를 안 고치면 여기서 걸린다.**
+    /// One lap comes back to the start. **If you add a mode and don't fix `next`, this catches it.**
     #[test]
     fn cycling_through_every_mode_comes_back() {
         let mut seen = vec![Mode::default()];
@@ -146,7 +146,7 @@ mod tests {
         }
     }
 
-    /// 색이 겹치면 하단 바만 보고는 무슨 모드인지 알 수 없다.
+    /// If colors collide, the bottom bar alone doesn't tell which mode it is.
     #[test]
     fn no_two_modes_share_a_colour() {
         for (i, a) in Mode::ALL.iter().enumerate() {
@@ -156,8 +156,8 @@ mod tests {
         }
     }
 
-    /// **기본과 계획은 같은 곳으로 간다.** 이것이 깨지면 대화 도중에 계획 모드를 켜는
-    /// 순간 하던 얘기가 끊긴다.
+    /// **Normal and plan go to the same place.** If this breaks, turning on plan mode mid-conversation
+    /// cuts off what was being said.
     #[test]
     fn normal_and_plan_go_to_the_same_place() {
         assert_eq!(Mode::Normal.route(), Route::Session);

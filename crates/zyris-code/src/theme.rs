@@ -1,52 +1,52 @@
-//! Zyris 브랜드 팔레트 — 따뜻한 다크.
+//! The Zyris brand palette — warm dark.
 //!
-//! **배경은 한 곳만 칠한다** — 사용자 메시지(`USER_BG`). 화면 전체는 칠하지 않는다 —
-//! 터미널이 자기 배경을 쓰게 두는 것이 이 앱의 정책이다. 2026-08-03에 잔상을 막으려고
-//! 화면 전체 배경을 켰다가, 사람이 일부러 지운 것임이 드러나 되돌렸다. 잔상은
-//! `app::heal_interval`(기본 2초마다 전체 다시 그리기)이 치운다.
+//! **Only one place gets a background** — the user message (`USER_BG`). The whole screen is not
+//! painted — letting the terminal use its own background is this app's policy. On 2026-08-03 a
+//! full-screen background was turned on to stop ghosting, then reverted when it turned out the
+//! person had cleared it. Ghosting is cleaned up by `app::heal_interval` (full redraw every 2s by default).
 //!
-//! **색이 없는 텍스트를 만들지 말 것.** 지정하지 않으면 터미널 자체의 기본 전경색이
-//! 새어 나온다 — 기본 전경색을 바꿔 둔 터미널에서 "흰 글자여야 할 것"이 전부 그
-//! 색으로 보인다.
+//! **Don't create text without a color.** Unspecified, the terminal's own default foreground leaks
+//! out — on a terminal with a changed default foreground, everything "that should be white" shows
+//! in that color.
 
 use ratatui::style::Color;
 
-/// Zyris 웹 팔레트의 `--zyris-bg`(#0f0d0a). **기본으로는 칠하지 않는다** — `page_bg`를 볼 것.
+/// `--zyris-bg`(#0f0d0a) of the Zyris web palette. **Not painted by default** — see `page_bg`.
 pub const BG: Color = Color::Rgb(0x0f, 0x0d, 0x0a);
 
-/// 화면 전체에 깔 배경. **기본은 없음이다 — 터미널이 자기 배경을 쓰게 둔다.**
+/// The background laid over the whole screen. **Default is none — the terminal uses its own.**
 ///
-/// 예전에는 남는 칸 전부에 `BG`를 깔았다. 이유가 있었다: ratatui diff는 전각 글자의 오른쪽
-/// 칸을 터미널로 내보내지 않는데(터미널이 두 칸을 다 칠해 준다는 믿음), 전각이 좁은 글자로
-/// 바뀔 때 그 칸을 강제로 지우는 보호가 **`previous.bg != Reset`일 때만** 발동한다. 배경이
-/// 없으면 원격 터미널에 전각의 오른쪽 반쪽이 잔상으로 남는다.
+/// It used to lay `BG` over every leftover cell. There was a reason: the ratatui diff doesn't
+/// send a full-width character's right cell to the terminal (trusting the terminal to paint both
+/// cells), and the protection that force-clears that cell when a full-width character turns narrow
+/// only fires when **`previous.bg != Reset`**. Without a background, the right half of a full-width character ghosts on remote terminals.
 ///
-/// **그래도 기본을 끄로 둔다** — 앱이 칠할 수 없는 자리가 있어서다. 터미널 창은 격자에
-/// 안 들어맞는 픽셀을 오른쪽·아래에 여백으로 남기고, 창 자체의 패딩도 있다. 그 자리는
-/// 터미널 배경 그대로라, 앱이 자기 배경을 칠하는 순간 **가장자리에 색이 다른 띠가 생긴다.**
-/// 화면 안을 위해 화면 테두리를 망치는 셈이다. 사람이 고른 터미널 배경을 그냥 쓰는 편이
-/// 어디서나 낫다.
+/// **Still, the default stays off** — because there are places the app can't paint. The terminal
+/// window leaves pixels that don't fit the grid as margin at the right and bottom, and the window
+/// itself has padding. Those spots stay terminal background, so the moment the app paints its own,
+/// **a differently colored band appears at the edges.** That ruins the screen border for the sake
+/// of the screen — the terminal background the person chose is simply better everywhere.
 ///
-/// 잔상은 다시 그려 지운다 — `Ctrl+L`과 `app::heal_interval`(기본 2초)이 그 일을 한다.
-/// 그걸로 모자란 터미널에서는 **`ZYRIS_CODE_BG`로 되켠다**: `zyris`면 위의 브랜드 색,
-/// `#rrggbb`면 그 색이다.
+/// Ghosting is cleared by redrawing — `Ctrl+L` and `app::heal_interval` (2 seconds by default) do it.
+/// On terminals where that isn't enough, turn it back on with **`ZYRIS_CODE_BG`**: `zyris` gives
+/// the brand color above, `#rrggbb` gives that color.
 pub fn page_bg() -> Option<Color> {
     static PICKED: std::sync::OnceLock<Option<Color>> = std::sync::OnceLock::new();
     *PICKED.get_or_init(|| page_bg_from(std::env::var("ZYRIS_CODE_BG").ok().as_deref()))
 }
 
-/// `$ZYRIS_CODE_BG`를 색으로. **순수** — 판정을 여기 두어야 테스트가 환경변수를 안 흔든다.
+/// Turns `$ZYRIS_CODE_BG` into a color. **Pure** — the decision must live here so tests don't shake the env.
 pub fn page_bg_from(given: Option<&str>) -> Option<Color> {
     let given = given.map(str::trim).filter(|v| !v.is_empty())?;
     match given.to_ascii_lowercase().as_str() {
-        // 끄는 쪽도 명시할 수 있어야 한다 — 어딘가 설정에 켜 두고 잊었을 때 되돌릴 길이다.
+        // The off side must be expressible too — it's the way back when it was left on and forgotten.
         "none" | "off" | "0" | "terminal" => None,
         "zyris" | "on" | "1" | "default" => Some(BG),
         _ => hex(given),
     }
 }
 
-/// `#rrggbb` 또는 `rrggbb`. 못 읽으면 `None`이다 — 오타 하나로 앱이 죽을 이유가 없다.
+/// `#rrggbb` or `rrggbb`. Unreadable gives `None` — no reason for the app to die on a typo.
 fn hex(text: &str) -> Option<Color> {
     let digits = text.strip_prefix('#').unwrap_or(text);
     if digits.len() != 6 || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -56,7 +56,7 @@ fn hex(text: &str) -> Option<Color> {
     Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
 }
 
-/// 영역을 가르는 선. 터미널 배경이 무엇이든 은은하게 보이도록 중간 밝기로 둔다.
+/// The line dividing areas. Kept at mid brightness so it shows subtly on any terminal background.
 pub const BORDER: Color = Color::Rgb(0x3a, 0x30, 0x29);
 pub const BORDER_LIGHT: Color = Color::Rgb(0x4a, 0x3e, 0x36);
 pub const TEXT: Color = Color::Rgb(0xe8, 0xe2, 0xdc);
@@ -69,34 +69,34 @@ pub const SUCCESS: Color = Color::Rgb(0x8f, 0xae, 0x5c);
 pub const WARNING: Color = Color::Rgb(0xd9, 0xa4, 0x41);
 pub const DANGER: Color = Color::Rgb(0xc1, 0x50, 0x3f);
 
-/// 사용자가 말한 자리의 배경. ACCENT(0xc9734d)를 배경으로 쓸 수 있을 만큼 낮춘 것이다.
+/// The background where the user spoke. ACCENT (0xc9734d) lowered enough to work as a background.
 ///
-/// **배경을 쓰는 곳은 여기 하나뿐이다.** 파일 맨 위의 "배경은 칠하지 않는다"를 여기서만
-/// 뒤집는다 — 화면 전체에 깔면 배경을 바꿔 둔 터미널에서 얼룩처럼 튀고, 무엇보다
-/// 다 칠하면 아무것도 구별되지 않는다. 이 한 줄이 "내가 말한 자리"라는 신호다.
+/// **This is the only place that uses a background.** The "don't paint backgrounds" rule at the
+/// top of the file is flipped here and only here — laid over the whole screen it would jump like
+/// a stain, and painting everything makes nothing distinguishable. This one line is the "where I spoke" signal.
 pub const USER_BG: Color = Color::Rgb(0x2a, 0x20, 0x1a);
 
-/// 도구 줄의 이름. **추론과 같은 흐린 색이면 안 된다.**
+/// The tool line's name. **Must not be the same muted color as reasoning.**
 ///
-/// 펼친 카드 안에서 추론이 화면을 채우는데 도구까지 `TEXT_MUTED`면, 정작 "무엇을 했는가"가
-/// 생각 더미에 묻힌다. 읽는 사람이 훑는 것은 도구 줄이므로 그쪽이 떠 보여야 한다.
+/// Inside an expanded card reasoning fills the screen; if tools were also `TEXT_MUTED`, the actual
+/// "what was done" would be buried. What the reader scans is the tool line, so that side must stand out.
 pub const TOOL: Color = Color::Rgb(0x7f, 0xb0, 0xd4);
-/// 도구 줄의 인자 요약. 이름보다 한 단계 낮춘다.
+/// The tool line's argument summary. One step below the name.
 pub const TOOL_ARG: Color = Color::Rgb(0x6b, 0x8a, 0xa0);
 
-/// diff에서 더해진 줄. 초록.
+/// The added line in a diff. Green.
 ///
-/// `SUCCESS`·`DANGER`를 그대로 쓰지 않는다. 그 둘은 "도구가 됐다/안 됐다"를 말하는
-/// 색이라, 성공한 편집의 삭제 줄이 실패한 도구와 같은 빨강이 되면 눈이 잘못 읽는다.
+/// `SUCCESS`·`DANGER` aren't used as-is. Those two say "tool worked / didn't work", so if a
+/// deletion line in a successful edit were the same red as a failed tool, the eye would misread.
 pub const DIFF_ADD: Color = Color::Rgb(0x7e, 0xc0, 0x50);
-/// diff에서 지워진 줄. 빨강.
+/// The removed line in a diff. Red.
 pub const DIFF_DEL: Color = Color::Rgb(0xe0, 0x6c, 0x75);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 팔레트는 Zyris 웹과 값이 같아야 한다. 어긋나면 같은 제품이 다른 색으로 보인다.
+    /// The palette must match the Zyris web values. Misaligned, the same product shows in different colors.
     #[test]
     fn the_palette_matches_the_brand_values() {
         assert_eq!(BG, Color::Rgb(0x0f, 0x0d, 0x0a));

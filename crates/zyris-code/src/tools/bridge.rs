@@ -1,11 +1,11 @@
-//! 도구를 돌리는 쪽과 화면 쪽을 잇는다.
+//! Connects the tool-running side and the screen side.
 //!
-//! 둘은 다른 태스크에서 돈다 — 도구는 zyris `Runner` 위에서, 화면은 `app::run`에서.
-//! 판정에 필요한 것(모드·허용 목록)은 화면이 쥐고 있고 물어볼 곳도 화면뿐이라, 그 사이를
-//! 오가는 것을 여기 한 곳에 모았다.
+//! The two run on different tasks — tools on the zyris `Runner`, the screen in `app::run`.
+//! The screen holds what's needed to decide (mode, granted list) and is the only place to ask, so everything passing
+//! between them is gathered here in one place.
 //!
-//! **`apply`가 순수해야 한다는 제약이 이 파일의 모양을 정했다.** 화면 상태를 여기로
-//! 옮기는 것은 I/O 자리(`run_inner`)가 하고, 여기서 화면으로 가는 것은 `Action`뿐이다.
+//! **The constraint that `apply` must stay pure shaped this file.** Moving screen state here
+//! is done by the I/O site (`run_inner`); the only thing going from here to the screen is `Action`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,38 +23,38 @@ pub struct Bridge(Arc<Inner>);
 
 #[derive(Default)]
 struct Inner {
-    /// 지금 모드. 화면이 바꾸면 I/O 자리가 옮겨 준다.
+    /// The current mode. When the screen changes it, the I/O site carries it over.
     mode: Mutex<Mode>,
-    /// 사람이 열어 둔 바깥 디렉터리. 화면 쪽 목록의 사본이다.
+    /// Outside directories the human has opened. A copy of the screen-side list.
     granted: Mutex<Grants>,
-    /// 작업 디렉터리. **밖으로 나가는지 재는 기준이다.**
+    /// The working directory. **It's the yardstick for whether something leaves it.**
     root: Mutex<PathBuf>,
-    /// 화면으로 보낼 것. 화면이 뜨기 전에는 비어 있다.
+    /// What goes to the screen. Empty before the screen is up.
     ///
-    /// `AppMsg`의 `None`은 화면 밖(도구·다리)에서 온 것임을 뜻한다 — 턴 스트림만
-    /// 자기 세션 id를 태그로 실어 보낸다(`app::spawn_stream`).
+    /// `None` in `AppMsg` means it came from outside the screen (tools, the bridge) — only the turn stream
+    /// carries its own session id as a tag (`app::spawn_stream`).
     to_app: Mutex<Option<mpsc::UnboundedSender<AppMsg>>>,
-    /// 화면이 붙었을 때 깨우는 신호. `main`이 등록 코드가 화면으로 갈 수 있게
-    /// 첫 등록 전에 화면 붙기를 기다릴 때 쓴다.
+    /// A signal that wakes when the screen attaches. Used when `main` waits for the screen to attach
+    /// before the first enrollment so the enrollment code can reach the screen.
     screen_ready: tokio::sync::Notify,
-    /// 답을 기다리는 물음들.
+    /// Questions waiting for an answer.
     waiting: Mutex<HashMap<u64, oneshot::Sender<Verdict>>>,
-    /// 세션을 만들 때 실을 스킬 목록. `tools::announce`가 정하고 화면이 집어 간다.
+    /// The skill list to load when creating a session. `tools::announce` decides it and the screen picks it up.
     ///
-    /// **세션 수명 동안 고정이다** — attacca의 `preamble`은 세션을 만들 때 한 번 정해지고
-    /// 뒤에 바꿀 수 없다. 그래서 나중에 붙는 MCP 도구는 여기 실리지 않는다.
+    /// **Fixed for the session's lifetime** — attacca's `preamble` is set once when the session is created
+    /// and can't be changed later. So MCP tools that attach later aren't loaded here.
     preamble: Mutex<Option<String>>,
-    /// 붙었거나 못 붙은 MCP 서버. `/mcp`가 읽는다.
+    /// MCP servers that connected or failed to. `/mcp` reads it.
     ///
-    /// **실패도 남긴다.** 지금은 `Frame::Notice`로 6초 뜨고 사라져, 나중에 "그 서버
-    /// 왜 없지"를 물어볼 방법이 없다.
+    /// **Failures are kept too.** Right now a `Frame::Notice` shows for 6 seconds and disappears, so there's no way to ask later
+    /// "why isn't that server here".
     mcp: Mutex<Vec<(String, Result<usize, String>)>>,
-    /// 편집 도구가 쓰는 되돌림 기록. `/undo`가 **같은 손잡이**를 써야 잠금이 하나다.
+    /// The undo log the edit tool uses. `/undo` must use the **same handle** so there's a single lock.
     undo: Mutex<Option<crate::undo::Undo>>,
-    /// 자격을 버리고 다시 승인받게 하는 손잡이.
+    /// A handle for dropping credentials and getting re-approved.
     ///
-    /// 모자란 권한을 알아채는 것은 **붙은 뒤의 화면 쪽**(`me()`의 스코프)이고, 버릴 자격을
-    /// 쥐고 있는 것은 시작할 때의 `main.rs`다. 그 둘을 잇는 자리가 여기다.
+    /// Noticing insufficient permissions is the **screen side after attaching** (the `me()` scope); the credentials to drop
+    /// are held by `main.rs` at startup. The place connecting the two is here.
     reauth: Mutex<Option<crate::enroll::Reauth>>,
     next_id: AtomicU64,
 }
@@ -64,37 +64,37 @@ impl Bridge {
         Bridge::default()
     }
 
-    /// 화면이 뜨면 자기 손잡이를 꽂는다. 이 전에 오는 물음은 갈 곳이 없어 거부가 된다.
+    /// Plugs in its handle once the screen is up. Questions arriving before that have nowhere to go and become refusals.
     pub fn attach(&self, to_app: mpsc::UnboundedSender<AppMsg>) {
         *self.0.to_app.lock().unwrap() = Some(to_app);
-        // 첫 등록은 화면이 뜨기 전에 시작될 수 있다(`main`이 러너를 돌리기 전에
-        // 앱을 띄운다). 등록 코드가 화면으로 가도록, 붙기를 기다리는 쪽을 깨운다.
+        // The first enrollment can start before the screen is up (`main` launches the app before running the runner).
+        // Wake the waiter so the enrollment code can reach the screen.
         self.0.screen_ready.notify_waiters();
     }
 
-    /// 화면이 붙기를 기다린다. **이미 붙어 있으면 곧바로 돌아온다.**
+    /// Waits for the screen to attach. **If it's already attached, returns immediately.**
     ///
-    /// `main`이 러너를 돌리기 전에 이걸 부른다 — 등록 코드 창(`Frame::Enroll`)이
-    /// 첫 연결부터 화면에 도달할 수 있게 하는 순서 보장이다.
+    /// `main` calls this before running the runner — an ordering guarantee so the enrollment window (`Frame::Enroll`)
+    /// can reach the screen from the very first connection.
     pub async fn wait_screen(&self) {
         if self.has_screen() {
             return;
         }
         let notified = self.0.screen_ready.notified();
-        // 기다림을 만들고 나서 다시 본다 — 그 사이에 붙었을 수 있다.
+        // Create the waiter, then check again — it may have attached in between.
         if self.has_screen() {
             return;
         }
         notified.await;
     }
 
-    /// 화면 쪽 판정 재료를 옮겨 둔다. I/O 자리가 상태를 만질 때마다 부른다.
+    /// Copies over the screen-side decision material. Called whenever the I/O site touches state.
     pub fn sync(&self, mode: Mode, granted: &Grants) {
         *self.0.mode.lock().unwrap() = mode;
         *self.0.granted.lock().unwrap() = granted.clone();
     }
 
-    /// 작업 디렉터리를 알려 둔다. `tools::announce`가 한 번 부른다.
+    /// Records the working directory. `tools::announce` calls it once.
     pub fn set_root(&self, root: PathBuf) {
         *self.0.root.lock().unwrap() = root;
     }
@@ -108,7 +108,7 @@ impl Bridge {
         decide(mode, &self.0.granted.lock().unwrap(), call)
     }
 
-    /// 물어보고 답을 기다릴 손잡이를 낸다. 화면이 없으면 `None`이다.
+    /// Produces a handle to ask and wait for an answer. `None` if there's no screen.
     pub fn ask(&self, call: Call, summary: String) -> Option<(u64, oneshot::Receiver<Verdict>)> {
         let id = self.next_id();
         let (tx, rx) = oneshot::channel();
@@ -123,33 +123,33 @@ impl Bridge {
         }
     }
 
-    /// 사람이 답했다. I/O 자리가 `State.verdict_out`을 집어 여기로 넘긴다.
+    /// The human answered. The I/O site picks up `State.verdict_out` and hands it here.
     pub fn answer(&self, id: u64, verdict: Verdict) {
         if let Some(tx) = self.0.waiting.lock().unwrap().remove(&id) {
             let _ = tx.send(verdict);
         }
     }
 
-    /// 화면이 붙어 있는가.
+    /// Whether the screen is attached.
     ///
-    /// 등록 코드를 **어디에** 그릴지가 여기서 갈린다: 화면이 있으면 화면이 겹쳐 그리고,
-    /// 없으면(첫 실행) stderr에 상자로 찍는다. 둘 다 하면 프레임이 글자를 덮는다.
+    /// Where to draw the enrollment code forks here: with a screen, the screen overlays it;
+    /// without one (first run), it's printed as a box on stderr. Doing both would let frames cover the text.
     pub fn has_screen(&self) -> bool {
         self.0.to_app.lock().unwrap().is_some()
     }
 
-    /// 프레임을 보내고 **닿았는지** 알려 준다. 안 닿았으면 부르는 쪽이 스스로 말해야 한다.
+    /// Sends a frame and reports **whether it reached**. If it didn't, the caller must speak for itself.
     pub fn reaches_screen(&self, frame: Frame) -> bool {
         self.send(Action::Frame(frame)).is_some()
     }
 
-    /// 와이어 마감이 사람보다 먼저 왔다. **창은 화면에 남기고** 사실만 알린다.
+    /// The wire deadline arrived before the human. **Leaves the window on screen** and only announces the fact.
     pub fn expire(&self, id: u64) {
         self.0.waiting.lock().unwrap().remove(&id);
         self.frame(Frame::Expired(id));
     }
 
-    /// MCP 서버 하나의 결말을 적어 둔다. 도구 수를 알면 성공, 사유를 알면 실패다.
+    /// Records one MCP server's outcome. A tool count means success; a reason means failure.
     pub fn note_mcp(&self, slug: &str, outcome: Result<usize, String>) {
         let mut all = self.0.mcp.lock().unwrap();
         match all.iter_mut().find(|(s, _)| s == slug) {
@@ -158,13 +158,13 @@ impl Bridge {
         }
     }
 
-    /// 화면에 무언가를 표시하고 나중에 지울 때 쓸 번호. 승인 물음과 같은 통을 쓴다 —
-    /// 둘이 겹칠 일이 없어야 지울 것을 헷갈리지 않는다.
+    /// A number for showing something on screen and clearing it later. Shares the same pool as approval questions —
+    /// the two must never overlap so what to clear isn't confused.
     pub fn next_id(&self) -> u64 {
         self.0.next_id.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// `/mcp`가 보여줄 것. 적힌 순서 그대로다.
+    /// What `/mcp` will show. In the order recorded.
     pub fn mcp_report(&self) -> Vec<(String, Result<usize, String>)> {
         self.0.mcp.lock().unwrap().clone()
     }
@@ -177,10 +177,10 @@ impl Bridge {
         self.0.preamble.lock().unwrap().clone()
     }
 
-    /// 편집 도구가 쓰는 되돌림 기록을 화면 쪽에도 알려 준다.
+    /// Also tells the screen side about the undo log the edit tool uses.
     ///
-    /// **같은 손잡이여야 한다.** `Undo::for_dir`로 각자 만들면 잠금이 따로 놀아,
-    /// 에이전트가 편집하는 중에 `/undo`를 누르면 로그 두 줄이 겹쳐 쓰인다.
+    /// **It must be the same handle.** If each side makes its own with `Undo::for_dir`, the locks play separately and
+    /// pressing `/undo` while the agent is editing writes two log lines over each other.
     pub fn set_undo(&self, undo: crate::undo::Undo) {
         *self.0.undo.lock().unwrap() = Some(undo);
     }
@@ -189,7 +189,7 @@ impl Bridge {
         self.0.undo.lock().unwrap().clone()
     }
 
-    /// 자격을 버릴 수 있는 손잡이를 얹는다. **사람이 토큰을 직접 준 자리에는 없다.**
+    /// Mounts a handle that can drop credentials. **Not present where the human gave the token directly.**
     pub fn set_reauth(&self, reauth: crate::enroll::Reauth) {
         *self.0.reauth.lock().unwrap() = Some(reauth);
     }
@@ -203,7 +203,7 @@ impl Bridge {
     }
 
     fn send(&self, action: Action) -> Option<()> {
-        // 다리에서 나가는 것은 화면 밖의 일이다 — 세션 태그 없이 보낸다.
+        // What leaves the bridge is screen-external — sent without a session tag.
         self.0.to_app.lock().unwrap().as_ref()?.send((None, action)).ok()
     }
 }
@@ -216,8 +216,8 @@ mod tests {
         Call::new("code_edit", "edit", "/tmp/a".into())
     }
 
-    /// 모드는 화면이 정하고 게이트가 그것을 본다. **안 옮기면 화면은 계획 모드인데
-    /// 도구는 그대로 돈다.**
+    /// The screen decides the mode and the gate sees it. **If it isn't carried over, the screen is in plan mode
+    /// while tools still run.**
     #[test]
     fn the_gate_sees_the_mode_the_screen_is_in() {
         let b = Bridge::new();
@@ -228,7 +228,7 @@ mod tests {
         assert_eq!(b.decide(&edit_call()), Decision::Run);
     }
 
-    /// **화면이 없으면 물을 곳이 없다.** 조용히 통과시키면 몰래 밖으로 나간다.
+    /// **Without a screen there's nowhere to ask.** Passing it quietly would let it leave without anyone knowing.
     #[test]
     fn asking_before_the_screen_exists_fails_instead_of_passing() {
         let b = Bridge::new();
@@ -236,7 +236,7 @@ mod tests {
         assert!(b.ask(leaving, "/etc/passwd".into()).is_none());
     }
 
-    /// 답이 오면 기다리던 쪽이 깨어난다.
+    /// When the answer arrives, the waiting side wakes.
     #[tokio::test]
     async fn an_answer_reaches_the_call_that_is_waiting() {
         let b = Bridge::new();
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(wait.await.unwrap(), Verdict::Allow);
     }
 
-    /// 마감이 지나면 기다리던 손잡이를 버린다 — 뒤늦은 답이 몰래 실행되면 안 된다.
+    /// Past the deadline, the waiting handle is dropped — a late answer must not run in secret.
     #[tokio::test]
     async fn expiring_drops_the_waiter_so_a_late_answer_runs_nothing() {
         let b = Bridge::new();
@@ -260,13 +260,13 @@ mod tests {
         assert!(wait.await.is_err(), "포기한 호출이 답을 받으면 안 된다");
     }
 
-    /// 화면이 아직 없으면 프레임은 갈 곳이 없다. **죽지 않고 버린다.**
+    /// Without a screen yet, a frame has nowhere to go. **Dropped, not fatal.**
     #[test]
     fn a_frame_sent_before_the_screen_exists_is_dropped_quietly() {
         Bridge::new().frame(Frame::Notice("아무도 못 본다".into()));
     }
 
-    /// 화면이 붙으면 프레임이 그리로 간다.
+    /// Once the screen is attached, frames go there.
     #[test]
     fn a_frame_reaches_the_screen_once_it_is_attached() {
         let b = Bridge::new();
@@ -276,14 +276,14 @@ mod tests {
         assert!(rx.try_recv().is_ok(), "화면으로 가야 한다");
     }
 
-    /// 번호는 겹치면 안 된다 — 지울 것을 헷갈린다.
+    /// Ids must not overlap — you'd confuse what to clear.
     #[test]
     fn every_id_is_new() {
         let b = Bridge::new();
         assert_ne!(b.next_id(), b.next_id());
     }
 
-    /// **못 뜬 MCP 서버도 남아야 한다.** 상태 줄은 6초 뒤 사라져 나중에 물어볼 수 없다.
+    /// **A failed MCP server must also remain.** The status line disappears after 6 seconds, leaving nothing to ask later.
     #[test]
     fn a_failed_mcp_server_is_remembered_with_its_reason() {
         let b = Bridge::new();
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(report[1].1.as_ref().unwrap_err(), "npx를 찾지 못했습니다");
     }
 
-    /// 같은 서버를 두 번 적으면 덮어쓴다 — 목록에 두 벌로 보이면 안 된다.
+    /// Recording the same server twice overwrites it — it must not appear twice in the list.
     #[test]
     fn noting_the_same_server_twice_replaces_it() {
         let b = Bridge::new();

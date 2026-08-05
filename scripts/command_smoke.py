@@ -73,7 +73,7 @@ def main():
         ZYRIS_CODE_LOG="/tmp/zyris-code-command.log",
     )
     primary, replica = pty.openpty()
-    # **창 크기를 반드시 정한다.** 0×0이면 ratatui가 아무것도 안 내보낸다.
+    # **The window size must be set.** At 0×0 ratatui emits nothing.
     fcntl.ioctl(replica, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     proc = subprocess.Popen(
         [os.path.abspath(BIN)],
@@ -106,17 +106,17 @@ def main():
         print("  ✓ 떴다")
         checks += 1
 
-        # 1. `/`를 치면 목록이 뜬다. **안 뜨면 아무도 안 쓴다.**
+        # 1. Pressing `/` shows the list. **If it doesn't show, nobody will use it.**
         send(primary, "/")
         check(read_until(primary, "/mode", buf, time.time() + 5, "명령 목록"), "`/`에 목록이 뜬다")
-        # **기다려서 읽는다.** 위 검사는 `/mode`를 보자마자 멈추므로 그 아래 줄들은
-        # 아직 안 와 있다 — 스냅숏만 뒤지면 없다고 나온다.
+        # **Wait, then read.** The check above stops as soon as `/mode` appears, so the lines below
+        # it haven't arrived yet — a snapshot-only search would say they're missing.
         check(
             read_until(primary, "/agent", buf, time.time() + 5, "/agent 줄"),
             "`/agent`이 목록에 있다",
         )
 
-        # 2. 치면 좁혀진다.
+        # 2. Typing narrows it down.
         buf.clear()
         send(primary, "cw")
         time.sleep(0.6)
@@ -126,7 +126,7 @@ def main():
         shown = ANSI.sub("", "".join(buf))
         check("/cwd" in shown and "/mode" not in shown, "치는 대로 좁혀진다")
 
-        # 3. 돌린다. **서버로 안 가고 여기서 답한다.**
+        # 3. Run it. **It answers here instead of going to the server.**
         buf.clear()
         send(primary, "\r")
         check(
@@ -134,7 +134,7 @@ def main():
             "`/cwd`가 작업 디렉터리를 답한다",
         )
 
-        # 4. 모드를 바꾼다.
+        # 4. Change the mode.
         buf.clear()
         send(primary, "/mode 계획")
         send(primary, "\r")
@@ -143,7 +143,7 @@ def main():
             "`/mode 계획`이 모드를 바꾼다",
         )
 
-        # 5. `/mcp`는 붙은 것이 없어도 무언가 말해야 한다 — 조용하면 고장으로 보인다.
+        # 5. `/mcp` must say something even with nothing attached — silence reads as a bug.
         buf.clear()
         send(primary, "/mcp")
         send(primary, "\r")
@@ -152,7 +152,7 @@ def main():
             "`/mcp`가 답한다",
         )
 
-        # 6. 열어 둔 것이 없어도 **어떻게 열리는지**는 말해야 한다.
+        # 6. Even with nothing open, it must say **how it opens**.
         buf.clear()
         send(primary, "/grants")
         send(primary, "\r")
@@ -161,8 +161,8 @@ def main():
             "`/grants`가 열린 곳이 없다는 것과 여는 길을 말한다",
         )
 
-        # 7. **`/quit`는 진짜로 끝나야 한다.** 여기서만 볼 수 있는 것이다 — 셀 단언은
-        # 프로세스가 살아 있는지 모른다.
+        # 7. **`/quit` must really exit.** Only observable here — a shell assertion
+        # can't tell whether the process is alive.
         buf.clear()
         send(primary, "/quit")
         send(primary, "\r")

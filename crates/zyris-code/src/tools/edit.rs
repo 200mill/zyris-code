@@ -1,17 +1,17 @@
-//! 에이전트가 파일을 고치는 **유일한** 길.
+//! The **only** way an agent changes files.
 //!
-//! `file_io`의 `write`·`remove`·`mkdir`은 내주지 않는다(`tools::readonly`). 파일을 바꾸는
-//! 길이 둘이면 에이전트가 통째로 덮어쓰기를 골라 diff가 파일 전체로 번지고, 승인 게이트를
-//! 두 곳에 걸어야 한다. 여기가 독점이라 **모든 변경이 한 승인 게이트와 한 diff 화면을 지난다.**
+//! `file_io`'s `write`·`remove`·`mkdir` aren't granted (`tools::readonly`). If there were two ways to change a file,
+//! the agent would pick whole-file overwrites, diffs would spread across the whole file, and the approval gate
+//! would have to be hung in two places. With this as the only way, **every change passes one approval gate and one diff screen.**
 //!
-//! **파일을 지우는 도구는 아예 없다.** 지우는 것은 사람이 한다.
+//! **There is no tool for deleting files at all.** Deleting is done by the human.
 //!
-//! 메서드의 doc 주석만 와이어로 나가 에이전트가 읽는 설명이 된다. **그래서 주석이 곧 규약이다.**
+//! Only the methods' doc comments go over the wire and become the description the agent reads. **So the comments ARE the contract.**
 //!
-//! 여러 세션이 한 저장소를 동시에 고치면 서로 모르는 사이에 파일을 덮을 수 있다. 그 싸움은
-//! `base_version`으로 막는다 — 읽은 시점의 버전 토큰을 편집에 실어 보내면 파일이 그 사이
-//! 바뀌었을 때 조용히 덮지 않고 실패한다. 토큰은 `file_io.read` 응답의
-//! `stat.modified_unix_ms:stat.size`, 또는 `code_edit.version`의 `version`에서 얻는다.
+//! If several sessions edit one repository at the same time, they can overwrite files without knowing. That fight is
+//! stopped with `base_version` — send the version token from when you read with the edit, and if the file changed in between,
+//! it fails instead of silently overwriting. The token comes from the `file_io.read` response's
+//! `stat.modified_unix_ms:stat.size`, or from `code_edit.version`'s `version`.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,21 +40,21 @@ pub struct EditResult {
     pub removed: u32,
     /// Unified diff of what changed.
     pub diff: String,
-    /// 이 쓰기 이후의 파일 버전 토큰("mtime_ms:size"). 다음 편집의 base_version으로 쓴다.
+    /// The file's version token after this write ("mtime_ms:size"). Use it as the base_version of the next edit.
     pub version: String,
 }
 
-/// 어떤 파일의 버전 토큰. `base_version` 인자에 그대로 넘긴다.
+/// A file's version token. Pass it straight to the `base_version` argument.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FileVersion {
     pub path: String,
-    /// 수정 시각(ms). `file_io.read` 응답의 `stat.modified_unix_ms`와 같은 값이다.
+    /// Modification time (ms). The same value as `stat.modified_unix_ms` in the `file_io.read` response.
     pub mtime_ms: u64,
-    /// 바이트 수. `stat.size`와 같은 값이다.
+    /// Byte count. The same value as `stat.size`.
     pub size: u64,
-    /// 내용의 SHA-256. `version`보다 강한 비교가 필요할 때 쓴다.
+    /// SHA-256 of the content. Used when a stronger comparison than `version` is needed.
     pub sha256: String,
-    /// `base_version`에 그대로 넘길 토큰 — "mtime_ms:size" 형태.
+    /// The token to pass straight to `base_version` — of the form "mtime_ms:size".
     pub version: String,
 }
 
@@ -108,7 +108,7 @@ pub trait CodeEdit {
 #[derive(Clone)]
 pub struct LocalEdit {
     root: PathBuf,
-    /// 바꾸기 전 내용을 남기는 곳. **사용자 리포 바깥에 산다**(`~/.cache`).
+    /// Where the pre-change content is kept. **Lives outside the user's repo** (`~/.cache`).
     undo: crate::undo::Undo,
 }
 
@@ -118,16 +118,16 @@ impl LocalEdit {
         LocalEdit { root, undo }
     }
 
-    /// 되돌림 기록. `/undo`가 이것을 쓴다.
+    /// The undo log. `/undo` uses it.
     pub fn undo(&self) -> crate::undo::Undo {
         self.undo.clone()
     }
 
-    /// 읽고, 바꾸고, 쓰고, diff를 돌려준다. 세 도구가 모두 여기로 모인다 — 그래야 어느
-    /// 길로 바뀌든 같은 모양의 결과가 나온다.
+    /// Read, change, write, and return a diff. All three tools meet here — so no matter which path,
+    /// the result has the same shape.
     ///
-    /// `base_version`은 이 파일을 마지막으로 읽었을 때의 버전 토큰이다. 파일이 그 사이
-    /// 바뀌었으면 **쓰지 않고 실패한다** — 조용히 덮는 대신 다시 읽게 만든다.
+    /// `base_version` is the version token from when this file was last read. If the file changed in between,
+    /// it **fails without writing** — instead of silently overwriting, it forces a re-read.
     async fn apply<F>(
         &self,
         path: &str,
@@ -142,7 +142,7 @@ impl LocalEdit {
         let existed = tokio::fs::try_exists(&full).await.unwrap_or(false);
         let old = tokio::fs::read_to_string(&full).await.unwrap_or_default();
 
-        // **동시성 검사.** 읽은 뒤 파일이 바뀌었으면 조용히 덮지 않는다.
+        // **Concurrency check.** If the file changed after reading, don't silently overwrite.
         if let Some(base) = base_version {
             let now = current_version(&full);
             let ok = match (base.strip_prefix("sha256:"), now.as_ref()) {
@@ -162,8 +162,8 @@ impl LocalEdit {
                 )));
             }
         }
-        // 전체 파일 쓰기는 새 파일 전용이 기본이다 — 이미 있는 파일을 덮으려면
-        // base_version으로 "그 파일을 봤다"는 증거를 내야 한다.
+        // Whole-file writes default to new files only — to overwrite an existing file you must
+        // present proof via base_version that you've seen the file.
         if require_base_for_existing && existed && base_version.is_none() {
             return Err(WireError::invalid_params(format!(
                 "'{}'은(는) 이미 있는 파일입니다 — 덮어쓰려면 base_version을 주세요. \
@@ -178,9 +178,9 @@ impl LocalEdit {
                 WireError::internal(format!("상위 디렉터리를 만들지 못했습니다: {e}"))
             })?;
         }
-        // **쓰기 직전에 남긴다.** 세 도구가 모두 여기로 모이므로 자리는 하나다.
-        // 실패해도 편집을 막지 않는다 — 안전망이 없다고 일을 막으면 고칠 수 없는
-        // 파일이 생긴다(`undo::snapshot`의 주석).
+        // **Snapshot right before writing.** All three tools meet here, so there's a single spot.
+        // A failure doesn't block the edit — if a missing safety net stopped work,
+        // you'd end up with files that can't be fixed (see `undo::snapshot`'s comment).
         self.undo.snapshot(&full);
         atomic_write(&full, new.as_bytes())
             .await
@@ -198,7 +198,7 @@ impl LocalEdit {
     }
 }
 
-/// 파일의 지금 버전 토큰("mtime_ms:size"). 읽은 응답의 `stat`으로 뽑은 것과 같은 값이다.
+/// The file's current version token ("mtime_ms:size"). The same value as what the read response's `stat` yields.
 fn current_version(full: &Path) -> std::io::Result<String> {
     let md = std::fs::metadata(full)?;
     Ok(format!("{}:{}", mtime_ms(&md), md.len()))
@@ -218,7 +218,7 @@ fn sha256_of(bytes: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
-/// temp 파일에 쓰고 rename으로 원자적으로 반영한다. 반쯤 쓰인 파일이 보이지 않는다.
+/// Write to a temp file and apply atomically via rename. A half-written file is never visible.
 async fn atomic_write(full: &Path, content: &[u8]) -> std::io::Result<()> {
     let dir = full.parent().unwrap_or_else(|| Path::new("."));
     let name = full.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -242,10 +242,10 @@ async fn atomic_write(full: &Path, content: &[u8]) -> std::io::Result<()> {
     r
 }
 
-/// 한 조각을 바꾼다.
+/// Replaces one fragment.
 ///
-/// **몇 번 나왔는지를 오류에 담는다.** 에이전트가 앞뒤를 더 붙여 다시 부를 수 있어야 하고,
-/// 그냥 "실패했다"로는 무엇을 고쳐야 할지 알 수 없다.
+/// **How many times it appeared goes into the error.** The agent must be able to add more context and call again, and
+/// a bare "failed" doesn't tell it what to fix.
 fn substitute(body: &str, spec: &EditSpec) -> Result<String, WireError> {
     let hits = body.matches(&spec.old_string).count();
     match hits {
@@ -263,7 +263,7 @@ fn substitute(body: &str, spec: &EditSpec) -> Result<String, WireError> {
     }
 }
 
-/// 오류 메시지에 들어갈 만큼만. 긴 조각을 통째로 실으면 메시지가 화면을 덮는다.
+/// Only as much as fits an error message. Loading a long fragment whole would let the message cover the screen.
 fn clip(s: &str) -> String {
     let head: String = s.chars().take(40).collect();
     if head.chars().count() < s.chars().count() {
@@ -293,8 +293,8 @@ impl CodeEdit for LocalEdit {
         edits: Vec<EditSpec>,
         base_version: Option<String>,
     ) -> zyris::Result<EditResult> {
-        // 메모리에서 다 적용한 뒤 한 번만 쓴다. 중간까지 쓰고 실패하면 파일이 어느 상태인지
-        // 아무도 모른다 — 에이전트도, 사람도.
+        // Apply everything in memory, then write once. If it wrote halfway and failed, nobody would know
+        // what state the file is in — neither the agent nor the human.
         self.apply(&path, base_version.as_deref(), false, move |body| {
             let mut out = body.to_string();
             for spec in &edits {
@@ -311,7 +311,7 @@ impl CodeEdit for LocalEdit {
         content: String,
         base_version: Option<String>,
     ) -> zyris::Result<EditResult> {
-        // 끝줄 개행을 저절로 붙이지 않는다 — 붙이면 파일 전체가 diff에 걸린다.
+        // A trailing newline isn't added automatically — adding one would put the whole file in the diff.
         self.apply(&path, base_version.as_deref(), true, move |_| Ok(content)).await
     }
 
@@ -341,10 +341,10 @@ mod tests {
         (dir, edit, "a.txt".to_string())
     }
 
-    /// **편집하면 되돌릴 수 있어야 한다.** git 없는 디렉터리에서는 이것이 유일한 안전망이다.
+    /// **An edit must be undoable.** In a directory without git, this is the only safety net.
     #[tokio::test]
     async fn an_edit_leaves_something_to_undo() {
-        // 캐시 자리를 옮긴다 — 진짜 홈에 쓰면 안 된다.
+        // Move the cache location — must not write to the real home.
         let cache = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_CACHE_HOME", cache.path());
 
@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "before\n");
     }
 
-    /// 새 파일을 만든 것도 되돌릴 수 있어야 한다 — 되돌리면 그 파일이 없어진다.
+    /// Creating a new file must be undoable too — reverting makes the file disappear.
     #[tokio::test]
     async fn creating_a_file_can_be_undone_too() {
         let cache = tempfile::tempdir().unwrap();
@@ -382,7 +382,7 @@ mod tests {
         assert!(r.diff.contains("+TWO"), "{}", r.diff);
     }
 
-    /// 두 번 나오는 것을 말없이 하나만 바꾸면 엉뚱한 곳이 조용히 바뀐다.
+    /// Replacing only one of two occurrences without a word would quietly change the wrong place.
     #[tokio::test]
     async fn two_matches_fail_and_say_how_many() {
         let (_d, edit, p) = scratch("x\nx\n");
@@ -390,7 +390,7 @@ mod tests {
         assert!(e.message.contains('2'), "몇 번 나왔는지 말해야 한다: {}", e.message);
     }
 
-    /// 못 찾았을 때도 무엇을 해야 할지 말해야 한다.
+    /// When it's not found, it must also say what to do.
     #[tokio::test]
     async fn no_match_fails_and_says_what_to_do() {
         let (_d, edit, p) = scratch("x\n");
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(r.added, 2);
     }
 
-    /// 중간까지 쓰고 실패하면 파일이 어느 상태인지 아무도 모른다.
+    /// If it wrote halfway and failed, nobody would know what state the file is in.
     #[tokio::test]
     async fn a_failing_multi_edit_leaves_the_file_alone() {
         let (dir, edit, p) = scratch("하나\n둘\n");
@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "ONE\nTWO\n");
     }
 
-    /// 끝줄 개행이 저절로 붙으면 파일 전체가 diff에 걸린다.
+    /// If a trailing newline were added automatically, the whole file would land in the diff.
     #[tokio::test]
     async fn writing_does_not_add_a_trailing_newline() {
         let (dir, edit, _) = scratch("");
@@ -436,7 +436,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("b.txt")).unwrap(), "한 줄");
     }
 
-    /// 없는 디렉터리에 새 파일을 만들 수 있어야 한다.
+    /// It must be possible to create a new file in a missing directory.
     #[tokio::test]
     async fn writing_creates_missing_parents() {
         let (dir, edit, _) = scratch("");
@@ -444,13 +444,13 @@ mod tests {
         assert!(dir.path().join("깊은/곳/c.txt").exists());
     }
 
-    /// 읽은 뒤 파일이 바뀌었으면 조용히 덮지 않고 실패해야 한다.
+    /// If the file changed after reading, it must fail instead of silently overwriting.
     #[tokio::test]
     async fn editing_with_a_stale_base_version_fails_and_leaves_the_file() {
         let (dir, edit, p) = scratch("before\n");
-        // 에이전트가 읽은 버전 토큰
+        // The version token the agent read
         let read_at = current_version(&dir.path().join("a.txt")).unwrap();
-        // 다른 세션이 그 사이 고쳤다고 치자
+        // Pretend another session changed it in between
         std::fs::write(dir.path().join("a.txt"), "before\nother-session\n").unwrap();
         let e =
             edit.edit(p, "before".into(), "after".into(), None, Some(read_at)).await.unwrap_err();
@@ -461,7 +461,7 @@ mod tests {
         );
     }
 
-    /// base_version이 지금 디스크와 같으면 편집은 통과한다.
+    /// If base_version matches the current disk, the edit goes through.
     #[tokio::test]
     async fn editing_with_a_matching_base_version_succeeds() {
         let (dir, edit, p) = scratch("before\n");
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "after\n");
     }
 
-    /// sha256 토큰으로도 같은 검사가 된다 — 내용이 달라지면 실패한다.
+    /// The same check works with a sha256 token — a content change fails it.
     #[tokio::test]
     async fn sha256_base_version_checks_content() {
         let (dir, edit, p) = scratch("before\n");
@@ -480,7 +480,7 @@ mod tests {
         assert!(e.message.contains("바뀌었"), "{}", e.message);
     }
 
-    /// 이미 있는 파일을 base_version 없이 덮어쓰면 거부되어야 한다 — 조용한 덮어쓰기의 주범이다.
+    /// Overwriting an existing file without base_version must be refused — it's the prime source of silent overwrites.
     #[tokio::test]
     async fn writing_over_an_existing_file_requires_base_version() {
         let (dir, edit, p) = scratch("keep\n");
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "clobber\n");
     }
 
-    /// version()이 돌려주는 토큰은 디스크와 일치해야 한다 — base_version으로 그대로 쓸 수 있다.
+    /// The token version() returns must match the disk — it can be used as base_version as is.
     #[tokio::test]
     async fn version_matches_the_file_on_disk() {
         let (dir, edit, p) = scratch("abc\n");
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(fv.sha256, sha256_of(b"abc\n"));
     }
 
-    /// 편집 결과가 새 버전 토큰을 실어 나른다 — 다음 편집의 base_version으로 쓸 수 있다.
+    /// The edit result carries the new version token — usable as the next edit's base_version.
     #[tokio::test]
     async fn edit_reports_the_new_version() {
         let (dir, edit, p) = scratch("x\n");

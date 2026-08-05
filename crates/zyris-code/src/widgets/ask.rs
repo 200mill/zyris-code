@@ -1,7 +1,7 @@
-//! 질문에 답하는 화면. **입력란 자리를 대신 차지한다.**
+//! The screen that answers questions. **It takes over the input field's spot.**
 //!
-//! 대화 흐름 안에 카드로 두면 스크롤에 밀려 사라지는데, 답을 기다리느라 턴이 막혀 있는
-//! 동안 지금 할 일이 화면 밖으로 나가면 안 된다. 그래서 늘 보이는 아래쪽에 세운다.
+//! Placed as a card inside the conversation flow it gets scrolled away, but while a turn is
+//! blocked waiting for an answer, the task at hand must not leave the screen. So it is pinned at the always-visible bottom.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -13,17 +13,17 @@ use crate::markdown::display_width;
 use crate::question::{Answering, RowKind};
 use crate::theme;
 
-/// 이 상태에서 필요한 높이. 레이아웃이 자리를 잡을 때 쓴다.
+/// Height needed in this state. Used when the layout settles positions.
 pub fn height(a: &Answering, max: u16) -> u16 {
-    // 검토 화면은 답한 내용을 함께 보여주므로 줄이 더 든다.
+    // The review screen also shows the answers, so it takes more lines.
     let extra = if a.in_review() { a.steps.len() as u16 + 2 } else { 1 };
     let want = 2 + extra + a.rows().len() as u16;
     want.min(max).max(3)
 }
 
-/// 화면 y좌표를 목록의 몇 번째 줄인지로 옮긴다. 목록 밖이면 `None`.
+/// Converts a screen y-coordinate to which row of the list it is. `None` if outside the list.
 ///
-/// 줄 구성은 `draw`와 같아야 한다 — 어긋나면 클릭이 엉뚱한 줄을 고른다.
+/// Line layout must match `draw` — if it drifts, clicks pick the wrong row.
 pub fn row_at(a: &Answering, area: Rect, y: u16) -> Option<usize> {
     let head = if a.in_review() { 2 + a.steps.len() as u16 + 1 } else { 2 };
     let first = area.y + head;
@@ -45,7 +45,7 @@ pub fn draw(frame: &mut Frame, area: Rect, a: &Answering, lang: crate::lang::Lan
         return;
     }
 
-    // 질문 머리. 여러 단계면 몇 번째인지 붙인다.
+    // Question header. When there are multiple steps, append which one it is.
     let step = a.current();
     let mut head = vec![Span::styled("? ", Style::default().fg(theme::ACCENT))];
     if let Some(h) = &step.header {
@@ -70,7 +70,7 @@ pub fn draw(frame: &mut Frame, area: Rect, a: &Answering, lang: crate::lang::Lan
             RowKind::Option(j) => {
                 let opt = &step.options[j];
                 let chosen = a.is_chosen(j);
-                // 여러 개 고를 수 있으면 네모, 하나만이면 동그라미 — 모양으로 구별된다.
+                // Square when multiple can be picked, circle when only one — told apart by shape.
                 let mark = match (step.multi, chosen) {
                     (true, true) => "[x] ",
                     (true, false) => "[ ] ",
@@ -105,7 +105,7 @@ pub fn draw(frame: &mut Frame, area: Rect, a: &Answering, lang: crate::lang::Lan
                 if a.typing {
                     spans.push(Span::styled("✎ ", Style::default().fg(theme::ACCENT)));
                     if a.input.text.is_empty() {
-                        // 빈 칸이면 무엇을 하는 자리인지 말해 준다.
+                        // When the field is empty, say what this spot is for.
                         spans.push(Span::styled(
                             lang.type_here(),
                             Style::default().fg(theme::BORDER_LIGHT),
@@ -127,8 +127,8 @@ pub fn draw(frame: &mut Frame, area: Rect, a: &Answering, lang: crate::lang::Lan
                         }),
                     ));
                 } else {
-                    // **적은 내용이 남아 보여야 한다.** 안 보이면 무엇을 썼는지 확인할
-                    // 길이 없어 다시 열어 봐야 한다.
+                    // **What was typed must stay visible.** If it isn't, there's no way to check
+                    // what was written without opening it again.
                     spans.push(Span::styled("✎ ", Style::default().fg(theme::SUCCESS)));
                     spans.push(Span::styled(
                         a.free_text().to_string(),
@@ -156,7 +156,7 @@ pub fn draw(frame: &mut Frame, area: Rect, a: &Answering, lang: crate::lang::Lan
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// 줄이 폭을 넘지 않게 마지막 span부터 깎는다.
+/// Trims from the last span so the line doesn't exceed the width.
 fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut used = 0usize;
     let mut out = Vec::new();
@@ -184,7 +184,7 @@ fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>>
     out
 }
 
-/// 다 물어본 뒤의 검토 화면. 무엇을 답했는지 보여주고 보낼지 고치게 한다.
+/// Review screen after all questions are asked. Shows what was answered and lets the user send or fix it.
 fn draw_review(
     frame: &mut Frame,
     area: Rect,

@@ -1,11 +1,11 @@
-//! MCP 서버 하나를 이 노드의 캐퍼빌리티 하나로 바꾼다.
+//! Turns one MCP server into one capability of this node.
 //!
-//! **에이전트는 MCP라는 것을 모른다.** 도구 이름이 `zyris__{노드}__mcp_{이름}__{도구}`로
-//! 보일 뿐이고, 부르면 우리가 stdio로 넘긴다.
+//! **The agent doesn't know about MCP.** The tool name just looks like
+//! `zyris__{node}__mcp_{name}__{tool}` — and when called, we hand it over via stdio.
 //!
-//! `#[zyris::capability]` 매크로를 쓸 수 없다 — 매크로는 컴파일 타임에 도구를 정하는데
-//! 여기는 서버에 물어봐야 무엇이 있는지 안다. `ServeCapability`가 공개 트레이트라
-//! **런타임에 만든 `CapabilityDescriptor`를 그대로 내주는 것이 합법이다.**
+//! The `#[zyris::capability]` macro can't be used — the macro fixes the tools at compile time, but
+//! here we have to ask the server to learn what exists. `ServeCapability` is a public trait, so
+//! **handing out a `CapabilityDescriptor` built at runtime is legitimate.**
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -21,10 +21,10 @@ use zyris::{
 
 use crate::mcp::client::{sanitize, McpClient, McpTool};
 
-/// 설정 파일 하나에 적힌 서버 하나.
+/// One server written in one config file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ServerSpec {
-    /// 설정에 적힌 이름. 캐퍼빌리티 이름이 `mcp_{여기}`가 된다.
+    /// The name written in the config. The capability name becomes `mcp_{here}`.
     #[serde(skip)]
     pub slug: String,
     pub command: String,
@@ -41,15 +41,15 @@ struct ConfigFile {
 }
 
 pub struct McpCapability {
-    /// 와이어에 나가는 캐퍼빌리티 이름. **이미 씻은 것이다.**
+    /// The capability name that goes on the wire. **Already sanitized.**
     ///
-    /// 슬러그만 씻고 `mcp_`를 앞에 붙이면 안 된다 — 슬러그가 통째로 `_`로 줄어드는 이름
-    /// (한글 등)에서 `mcp__`가 되어 **attacca가 쪼개는 바로 그 글자가 다시 생긴다.**
-    /// 실제로 그렇게 나갔고 그 도구는 끝내 안 불렸다. 붙이고 나서 씻는다.
+    /// Don't sanitize only the slug and then prepend `mcp_` — for a slug that collapses entirely to
+    /// `_` (e.g. Korean), this becomes `mcp__`, **recreating exactly the character attacca splits on.**
+    /// That actually happened on the wire, and that tool was never called. Sanitize after joining.
     name: String,
     tools: Vec<McpTool>,
-    /// **한 번에 하나만 말한다.** stdio는 줄 하나에 답 하나라 두 호출이 겹치면 서로의
-    /// 답을 가져간다. 여기서 줄 세우는 것이 가장 싸다.
+    /// **Only one call speaks at a time.** stdio answers one line per call, so two overlapping
+    /// calls would steal each other's answers. Queuing here is the cheapest fix.
     client: Mutex<McpClient>,
 }
 
@@ -79,13 +79,13 @@ impl ServeCapability for McpCapability {
                     description: t.description.clone(),
                     transfer: Transfer::Unary,
                     request_schema: t.input_schema.clone(),
-                    // MCP는 결과 스키마를 주지 않는다. 느슨하게 열어 둔다.
+                    // MCP doesn't give a result schema. Keep it loosely open.
                     response_schema: Some(json!({"type": "object"})),
                     item_schema: None,
                 })
                 .collect(),
         };
-        // 설명을 예산에 맞춘다 — `tools::trim`과 같은 이유다.
+        // Trim the descriptions to fit the budget — same reason as `tools::trim`.
         crate::tools::trim::trim_descriptor(&mut descriptor);
         descriptor
     }
@@ -101,7 +101,7 @@ impl ServeCapability for McpCapability {
             .client
             .lock()
             .await
-            // **서버가 아는 이름으로 부른다.** 씻은 이름은 와이어에서만 쓴다.
+            // **Call by the name the server knows.** The sanitized name is only used on the wire.
             .call(&tool.raw, args)
             .await
             .map_err(|e| WireError::internal(e.to_string()))?;
@@ -109,7 +109,7 @@ impl ServeCapability for McpCapability {
     }
 }
 
-/// 설정을 읽을 자리 둘. **뒤가 이긴다** — 프로젝트가 홈보다 구체적이다.
+/// Two places to read config from. **The later one wins** — the project is more specific than home.
 pub fn config_paths(cwd: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(home) = std::env::var_os("HOME") {
@@ -119,7 +119,7 @@ pub fn config_paths(cwd: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// 적혀 있는 서버들. 읽을 수 없는 파일은 조용히 건너뛴다 — 설정이 없는 것이 정상이다.
+/// The servers that are written down. Unreadable files are silently skipped — no config is normal.
 pub fn load_config(cwd: &Path) -> Vec<ServerSpec> {
     let files: Vec<Value> = config_paths(cwd)
         .iter()
@@ -135,7 +135,7 @@ pub fn load_config(cwd: &Path) -> Vec<ServerSpec> {
     merge_configs(files)
 }
 
-/// 앞의 것부터 덮어쓴다. 같은 이름이면 **뒤엣것이 이긴다.**
+/// Overwrites from the first one onward. On equal names **the later one wins.**
 pub fn merge_configs(files: Vec<Value>) -> Vec<ServerSpec> {
     let mut merged: HashMap<String, ServerSpec> = HashMap::new();
     for file in files {
@@ -145,16 +145,16 @@ pub fn merge_configs(files: Vec<Value>) -> Vec<ServerSpec> {
             merged.insert(slug, spec);
         }
     }
-    // 이름 순서로 고정한다. HashMap 순서 그대로 내보내면 announce가 실행마다 달라진다.
+    // Fix the order by name. Emitting in raw HashMap order would make the announce differ per run.
     let mut out: Vec<ServerSpec> = merged.into_values().collect();
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
     out
 }
 
-/// 적힌 서버를 모두 띄운다. **하나가 안 떠도 나머지는 뜬다.**
+/// Starts every server that is written down. **If one fails to start, the rest still start.**
 ///
-/// 되는 것만 돌려주고 안 된 것은 (이름, 까닭)으로 알린다 — 조용히 빠지면 사람은 도구가
-/// 있는 줄 알고 기다린다.
+/// Only the successful ones are returned; failures are reported as (name, reason) — if one fell
+/// out silently, a person would wait thinking the tool exists.
 pub async fn start_all(specs: &[ServerSpec]) -> (Vec<McpCapability>, Vec<(String, String)>) {
     let mut started: Vec<McpCapability> = Vec::new();
     let mut failed = Vec::new();
@@ -164,8 +164,8 @@ pub async fn start_all(specs: &[ServerSpec]) -> (Vec<McpCapability>, Vec<(String
             Err(e) => failed.push((spec.slug.clone(), e.to_string())),
         }
     }
-    // **씻고 나서 이름이 겹칠 수 있다.** 영숫자가 없는 이름 둘은 둘 다 `mcp_`가 된다 —
-    // 겹친 채로 내보내면 뒤엣것이 조용히 묻힌다.
+    // **Names can collide after sanitizing.** Two names with no alphanumerics both become `mcp_` —
+    // if emitted collided, the later one is silently buried.
     let names = unique_names(started.iter().map(|c| c.name.clone()).collect());
     for (cap, name) in started.iter_mut().zip(names) {
         cap.name = name;
@@ -173,10 +173,10 @@ pub async fn start_all(specs: &[ServerSpec]) -> (Vec<McpCapability>, Vec<(String
     (started, failed)
 }
 
-/// 겹치지 않는 캐퍼빌리티 이름들. **번호를 붙인 뒤에도 `__`가 남으면 안 된다.**
+/// Non-colliding capability names. **Even after numbering, no `__` may remain.**
 ///
-/// `mcp_`에 `_2`를 그대로 이으면 `mcp__2`가 되어 씻은 보람이 사라진다. 그래서 붙이고
-/// **다시 씻은 것**을 기준으로 겹침을 본다.
+/// Appending `_2` straight onto `mcp_` gives `mcp__2` and undoes the point of sanitizing. So
+/// collisions are checked against the **re-sanitized** result of joining.
 fn unique_names(names: Vec<String>) -> Vec<String> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     names
@@ -207,7 +207,7 @@ mod tests {
     }
 
     async fn cap_of(slug: &str, tools: Vec<McpTool>) -> McpCapability {
-        // descriptor만 보는 테스트라 서버는 `cat`으로 세워 둔다 — 말은 걸지 않는다.
+        // These tests only look at the descriptor, so the server is stood up with `cat` — no talking.
         let client = McpClient::spawn("cat", &[], &HashMap::new()).await;
         McpCapability {
             name: sanitize(&format!("mcp_{slug}")),
@@ -216,8 +216,8 @@ mod tests {
         }
     }
 
-    /// **MCP의 inputSchema가 그대로 request_schema가 되어야 한다.**
-    /// 안 되면 에이전트가 인자를 만들 수 없다.
+    /// **MCP's inputSchema must become the request_schema as-is.**
+    /// Otherwise the agent can't construct arguments.
     #[tokio::test]
     async fn the_descriptor_carries_each_tools_schema() {
         let cap = cap_of("github", vec![tool("create-issue")]).await;
@@ -227,11 +227,11 @@ mod tests {
         assert_eq!(d.tools[0].request_schema["properties"]["title"]["type"], json!("string"));
     }
 
-    /// **와이어 이름이 정확히 넷으로 쪼개져야 한다.** 이것이 진짜 판정이다.
+    /// **The wire name must split into exactly four.** That is the real test.
     ///
-    /// 슬러그만 씻는 것으로는 모자라다. 영숫자가 하나도 없는 이름은 통째로 줄어들어
-    /// `mcp_`가 되고, 거기에 이어 붙이는 `__`가 만나 `mcp___echo`가 된다 — 실제로 그렇게
-    /// 나갔고 그 도구는 끝내 안 불렸다. **두 번 틀린 자리다.**
+    /// Sanitizing only the slug isn't enough. A name with no alphanumerics collapses entirely to
+    /// `mcp_`, and the joining `__` then makes `mcp___echo` — that actually went out on the wire,
+    /// and that tool was never called. **A place we got wrong twice.**
     #[tokio::test]
     async fn the_wire_name_still_splits_into_four() {
         for slug in ["my__server", "연습", "--", "깃 허브", "github"] {
@@ -242,7 +242,7 @@ mod tests {
         }
     }
 
-    /// 번호를 붙인 뒤에도 `__`가 남으면 안 된다 — `mcp_` + `_2` = `mcp__2`.
+    /// Even after numbering, no `__` may remain — `mcp_` + `_2` = `mcp__2`.
     #[test]
     fn numbering_a_collision_does_not_bring_the_double_underscore_back() {
         let out = unique_names(vec!["mcp_".into(), "mcp_".into(), "mcp_".into()]);
@@ -252,7 +252,7 @@ mod tests {
         }
     }
 
-    /// 씻고 나서 겹친 이름은 갈라놔야 한다 — 겹치면 뒤엣것이 조용히 묻힌다.
+    /// Names that collide after sanitizing must be split apart — collided, the later one is buried.
     #[tokio::test]
     async fn two_servers_that_wash_to_the_same_name_are_split() {
         let specs = vec![
@@ -278,7 +278,7 @@ mod tests {
         }
     }
 
-    /// 작업 디렉터리의 설정이 홈의 설정을 이긴다.
+    /// The working directory's config beats the home config.
     #[test]
     fn the_project_config_wins() {
         let merged = merge_configs(vec![
@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(merged[0].slug, "a");
     }
 
-    /// 한쪽에만 있는 서버는 그대로 남는다 — 덮어쓰기지 갈아치우기가 아니다.
+    /// A server only one file knows about survives as-is — an overwrite, not a replacement.
     #[test]
     fn servers_only_one_file_knows_about_survive() {
         let merged = merge_configs(vec![
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(merged.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(), vec!["a", "b"]);
     }
 
-    /// **하나가 안 떠도 나머지는 뜬다.** 앱이 통째로 멈추면 안 된다.
+    /// **If one fails to start, the rest still start.** The app must not come to a full stop.
     #[tokio::test]
     async fn a_server_that_fails_to_start_does_not_stop_the_others() {
         let specs = vec![
@@ -323,14 +323,14 @@ mod tests {
         assert_eq!(failed[0].0, "없는놈");
     }
 
-    /// 설정이 없는 것이 정상이다. 그때 죽으면 앱을 못 쓴다.
+    /// Having no config is normal. Dying then would make the app unusable.
     #[test]
     fn no_config_at_all_is_fine() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_config(dir.path()).is_empty());
     }
 
-    /// 망가진 JSON도 앱을 멈추면 안 된다.
+    /// Even a broken JSON must not stop the app.
     #[test]
     fn a_broken_config_is_skipped_rather_than_fatal() {
         let dir = tempfile::tempdir().unwrap();

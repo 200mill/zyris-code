@@ -1,10 +1,10 @@
-//! 진단용. 에이전트 목록을 UUID 버전과 함께 찍고, 지정한 에이전트로 한 턴을 보내 본다.
+//! Diagnostic. Prints the agent list with UUID versions and tries sending one turn to the given agent.
 //!
-//! UUID 버전 니블이 4면 DB 행, 5면 콘텐츠 리포에서 합성된 git 에이전트다.
+//! A UUID version nibble of 4 means a DB row; 5 means a git agent synthesized from the content repo.
 //!
 //! ```bash
-//! ZYRIS_PROFILE=zyris-code cargo run -p zyris-code --example probe            # 목록만
-//! ZYRIS_PROFILE=zyris-code cargo run -p zyris-code --example probe -- <이름>  # 그 에이전트로 전송
+//! ZYRIS_PROFILE=zyris-code cargo run -p zyris-code --example probe            # list only
+//! ZYRIS_PROFILE=zyris-code cargo run -p zyris-code --example probe -- <name>  # send to that agent
 //! ```
 
 use std::process::ExitCode;
@@ -50,7 +50,7 @@ async fn probe(conn: &Connection) {
 
     println!("\n=== 에이전트 {}개 ===", agents.len());
     for a in &agents {
-        // UUID의 13번째 16진수 문자가 버전이다: 8-4-4-4-12에서 세 번째 그룹의 첫 글자.
+        // The 13th hex character of the UUID is the version: the first character of the third group in 8-4-4-4-12.
         let version = a.id.split('-').nth(2).and_then(|g| g.chars().next()).unwrap_or('?');
         let kind = match version {
             '4' => "DB 행",

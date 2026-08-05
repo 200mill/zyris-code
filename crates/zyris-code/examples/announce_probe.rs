@@ -1,13 +1,13 @@
-//! **자동으로 도는 유일한 라이브 검증 수단.**
+//! **The only live verification that runs automatically.**
 //!
-//! 사람 손을 빌리지 않는다. `attacca_api`를 소비하므로 스스로 세션을 열고, 에이전트에게
-//! 도구를 시키고, 짧은 턴 하나를 끝까지 돌린다. 판정은 둘이다:
+//! No human hands needed. Since it consumes `attacca_api`, it opens a session itself, tells the agent
+//! to use tools, and runs one short turn to completion. Two verdicts:
 //!
-//! 1. **이 컴퓨터의 파일이 실제로 바뀌었는가.**
-//! 2. 서버가 돌려준 그 이벤트가 화면 파이프라인에서 **초록/빨강 diff가 되는가.**
+//! 1. **Did a file on this computer actually change?**
+//! 2. Do the events the server returned become a **green/red diff** in the screen pipeline?
 //!
-//! **에이전트의 말은 근거로 쓰지 않는다.** 도구가 있는데도 "없습니다"라고 단언하는 것을
-//! 네 번 겪었다 — 부작용만이 증거다(스펙 13절 3번).
+//! **The agent's words are not evidence.** We've seen it claim "there is no such tool" four times
+//! even when the tool exists — only side effects are evidence (spec §13.3).
 //!
 //! ```bash
 //! cargo run -j2 -p zyris-code --example announce_probe
@@ -24,12 +24,12 @@ use zyris_attacca::{
 };
 
 const CONSUME_WAIT: Duration = Duration::from_secs(5);
-/// **시켜 본다.** 도구 목록을 글로 나열하라고 하면 모델이 잘 못하는 일이라 "없다"는 답이
-/// 진짜 없다는 뜻인지 알 수 없다 — 실제로 파일이 바뀌었는지만이 근거다.
-/// **도구 이름을 실제 모양으로 말해 준다.** 와이어 이름은 `zyris__{노드}__{캐퍼빌리티}__{도구}`라
-/// `file_io.read`라고 부르면 모델이 그 이름을 못 찾고 "도구가 없다"로 포기한다. 실제로 한 번
-/// 그랬다.
-/// 시킬 말. `$ZYRIS_CODE_PROBE_ASK`로 바꾼다 — 다른 것을 재 보려고 예제를 고칠 이유가 없다.
+/// **Actually makes it happen.** Asking the model to list tools in prose is something it's bad at,
+/// so a "there is none" answer can't be trusted — only whether the file actually changed is evidence.
+/// **Tell it the tool's real name.** The wire name is `zyris__{node}__{capability}__{tool}`, so
+/// calling it `file_io.read` makes the model fail to find it and give up with "no such tool". This
+/// actually happened once.
+/// What to ask. Override with `$ZYRIS_CODE_PROBE_ASK` — no reason to edit the example to test something else.
 fn ask() -> String {
     std::env::var("ZYRIS_CODE_PROBE_ASK").unwrap_or_else(|_| ASK.to_string())
 }
@@ -45,10 +45,10 @@ pub struct Pong {
     pub said: String,
 }
 
-/// 알려진 정상. 에이전트가 실제로 호출한 적이 있는 가장 단순한 도구다.
+/// A known good. The simplest tool the agent has actually called before.
 #[zyris::capability(name = "code_probe", version = 1)]
 pub trait CodeProbe {
-    /// 받은 말을 그대로 돌려준다.
+    /// Echoes back what it was told.
     async fn ping(&self, say: String) -> zyris::Result<Pong>;
 }
 
@@ -71,12 +71,12 @@ async fn main() -> ExitCode {
         )
         .init();
 
-    // TUI와 같은 노드 신원을 쓴다. 다른 프로필로 붙으면 등록 코드를 다시 요구한다.
+    // Use the same node identity as the TUI. Connecting with a different profile would ask for the enrollment code again.
     if std::env::var_os("ZYRIS_PROFILE").is_none() {
         std::env::set_var("ZYRIS_PROFILE", "zyris-code");
     }
 
-    // 진짜 리포를 만지게 두지 않는다. 임시 디렉터리 하나가 이 프로브의 세계다.
+    // Don't let it touch the real repo. One temp directory is this probe's whole world.
     let dir = std::env::temp_dir().join("zyris-code-probe");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("임시 디렉터리");
@@ -84,14 +84,14 @@ async fn main() -> ExitCode {
     std::fs::write(&note, "첫 줄\nBEFORE\n끝 줄\n").expect("note.txt");
     println!("작업 디렉터리: {}\n", dir.display());
 
-    // **대조군을 같이 내준다.** `code_probe`는 에이전트가 실제로 호출한 적이 있는 알려진
-    // 정상이다. 그것은 보이는데 `code_edit`이 안 보이면 원인은 code_edit의 스키마다.
-    // 프로브에는 화면이 없다. 게이트가 물을 곳이 없으므로 **자동 모드로 맞춰 둔다** —
-    // 승인 경로가 아니라 도구 경로를 재는 것이 이 프로브의 일이다.
+    // **Hand out a control too.** `code_probe` is a known good the agent has actually called.
+    // If it shows up but `code_edit` doesn't, the cause is code_edit's schema.
+    // The probe has no screen. With nowhere for the gate to ask, **it's set to auto mode** —
+    // this probe's job is to measure the tool path, not the approval path.
     let bridge = zyris_code::tools::bridge::Bridge::new();
     bridge.sync(zyris_code::mode::Mode::Job, &Default::default());
 
-    // 프로브는 attacca 손잡이를 안 쓴다 — `work` 도구가 목록에 뜨기만 하면 된다.
+    // The probe doesn't use the attacca handle — the `work` tool just needs to appear in the list.
     let (_api_tx, api_rx) = tokio::sync::watch::channel(None);
     zyris_code::tools::announce(Runner::from_env(), dir, bridge, api_rx)
         .capability(CodeProbeServer(Probe))
@@ -111,13 +111,13 @@ async fn main() -> ExitCode {
 }
 
 async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Result<()> {
-    // 서버가 무엇을 받아들였는지 직접 본다. 여기서 rejected면 도구가 안 뜨는 이유가 끝난다.
+    // See directly what the server accepted. If this is rejected, that's the whole reason tools don't show up.
     let announced = conn.announce().await?;
     println!("announce → accepted={:?} rejected={:?}", announced.accepted, announced.rejected);
 
-    // 서버는 handshake 뒤 500ms 안에 capability를 스냅숏해 노드 행에 쓰고, 그 뒤로는
-    // REFRESH_TICK마다 맞춘다(attacca-server/src/routes/zyris.rs:124, :215).
-    // 넉넉히 기다린다 — 여기가 원인인지부터 배제한다.
+    // The server snapshots capabilities into the node row within 500ms of the handshake, then
+    // re-syncs every REFRESH_TICK (attacca-server/src/routes/zyris.rs:124, :215).
+    // Wait generously — rule out this spot as the cause first.
     let wait: u64 =
         std::env::var("ZYRIS_CODE_PROBE_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
     println!("{wait}초 기다린다");
@@ -148,8 +148,8 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
 
     let mut stream = api.turn_events(session.id.clone(), None).await?;
     let mut answer = String::new();
-    // **턴이 시작하기 전의 `running:false`를 끝으로 오해하면 안 된다.** 구독이 전송보다
-    // 늦게 붙으면 첫 상태가 false로 오고, 거기서 끊으면 답이 늘 비어 보인다.
+    // **Don't mistake a `running:false` before the turn starts for its end.** If the subscription
+    // attaches later than the send, the first status arrives as false, and cutting off there makes the answer always look empty.
     let mut started = false;
     while let Some(frame) = stream.items.next().await {
         match frame? {
@@ -184,10 +184,10 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
     Ok(())
 }
 
-/// **서버가 실제로 돌려준 이벤트**를 화면 파이프라인에 그대로 통과시킨다.
+/// Feeds **the events the server actually returned** straight through the screen pipeline.
 ///
-/// 화면 테스트는 손으로 만든 `Diff`를 쓰므로 도구 결과의 필드 이름이 어긋나거나 attacca가
-/// 결과를 감싸 보내면 못 본다. 여기는 그 왕복을 진짜로 한 바퀴 돌린 것만 본다.
+/// Screen tests use a hand-built `Diff`, so a mismatched field name in the tool result, or attacca
+/// wrapping the result, would go unnoticed. Here we only look at a real round trip of that exchange.
 fn check_the_diff_paints(events: &[zyris_attacca::ZSessionEvent]) {
     use zyris_code::rows::{rows, Fold, Folds};
     use zyris_code::timeline::Timeline;
@@ -196,7 +196,7 @@ fn check_the_diff_paints(events: &[zyris_attacca::ZSessionEvent]) {
     let mut folds = Folds::new();
     for event in events {
         if let Some(entry) = zyris_code::event::entry_from(event) {
-            // 도구를 쓴 그 순간처럼 전부 펴 둔다.
+            // Open them all, as they would be at the moment the tool was used.
             folds.insert(entry.seq, Fold { open: true });
             timeline.upsert(entry);
         }

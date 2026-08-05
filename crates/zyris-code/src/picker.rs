@@ -1,23 +1,23 @@
-//! 프로젝트와 세션 고르기.
+//! Picking projects and sessions.
 //!
-//! ← 를 누르면 프로젝트 목록이 열리고, 프로젝트를 고르면 그 안의 세션 목록으로 들어간다.
-//! 각 목록 맨 위에는 "새로 만들기" 줄이 있다.
+//! Pressing ← opens the project list; picking a project goes into that project's session list.
+//! Each list has a "New" row at the top.
 //!
-//! **프로젝트를 만드는 줄은 이름과 설명을 받아야 한다.** 그런데 목록에는 글자를 칠 자리가
-//! 없다. 그래서 그 줄은 양식(`newproject::Form`)을 연다 — 이름과 설명을 두 칸에 나눠
-//! 받고, 목록은 그 아래에 그대로 열려 있어서 Esc로 닫으면 다시 그 자리로 돌아온다.
+//! **The row that creates a project needs a name and description.** But the list has no place to type.
+//! So that row opens a form (`newproject::Form`) — name and description go in two fields,
+//! and the list stays open underneath, so pressing Esc returns to the same spot.
 //!
-//! 여기는 순수하다. 목록을 가져오고 세션을 만드는 것은 I/O 자리가 한다.
+//! This module is pure. Fetching lists and creating sessions is the I/O spot's job.
 
-/// 목록의 한 줄.
+/// One row of the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// 고르면 무엇이 되는가. `None`이면 "새로 만들기" 줄이다.
+    /// What picking it becomes. `None` means it's the "New" row.
     pub id: Option<String>,
     pub label: String,
-    /// 오른쪽에 흐리게 붙는 설명.
+    /// A note shown dimmed on the right.
     pub note: Option<String>,
-    /// 누를 수 있는가.
+    /// Whether it can be picked.
     pub enabled: bool,
 }
 
@@ -28,61 +28,61 @@ pub enum Level {
         project_id: String,
         project_name: String,
     },
-    /// `/agent`이 여는 목록. 프로젝트 계층과 무관해서 뒤로 갈 곳이 없다.
+    /// The list `/agent` opens. Unrelated to the project hierarchy, so there's nowhere to go back.
     Agents,
-    /// `/`를 쳤을 때 뜨는 슬래시 명령 목록.
+    /// The slash-command list shown when typing `/`.
     Commands,
-    /// `/lang`이 여는 화면 말 목록.
+    /// The screen-language list `/lang` opens.
     Languages,
 }
 
-/// 고르면 무슨 일이 벌어지는가.
+/// What happens when picked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pick {
-    /// 이 프로젝트의 세션 목록으로 들어간다.
+    /// Goes into this project's session list.
     OpenProject { id: String, name: String },
-    /// 이 세션으로 갈아탄다. **프로젝트를 같이 들려 보낸다** — 고른 세션이 어느
-    /// 프로젝트의 것인지는 여기서만 알 수 있고, 잃으면 다음에 여는 job·work가
-    /// 기본 프로젝트로 떨어진다.
+    /// Switches to this session. **Carries the project along** — which project the picked session
+    /// belongs to is only known here, and losing it makes the next job·work opened
+    /// fall into the default project.
     OpenSession { id: String, project_id: String },
-    /// 이 프로젝트에 새 세션을 만든다.
+    /// Creates a new session in this project.
     NewSession { project_id: String },
-    /// 새 프로젝트 양식(`newproject::Form`)을 연다. 이름과 설명을 받아 만든다.
+    /// Opens the new-project form (`newproject::Form`). Takes a name and description to create it.
     NewProject,
-    /// 이 에이전트로 간다. 다음 메시지에서 새 세션이 열린다.
+    /// Goes to this agent. A new session opens on the next message.
     UseAgent { name: String },
-    /// 이 명령을 입력란에 넣는다. **바로 실행하지 않는다** — `/mode`처럼 인자를 받는
-    /// 것이 있어서 고른 뒤 이어 칠 수 있어야 한다.
+    /// Puts this command in the input field. **Doesn't run it immediately** — commands like
+    /// `/mode` take arguments, so you must be able to keep typing after picking.
     TypeCommand { text: String },
-    /// 이 언어로 화면을 바꾼다.
+    /// Switches the screen to this language.
     UseLang { lang: crate::lang::Lang },
-    /// 누를 수 없는 줄. 이유를 말해 준다.
+    /// A row that can't be picked. Says why.
     Unavailable(String),
 }
 
-/// 목록 상자 안에 들어갈 줄 하나. **배치는 순수하게 정하고 위젯은 그리기만 한다.**
+/// One slot in the list box. **The layout is decided purely; the widget only draws.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
-    /// 이 인덱스의 줄.
+    /// The row at this index.
     Row(usize),
-    /// "새로 만들기"와 실제 목록을 가르는 선. 둘은 뜻이 다른 줄이다.
+    /// The rule separating "New" from the actual list. The two are rows with different meanings.
     Rule,
-    /// 이쪽으로 몇 개가 더 있다. **없으면 목록이 거기서 끝난 줄 안다.**
+    /// More exist on this side. **Without it, the list looks like it ends there.**
     More { count: usize, up: bool },
 }
 
-/// 몇 줄이 들어가는지 정하고 그 안에 무엇을 놓을지 배치한다.
+/// Decides how many rows fit and lays out what goes in them.
 ///
-/// **커서는 언제나 보인다.** 그리고 잘린 쪽에는 몇 개가 더 있는지 적는다 — 안 적으면
-/// 목록이 거기서 끝난 줄 알고 아래를 안 본다.
+/// **The cursor is always visible.** And the cut side notes how many more there are — without it,
+/// the list looks like it ends there and the user won't look below.
 pub fn slots(rows: &[Row], cursor: usize, height: usize) -> Vec<Slot> {
     if rows.is_empty() || height == 0 {
         return Vec::new();
     }
     let has_create = rows.first().is_some_and(|r| r.id.is_none());
 
-    // 표시줄과 가름선이 자리를 먹으므로 몇 줄이 남는지가 스스로에게 달려 있다.
-    // 두어 바퀴면 고정점에 닿는다.
+    // The overflow marks and rule take space, so how many rows remain depends on itself.
+    // A couple of rounds reaches the fixed point.
     let (mut room, mut start, mut end) = (height, 0usize, rows.len());
     for _ in 0..3 {
         let visible = room.max(1).min(rows.len());
@@ -90,7 +90,7 @@ pub fn slots(rows: &[Row], cursor: usize, height: usize) -> Vec<Slot> {
         end = (start + visible).min(rows.len());
         let extra = (start > 0) as usize
             + (end < rows.len()) as usize
-            // 가름선은 "새로 만들기"가 실제로 보이고 그 아래에 뭔가 있을 때만 긋는다.
+            // The rule is drawn only when "New" is actually visible and something is below it.
             + (has_create && start == 0 && end > 1) as usize;
         let want = height.saturating_sub(extra).max(1);
         if want == room {
@@ -112,8 +112,8 @@ pub fn slots(rows: &[Row], cursor: usize, height: usize) -> Vec<Slot> {
     if end < rows.len() {
         out.push(Slot::More { count: rows.len() - end, up: false });
     }
-    // **아주 좁으면 곁들임부터 버린다.** 표시줄도 가름선도 커서가 보이는 것보다 뒤다 —
-    // 상자를 뚫고 나가면 화면이 무너진다.
+    // **When very narrow, drop the extras first.** Both the overflow marks and the rule come after keeping the cursor visible —
+    // if it breaks out of the box, the screen collapses.
     while out.len() > height {
         match out.iter().rposition(|s| !matches!(s, Slot::Row(_))) {
             Some(i) => {
@@ -130,22 +130,22 @@ pub struct Picker {
     pub level: Level,
     pub rows: Vec<Row>,
     pub cursor: usize,
-    /// 목록을 아직 받아오는 중인가.
+    /// Whether the list is still loading.
     pub loading: bool,
 }
 
 impl Picker {
-    /// 목록을 기다리는 빈 프로젝트 화면.
+    /// An empty projects screen waiting for the list.
     pub fn loading_projects() -> Self {
         Self { level: Level::Projects, rows: Vec::new(), cursor: 0, loading: true }
     }
 
-    /// 프로젝트 목록. 맨 위는 새 프로젝트 줄이다.
+    /// The projects list. The top row is new-project.
     pub fn projects(items: Vec<(String, String, bool)>, lang: crate::lang::Lang) -> Self {
         let mut rows = vec![Row {
             id: None,
             label: lang.new_project().into(),
-            // 누르면 무슨 일이 벌어지는지 그 자리에서 말한다.
+            // Says right there what happens when picked.
             note: Some(lang.new_project_note().into()),
             enabled: true,
         }];
@@ -155,12 +155,12 @@ impl Picker {
             note: is_default.then(|| lang.default_project().to_string()),
             enabled: true,
         }));
-        // 첫 줄은 못 누르는 '새 프로젝트'라 두 번째(첫 실제 프로젝트)에서 시작한다.
+        // The first row is the unselectable 'new project', so start on the second (first real project).
         let cursor = if rows.len() > 1 { 1 } else { 0 };
         Self { level: Level::Projects, rows, cursor, loading: false }
     }
 
-    /// 한 프로젝트의 세션 목록. 맨 위는 새 세션 줄이다.
+    /// One project's session list. The top row is new-session.
     pub fn sessions(
         project_id: String,
         project_name: String,
@@ -183,15 +183,15 @@ impl Picker {
         }
     }
 
-    /// 에이전트 목록. `/agent`이 연다.
+    /// The agents list. Opened by `/agent`.
     pub fn agents(rows: Vec<Row>) -> Self {
         Self { level: Level::Agents, rows, cursor: 0, loading: false }
     }
 
-    /// 슬래시 명령 목록. `/`를 치면 열린다.
+    /// The slash-command list. Opens when `/` is typed.
     ///
-    /// **목록은 `command::catalogue()` 하나에서 온다** — 여기서 따로 적으면 하나가 낡는다.
-    /// 언어는 화면이 정해 준다(`State.lang`).
+    /// **The list comes from the single `command::catalogue()`** — writing it here too lets one go stale.
+    /// The language is decided by the screen (`State.lang`).
     pub fn commands(lang: crate::lang::Lang) -> Self {
         let rows = crate::command::catalogue(lang)
             .into_iter()
@@ -205,8 +205,8 @@ impl Picker {
         Self { level: Level::Commands, rows, cursor: 0, loading: false }
     }
 
-    /// 화면 말 목록. **이름은 저마다 제 언어로 적는다** — 지금 못 읽는 말로 적혀 있으면
-    /// 무엇을 고르는지 알 수 없다. 커서는 지금 쓰는 언어에 둔다.
+    /// The screen-language list. **Each name is written in its own language** — if it were in a language
+    /// you can't read, you couldn't tell what you're picking. The cursor sits on the language in use.
     pub fn languages(now: crate::lang::Lang) -> Self {
         use crate::lang::Lang;
         let rows: Vec<Row> = [Lang::En, Lang::Ko]
@@ -222,7 +222,7 @@ impl Picker {
         Self { level: Level::Languages, rows, cursor, loading: false }
     }
 
-    /// 친 글로 목록을 좁힌다. 남는 것이 없으면 그대로 둔다 — 빈 목록은 고장으로 보인다.
+    /// Narrows the list by typed text. If nothing remains, leaves it as is — an empty list looks broken.
     pub fn narrow(&mut self, typed: &str, lang: crate::lang::Lang) {
         if !matches!(self.level, Level::Commands) {
             return;
@@ -232,7 +232,7 @@ impl Picker {
         self.cursor = 0;
     }
 
-    /// 이 줄이 "새로 만들기"인가. 목록과 갈라 놓는 기준이다.
+    /// Whether this row is "New". The criterion separating it from the list.
     pub fn is_create(&self, i: usize) -> bool {
         self.rows.get(i).is_some_and(|r| r.id.is_none())
     }
@@ -251,7 +251,7 @@ impl Picker {
         self.cursor = (self.cursor + 1) % self.rows.len();
     }
 
-    /// 지금 줄을 고른다.
+    /// Picks the current row.
     pub fn pick(&self) -> Option<Pick> {
         let row = self.rows.get(self.cursor)?;
         if !row.enabled {
@@ -269,7 +269,7 @@ impl Picker {
             (Level::Sessions { project_id, .. }, None) => {
                 Some(Pick::NewSession { project_id: project_id.clone() })
             }
-            // **바로 만들지 않는다.** 이름과 설명을 받아야 한다 — 양식이 그 자리를 맡는다.
+            // **Doesn't create right away.** It needs a name and description — the form takes that spot.
             (Level::Projects, None) => Some(Pick::NewProject),
             (Level::Agents, Some(name)) => Some(Pick::UseAgent { name: name.clone() }),
             (Level::Commands, Some(text)) => Some(Pick::TypeCommand { text: text.clone() }),
@@ -280,7 +280,7 @@ impl Picker {
         }
     }
 
-    /// 화면 제목.
+    /// The screen title.
     pub fn title(&self, lang: crate::lang::Lang) -> String {
         match &self.level {
             Level::Projects => lang.projects().into(),
@@ -319,7 +319,7 @@ mod tests {
         rows
     }
 
-    /// 다 들어가면 표시줄이 없다. 안 잘렸는데 "더 있다"고 하면 거짓말이다.
+    /// When everything fits there are no overflow marks. Saying "more" when nothing is cut is a lie.
     #[test]
     fn a_list_that_fits_gets_no_overflow_marks() {
         let rows = many(3);
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(got.iter().filter(|s| matches!(s, Slot::Row(_))).count(), 4);
     }
 
-    /// **잘린 쪽에는 몇 개가 더 있는지 적는다.** 안 적으면 목록이 거기서 끝난 줄 안다.
+    /// **The cut side says how many more there are.** Without it, the list looks like it ends there.
     #[test]
     fn a_long_list_says_how_many_are_left_below() {
         let rows = many(30);
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(shown + count, rows.len(), "센 것이 안 맞는다: {got:?}");
     }
 
-    /// 아래로 내려가면 위쪽에도 남은 개수가 붙는다.
+    /// Scrolling down adds a count of what's left above.
     #[test]
     fn scrolling_down_marks_what_is_left_above() {
         let rows = many(30);
@@ -352,7 +352,7 @@ mod tests {
         );
     }
 
-    /// **커서는 언제나 보인다.** 안 보이면 무엇을 고르는지 알 수 없다.
+    /// **The cursor is always visible.** If it weren't, you couldn't tell what you're picking.
     #[test]
     fn the_cursor_is_always_inside_the_window() {
         let rows = many(40);
@@ -365,7 +365,7 @@ mod tests {
         }
     }
 
-    /// 배치가 주어진 높이를 넘으면 상자를 뚫고 나간다.
+    /// The layout must never exceed the height it was given.
     #[test]
     fn the_layout_never_exceeds_the_height_it_was_given() {
         let rows = many(40);
@@ -377,7 +377,7 @@ mod tests {
         }
     }
 
-    /// **"새로 만들기"는 목록과 갈라 놓는다.** 붙여 두면 세션 하나로 읽힌다.
+    /// **"New" is ruled off from the list.** Kept together, it reads as one more session.
     #[test]
     fn the_create_row_is_ruled_off_from_the_list() {
         let got = slots(&many(3), 0, 10);
@@ -386,14 +386,14 @@ mod tests {
         assert_eq!(got[2], Slot::Row(1));
     }
 
-    /// 만들 줄이 안 보이는 자리까지 내려갔으면 가름선도 없다.
+    /// Once scrolled past where the create row is visible, there's no rule either.
     #[test]
     fn there_is_no_rule_once_the_create_row_scrolls_away() {
         let got = slots(&many(30), 25, 8);
         assert!(!got.contains(&Slot::Rule), "{got:?}");
     }
 
-    /// 만들 줄이 없는 목록(에이전트·명령)에는 가름선을 긋지 않는다.
+    /// Lists without a create row (agents·commands) get no rule.
     #[test]
     fn a_list_without_a_create_row_has_no_rule() {
         let got = slots(&Picker::commands(crate::lang::Lang::Ko).rows, 0, 20);
@@ -409,7 +409,7 @@ mod tests {
         )
     }
 
-    /// 에이전트를 고르면 그 이름이 나와야 한다 — 세션을 새로 열 때 그것으로 찾는다.
+    /// Picking an agent must give back its name — that's how it's looked up when opening a new session.
     #[test]
     fn picking_an_agent_gives_back_its_name() {
         let mut p = agents();
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(p.pick(), Some(Pick::UseAgent { name: "Zyris Code".into() }));
     }
 
-    /// **목록과 파서가 갈라지면 고른 것이 안 먹는다.** 목록은 `command::catalogue()`에서 온다.
+    /// **If the list and parser diverge, the pick doesn't work.** The list comes from `command::catalogue()`.
     #[test]
     fn every_command_row_is_something_the_parser_knows() {
         for row in Picker::commands(crate::lang::Lang::Ko).rows {
@@ -425,21 +425,21 @@ mod tests {
         }
     }
 
-    /// **고르면 입력란에 들어갈 뿐 바로 돌지 않는다.** `/mode`는 인자를 받는다.
+    /// **Picking only puts it in the input field; it doesn't run.** `/mode` takes arguments.
     #[test]
     fn picking_a_command_only_types_it() {
         let p = Picker::commands(crate::lang::Lang::Ko);
         assert_eq!(p.pick(), Some(Pick::TypeCommand { text: "/help".into() }));
     }
 
-    /// 친 글로 좁혀진다. 안 좁혀지면 목록에서 눈으로 찾아야 한다.
+    /// Narrowed by typed text. Without it, you'd have to find it by eye in the list.
     #[test]
     fn typing_narrows_the_command_rows() {
         let mut p = Picker::commands(crate::lang::Lang::Ko);
         p.narrow("/mo", crate::lang::Lang::Ko);
         assert_eq!(p.rows.len(), 1, "{:?}", p.rows);
         assert_eq!(p.rows[0].label, "/mode");
-        // 다시 넓히면 돌아와야 한다 — 한 글자 지우고 못 찾으면 못 쓴다.
+        // Widening again must bring it back — if deleting one character lost it, it's unusable.
         p.narrow("/m", crate::lang::Lang::Ko);
         assert!(p.rows.iter().any(|r| r.label == "/mcp"), "{:?}", p.rows);
     }
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(p.rows.len(), 3);
     }
 
-    /// 못 누르는 줄에 커서를 두고 시작하면 Enter가 헛돈다. 첫 프로젝트에서 시작한다.
+    /// Starting with the cursor on an unselectable row makes Enter spin. Start on the first project.
     #[test]
     fn the_cursor_starts_on_the_first_real_project() {
         assert_eq!(projects().cursor, 1);
@@ -467,7 +467,7 @@ mod tests {
         );
     }
 
-    /// **누른다고 바로 만들지 않는다.** 이름과 설명을 받아야 한다 — 양식을 연다.
+    /// **Picking doesn't create right away.** It needs a name and description — the form opens.
     #[test]
     fn picking_the_create_row_opens_the_form() {
         let mut p = projects();

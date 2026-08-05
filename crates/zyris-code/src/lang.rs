@@ -1,27 +1,27 @@
-//! 화면 말을 한국어와 영어로 낸다. `/lang`으로 바꾼다.
+//! Produces the screen's words in Korean and English. Changed with `/lang`.
 //!
-//! **문구는 여기 한 군데에 모은다.** 위젯마다 조건문으로 갈라 쓰면 한쪽 언어만 고치는 일이
-//! 반드시 생기고, 그러면 화면 절반이 다른 말로 남는다. 여기 함수 하나가 두 언어를 나란히
-//! 들고 있으면 고칠 때 둘 다 눈에 들어온다.
+//! **All phrases are gathered in this one place.** Split per-widget with conditionals, one language
+//! would inevitably get edited alone, leaving half the screen in the other language. With a single
+//! function here holding both languages side by side, both are in view when editing.
 //!
-//! ## 두 군데에 있는 이유
+//! ## Why it lives in two places
 //!
-//! - `State.lang` — 그리는 쪽이 쓴다. `apply`가 순수해야 하므로 상태로 들고 있어야 하고,
-//!   화면 테스트가 언어를 정해 놓고 볼 수 있는 것도 이것 덕이다.
-//! - `lang::current()` — 화면이 없는 자리가 쓴다(`notice.rs`의 셸 알림, 도구가 돌려주는
-//!   오류). 거기까지 인자로 나르면 순수하지도 않은 함수들에 `lang` 하나가 줄줄이 붙는다.
+//! - `State.lang` — used by the drawing side. Since `apply` must stay pure, it has to be carried as
+//!   state, and screen tests being able to fix a language and look at it is thanks to this too.
+//! - `lang::current()` — used where there is no screen (the shell notice in `notice.rs`, errors the
+//!   tools return). Carrying it as an argument that far would string a `lang` through functions that aren't even pure.
 //!
-//! 둘은 `/lang`이 함께 세운다. 갈라지면 대화창은 영어인데 셸 알림만 한국어로 남는다.
+//! `/lang` sets both together. If they diverged, the conversation window would be English while only the shell notice stayed Korean.
 //!
-//! ## 어떤 말이 여기 오는가
+//! ## Which words come here
 //!
-//! **사람이 읽는 것만.** 에이전트가 읽는 도구 설명은 언제나 영어이고(`tools/`의 doc 주석),
-//! 코드 주석과 테스트 이름은 언제나 한국어다. 이 파일이 가르는 것은 화면뿐이다.
+//! **Only what people read.** Tool descriptions read by the agent are always English (the doc
+//! comments in `tools/`), and code comments and test names are always Korean. What this file divides is only the screen.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// **기본은 영어다.** 이 리포는 한국어로 쓰지만 앱을 받는 사람은 그렇지 않다 — 못 읽는
-/// 말로 뜨는 화면은 아무것도 못 하게 만든다. 한국어는 로케일이 말해 주거나 사람이 고른다.
+/// **The default is English.** This repo is written in Korean, but the people receiving the app
+/// aren't — a screen in a language they can't read makes it unusable. Korean comes from the locale or a person's choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Lang {
     Ko,
@@ -29,7 +29,7 @@ pub enum Lang {
     En,
 }
 
-/// 지금 언어. 화면이 없는 자리에서 쓴다.
+/// The current language. Used where there is no screen.
 static CURRENT: AtomicU8 = AtomicU8::new(1);
 
 pub fn current() -> Lang {
@@ -50,8 +50,8 @@ pub fn set(lang: Lang) {
 }
 
 impl Lang {
-    /// 사람이 친 말에서. **양쪽 언어의 이름을 다 받는다** — 영어 화면에서 `/lang 한글`을
-    /// 치는 것이 자연스럽고, 한국어 화면에서 `/lang english`를 치는 것도 그렇다.
+    /// From what the person typed. **Both languages' names are accepted** — typing `/lang` with a
+    /// Korean word on an English screen is natural, and so is `/lang english` on a Korean one.
     pub fn parse(text: &str) -> Option<Lang> {
         match text.trim().to_ascii_lowercase().as_str() {
             "ko" | "kr" | "korean" | "한글" | "한국어" => Some(Lang::Ko),
@@ -60,7 +60,7 @@ impl Lang {
         }
     }
 
-    /// 설정에 적어 두는 이름.
+    /// The name written to the setting.
     pub fn code(self) -> &'static str {
         match self {
             Lang::Ko => "ko",
@@ -68,8 +68,8 @@ impl Lang {
         }
     }
 
-    /// 사람에게 보여줄 이름. **제 언어로 적는다** — 목록에서 고르는 것이라, 지금 못 읽는
-    /// 언어로 적혀 있으면 무엇을 고르는지 알 수 없다.
+    /// The name shown to people. **Written in its own language** — since it's for picking from a
+    /// list, a name in a language you can't read right now leaves you unable to tell what you'd choose.
     pub fn name(self) -> &'static str {
         match self {
             Lang::Ko => "한국어",
@@ -85,12 +85,12 @@ impl Lang {
     }
 }
 
-/// 켤 때 어느 언어로 시작할까.
+/// Which language to start with at launch.
 ///
-/// 순서: `$ZYRIS_CODE_LANG` → 지난번에 고른 것 → 시스템 로케일 → 한국어.
+/// Order: `$ZYRIS_CODE_LANG` → last choice → system locale → Korean.
 ///
-/// **사람이 준 것이 언제나 이긴다.** 그다음이 지난번 선택인 이유는, `/lang`으로 바꾼 것이
-/// 다음 실행에 그대로 남아야 "설정"이라 할 수 있기 때문이다.
+/// **What a person gave always wins.** The last choice comes next because a `/lang` change must
+/// survive into the next run to count as a "setting".
 pub fn startup() -> Lang {
     if let Some(given) = std::env::var("ZYRIS_CODE_LANG").ok().and_then(|v| Lang::parse(&v)) {
         return given;
@@ -101,18 +101,18 @@ pub fn startup() -> Lang {
     from_locale(std::env::var("LC_ALL").or_else(|_| std::env::var("LANG")).ok().as_deref())
 }
 
-/// `ko_KR.UTF-8` → 한국어. 모르는 로케일은 영어로 본다 — 한국어를 못 읽는 사람에게
-/// 한국어 화면을 내미는 쪽이 그 반대보다 나쁘다.
+/// `ko_KR.UTF-8` → Korean. An unknown locale is treated as English — offering a Korean screen to
+/// someone who can't read Korean is worse than the reverse.
 pub fn from_locale(locale: Option<&str>) -> Lang {
     match locale {
         Some(l) if l.to_ascii_lowercase().starts_with("ko") => Lang::Ko,
         Some(l) if !l.trim().is_empty() => Lang::En,
-        // 로케일이 아예 없는 환경(도커, systemd)에서는 기본인 영어로 둔다.
+        // Environments with no locale at all (docker, systemd) stay at the default, English.
         _ => Lang::En,
     }
 }
 
-/// 골라 둔 언어가 사는 파일. 자격과 같은 디렉터리다.
+/// The file where the chosen language lives. Same directory as the credentials.
 fn store() -> Option<std::path::PathBuf> {
     crate::conn::credential_dir().map(|dir| dir.join("lang"))
 }
@@ -121,7 +121,7 @@ pub fn load() -> Option<Lang> {
     Lang::parse(&std::fs::read_to_string(store()?).ok()?)
 }
 
-/// 고른 것을 남긴다. **실패해도 앱은 그대로 돈다** — 이번 실행에는 이미 바뀌어 있다.
+/// Saves the choice. **The app keeps running even if this fails** — it's already changed for this run.
 pub fn save(lang: Lang) {
     let Some(at) = store() else { return };
     if let Some(dir) = at.parent() {
@@ -133,20 +133,20 @@ pub fn save(lang: Lang) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 화면 문구
+// Screen phrases
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl Lang {
-    // ── 하단 바·활동 줄
+    // ── Bottom bar · activity line
     pub fn mode_normal(self) -> &'static str {
         self.pick("기본", "normal")
     }
     pub fn mode_plan(self) -> &'static str {
         self.pick("계획", "plan")
     }
-    /// **번역하지 않는다.** 이 둘은 attacca가 제 화면에서 부르는 이름 그대로여야, 여기서
-    /// 연 것을 저쪽 목록에서 찾을 수 있다 — 세션을 `thread`라고 적어 두는 것과 같은 이유다.
-    /// `작업`으로 옮기면 바로 위 활동 줄의 `작업 중…`과 섞여 무엇을 가리키는지 흐려진다.
+    /// **Not translated.** These two must stay exactly the names attacca uses on its own screen, so
+    /// what's opened here can be found in that list — same reason sessions are written as `thread`.
+    /// Moved to the Korean for "work", it would blend with the "working…" just above in the activity line and blur what each points at.
     pub fn mode_work(self) -> &'static str {
         "work"
     }
@@ -177,23 +177,23 @@ impl Lang {
     pub fn quit_armed(self) -> &'static str {
         self.pick("한 번 더 Ctrl+C를 누르면 끝냅니다", "Press Ctrl+C again to quit")
     }
-    /// 붙었다. 활동 줄이 이걸 잠깐 보여준 뒤 `idle()`로 내려간다 —
-    /// 사용자가 보는 전이는 connecting → connected → taking a break다.
+    /// Connected. The activity line shows this briefly, then settles to `idle()` —
+    /// the transition a user sees is connecting → connected → taking a break.
     pub fn connected(self) -> &'static str {
         self.pick("연결됨", "Connected")
     }
-    /// 명령이 도는 동안 활동 줄에 보여 줄 것.
+    /// What to show in the activity line while a command runs.
     pub fn running_command(self, command: &str, secs: u64) -> String {
         match self {
             Lang::Ko => format!("▶ {command}  ·  {secs}초"),
             Lang::En => format!("▶ {command}  ·  {secs}s"),
         }
     }
-    /// 질문을 기다리는 동안 활동 줄에 보여 줄 것.
+    /// What to show in the activity line while waiting for a question.
     pub fn waiting_answer(self) -> &'static str {
         self.pick("대기 중 — 답을 고르세요", "Waiting — answer the question")
     }
-    /// 질문을 기다리는 동안 활동 줄 오른쪽에 붙는 도움말.
+    /// The hint attached to the right of the activity line while waiting for a question.
     pub fn waiting_answer_hint(self) -> &'static str {
         self.pick("↑↓ 이동 · Enter 고르기", "↑↓ move · Enter choose")
     }
@@ -217,8 +217,8 @@ impl Lang {
         }
     }
 
-    /// `work`·`job`으로 들어갔을 때. **다음 메시지가 무엇이 되는지 미리 말한다** —
-    /// 모드만 바뀐 줄 알고 하던 얘기를 이어 쓰면 그것이 목표가 되어 버린다.
+    /// When entering `work`·`job`. **It says in advance what the next message becomes** — if you
+    /// think only the mode changed and keep writing your ongoing talk, that becomes the goal.
     pub fn mode_opens_work(self) -> &'static str {
         self.pick(
             "다음에 보내는 말이 **work의 목표**가 됩니다. attacca가 계획을 세워 \
@@ -236,8 +236,8 @@ impl Lang {
         )
     }
 
-    /// 세션이 있는데 work 모드로 바꿨을 때. **모드는 더 이상 새 것을 열지 않는다** —
-    /// 하던 대화가 그대로 이어지고, 새 work는 새 쓰레드에서 연다.
+    /// When switching to work mode with a session open. **The mode no longer opens new things** —
+    /// the ongoing conversation continues as-is, and a new work opens in a new thread.
     pub fn mode_continues_work(self) -> &'static str {
         self.pick(
             "모드가 **work**입니다. 지금 대화는 그대로 이어갑니다 — \
@@ -255,7 +255,7 @@ impl Lang {
         )
     }
 
-    /// 열고 나서. **어느 것이 열렸는지 id로 말한다** — attacca 쪽에서 찾으려면 그게 필요하다.
+    /// After opening. **It says which one opened by id** — that's what's needed to find it on the attacca side.
     pub fn opened_work(self, id: &str) -> String {
         match self {
             Lang::Ko => format!("work **{id}**을 열었습니다. 여기서 계획을 두고 얘기하면 됩니다."),
@@ -279,7 +279,7 @@ impl Lang {
         }
     }
 
-    // ── 목록(픽커)
+    // ── Lists (picker)
     pub fn new_thread(self) -> &'static str {
         self.pick("＋ 새 쓰레드", "+ New thread")
     }
@@ -301,18 +301,18 @@ impl Lang {
     pub fn language(self) -> &'static str {
         self.pick("화면 말", "Language")
     }
-    /// 목록에서 지금 쓰는 언어에 붙는 표시.
+    /// The mark attached to the language currently in use, in the list.
     pub fn in_use(self) -> &'static str {
         self.pick("지금", "in use")
     }
     pub fn new_project(self) -> &'static str {
         self.pick("＋ 새 프로젝트", "+ New project")
     }
-    /// 고르면 이름과 설명을 적는 양식이 열린다 — 목록에는 글자를 칠 자리가 없다.
+    /// Choosing it opens a form for the name and description — the list has no place to type.
     pub fn new_project_note(self) -> &'static str {
         self.pick("이름과 설명을 적습니다", "type a name and description")
     }
-    // ── 새 프로젝트 양식
+    // ── New project form
     pub fn project_form_title(self) -> &'static str {
         self.pick("새 프로젝트", "New project")
     }
@@ -334,8 +334,8 @@ impl Lang {
             "Tab next field · Enter create · Esc close",
         )
     }
-    /// **이름이 비면 만들지 않는다** — 무엇을 만들지 모르고, 목록에 이름 없는 줄이
-    /// 생기면 지우는 길이 없다.
+    /// **An empty name isn't created** — it's unclear what's being made, and a nameless row in the
+    /// list would have no way to be removed.
     pub fn project_name_required(self) -> &'static str {
         self.pick("이름을 적어 주세요.", "Type a name.")
     }
@@ -365,7 +365,7 @@ impl Lang {
         }
     }
 
-    // ── 사이드바
+    // ── Sidebar
     pub fn usage(self) -> &'static str {
         self.pick("사용량", "Usage")
     }
@@ -388,7 +388,7 @@ impl Lang {
         self.pick("없음", "None")
     }
 
-    // ── 질문 화면
+    // ── Question screen
     pub fn type_your_own(self) -> &'static str {
         self.pick("✎ 직접 입력", "✎ Type your own")
     }
@@ -414,7 +414,7 @@ impl Lang {
         self.pick("건너뜀", "skipped")
     }
 
-    // ── 승인 화면
+    // ── Approval screen
     pub fn approve_keys(self) -> &'static str {
         self.pick(
             "  y 허용 / n 거부 / a 이 디렉터리는 이번 쓰레드 내내 허용",
@@ -455,7 +455,7 @@ impl Lang {
         )
     }
 
-    // ── 등록 코드 창
+    // ── Enrollment code window
     pub fn enroll_title(self) -> &'static str {
         self.pick("Attacca 연결", "Connect to Attacca")
     }
@@ -517,8 +517,8 @@ impl Lang {
 mod tests {
     use super::*;
 
-    /// **양쪽 언어의 이름을 다 받는다.** 영어 화면에서 `/lang 한글`을 치는 것이 자연스럽고,
-    /// 그 반대도 마찬가지다 — 지금 화면 말로만 받으면 잘못 고른 사람이 되돌아올 길이 없다.
+    /// **Both languages' names are accepted.** Typing `/lang` with a Korean word on an English screen
+    /// is natural, and so is the reverse — accepting only the current screen language would leave someone who chose wrong with no way back.
     #[test]
     fn either_language_can_be_named_in_either_language() {
         for said in ["ko", "KO", "한글", "한국어", "korean"] {
@@ -531,8 +531,8 @@ mod tests {
         assert_eq!(Lang::parse(""), None);
     }
 
-    /// 로케일은 짐작일 뿐이다. **모르면 영어로 본다** — 한국어를 못 읽는 사람에게 한국어
-    /// 화면을 내미는 쪽이 그 반대보다 나쁘다.
+    /// The locale is only a guess. **Unknown means English** — offering a Korean screen to someone
+    /// who can't read Korean is worse than the reverse.
     #[test]
     fn the_locale_is_a_guess_that_errs_towards_english() {
         assert_eq!(from_locale(Some("ko_KR.UTF-8")), Lang::Ko);
@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(from_locale(Some("  ")), Lang::En);
     }
 
-    /// 적어 두는 이름과 읽는 이름이 같아야 한다 — 갈라지면 저장한 설정을 못 읽는다.
+    /// The name written and the name read back must match — if they diverge, the saved setting can't be read.
     #[test]
     fn what_is_written_is_what_is_read_back() {
         for lang in [Lang::Ko, Lang::En] {
@@ -551,19 +551,19 @@ mod tests {
         }
     }
 
-    /// **언어 이름은 제 언어로 적는다.** 지금 못 읽는 말로 적혀 있으면 무엇을 고르는지
-    /// 알 수 없다.
+    /// **A language names itself in its own language.** Written in a language you can't read now,
+    /// you can't tell what you're choosing.
     #[test]
     fn a_language_names_itself() {
         assert_eq!(Lang::Ko.name(), "한국어");
         assert_eq!(Lang::En.name(), "English");
     }
 
-    /// 두 언어가 **둘 다 있어야 한다.** 한쪽만 채우면 화면 절반이 다른 말로 남는다.
+    /// Both languages **must both be present.** Filling only one side leaves half the screen in the
+    /// other language.
     ///
-    /// **`mode_work`·`mode_job`은 일부러 뺐다.** 둘은 attacca가 제 화면에서 쓰는 이름
-    /// 그대로여서 두 언어가 같고, 여기 넣으면 "번역이 안 됐다"고 걸린다.
-    /// 아래 `the_english_side_has_no_hangul_left_in_it`이 대신 지킨다.
+    /// **`mode_work`·`mode_job` are deliberately left out.** They're exactly the names attacca uses on
+    /// its own screen, so both languages are the same, and putting them here would trip a "not translated" check. `the_english_side_has_no_hangul_left_in_it` below guards them instead.
     #[test]
     fn no_message_is_left_in_one_language_only() {
         let ko = Lang::Ko;
@@ -598,7 +598,7 @@ mod tests {
         }
     }
 
-    /// 영어 화면에는 **한글이 한 글자도 없어야 한다.** 섞이면 안 옮긴 자리가 티가 안 난다.
+    /// The English screen must have **not a single Hangul character.** Mixed in, an untranslated spot wouldn't show.
     #[test]
     fn the_english_side_has_no_hangul_left_in_it() {
         let en = Lang::En;
@@ -644,7 +644,7 @@ mod tests {
         assert!(!en.threads_in("proj").chars().any(|c| ('가'..='힣').contains(&c)));
     }
 
-    /// 한국어에서 thread는 **쓰레드**다. 영어 낱말을 그대로 두면 목록에서 튄다.
+    /// In Korean, thread is **sseuredeu**. Keeping the English word would make it stick out in the list.
     #[test]
     fn thread_reads_as_sseurede_in_korean() {
         assert!(Lang::Ko.new_thread().contains("쓰레드"), "{}", Lang::Ko.new_thread());

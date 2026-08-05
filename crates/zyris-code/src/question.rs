@@ -1,12 +1,12 @@
-//! `question` 툴을 사람이 고를 수 있는 형태로.
+//! The `question` tool, in a form a human can pick from.
 //!
-//! 에이전트가 `question`을 부르면 그 `tool_call` 이벤트가 **툴이 블록되기 전에** 타임라인에
-//! 올라온다. 그래서 스트림으로 받아 화면에 띄우고, 사람이 고른 것을 **평범한 메시지로**
-//! 보내면 서버의 `question_waiter`가 그것을 답으로 가져간다 — 따로 응답 API가 없다.
+//! When the agent calls `question`, the `tool_call` event lands on the timeline **before the tool blocks**.
+//! So we receive it from the stream and show it on screen; what the human picks is sent as an **ordinary message**,
+//! and the server's `question_waiter` takes it as the answer — there is no separate response API.
 //!
-//! **자유 입력 대안을 항상 준다.** 툴 설명이 "UI는 언제나 자유 입력 대안을 제공하므로
-//! 모델이 직접 '기타' 선택지를 만들면 안 된다"고 못 박고 있어서, 여기서 빠뜨리면 모델은
-//! 있다고 믿는 길이 실제로는 없는 상태가 된다.
+//! **Always offer a free-text alternative.** The tool description pins down that "the UI always provides a free-text
+//! alternative, so the model must not make up its own 'Other' option"; if we leave it out here, the model
+//! believes a path exists that actually doesn't.
 
 use std::collections::HashSet;
 
@@ -25,31 +25,31 @@ pub struct Step {
     pub header: Option<String>,
     pub question: String,
     pub multi: bool,
-    /// 비어 있으면 자유 입력만 받는 단계다.
+    /// When empty, the step only accepts free text.
     pub options: Vec<Opt>,
 }
 
 impl Step {
-    /// 자유 입력 줄의 인덱스. 선택지 바로 아래다.
+    /// Index of the free-text row. Right below the options.
     pub fn free_row(&self) -> usize {
         self.options.len()
     }
 }
 
-/// 목록 맨 아래에 서는 조작 줄.
+/// The action row that stands at the bottom of the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
-    /// 앞 질문으로. 첫 질문에서는 안 보인다.
+    /// Back to the previous question. Not shown on the first question.
     Back,
-    /// 답을 하고 다음으로.
+    /// Answer and move on to the next.
     Next,
-    /// 답하지 않고 넘어간다. 아직 아무것도 안 고른 단계에서 `Next` 대신 나온다.
+    /// Skip without answering. Shown instead of `Next` on a step where nothing is picked yet.
     Skip,
-    /// 이대로 보낸다.
+    /// Send it as is.
     Submit,
-    /// 처음 질문으로 돌아가 고쳐 쓴다.
+    /// Go back to the first question and revise.
     Edit,
-    /// 답하지 않겠다고 알린다.
+    /// Declare that you won't answer.
     Reject,
 }
 
@@ -66,7 +66,7 @@ impl Act {
     }
 }
 
-/// 한 줄이 무엇인가.
+/// What a row is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
     Option(usize),
@@ -74,7 +74,7 @@ pub enum RowKind {
     Action(Act),
 }
 
-/// 툴 인자에서 단계들을 읽는다. 모양이 어긋나면 `None` — 그 경우 평범한 도구 호출로 그린다.
+/// Reads the steps from the tool arguments. If the shape is off, returns `None` — then it is drawn as an ordinary tool call.
 pub fn parse(args: &Value) -> Option<Vec<Step>> {
     let raw = args.get("questions")?.as_array()?;
     if raw.is_empty() {
@@ -112,19 +112,19 @@ pub fn parse(args: &Value) -> Option<Vec<Step>> {
     (!steps.is_empty()).then_some(steps)
 }
 
-/// 지금 답하고 있는 상태.
+/// The state of currently answering.
 #[derive(Debug)]
 pub struct Answering {
     pub steps: Vec<Step>,
     pub step: usize,
-    /// 지금 줄. `steps[step].free_row()`이면 자유 입력 줄이다.
+    /// The current row. If it's `steps[step].free_row()`, it's the free-text row.
     pub cursor: usize,
     chosen: Vec<HashSet<usize>>,
     free: Vec<String>,
-    /// 자유 입력 줄에서 실제로 타자를 치는 중인가.
+    /// Whether the user is actually typing in the free-text row.
     pub typing: bool,
     pub input: Input,
-    /// 다 물어본 뒤의 검토 화면인가.
+    /// Whether this is the review screen after all questions are asked.
     review: bool,
 }
 
@@ -147,11 +147,11 @@ impl Answering {
         &self.steps[self.step]
     }
 
-    /// 지금 화면의 줄 구성.
+    /// The row layout of the current screen.
     ///
-    /// **질문 화면과 검토 화면이 다르다.** 질문을 받는 동안에는 앞뒤로 오가는 것만 두고,
-    /// 다 물어본 뒤에 보낼지 고칠지 거절할지 고르게 한다 — 답하는 도중에 제출이 섞여
-    /// 있으면 아직 안 본 질문을 남긴 채 보내기 쉽다.
+    /// **The question screen and the review screen differ.** While questions are being asked, only back-and-forth moves are allowed,
+    /// after all are asked the user picks whether to send, fix, or reject — if Submit were mixed in while answering,
+    /// it would be easy to send while leaving unseen questions behind.
     pub fn rows(&self) -> Vec<RowKind> {
         if self.review {
             return vec![
@@ -166,30 +166,30 @@ impl Answering {
         if self.step > 0 {
             rows.push(RowKind::Action(Act::Back));
         }
-        // 아직 아무것도 안 골랐으면 건너뛰기, 골랐으면 다음.
+        // If nothing is picked yet, skip; if something is, next.
         rows.push(RowKind::Action(if self.answered() { Act::Next } else { Act::Skip }));
         rows
     }
 
-    /// 마지막 질문을 지나 검토 화면에 와 있는가.
+    /// Whether we're past the last question and on the review screen.
     pub fn in_review(&self) -> bool {
         self.review
     }
 
-    /// 검토 화면으로. 마지막 질문에서 다음/건너뛰기를 누르면 여기로 온다.
+    /// Go to the review screen. Pressing next/skip on the last question lands here.
     pub fn to_review(&mut self) {
         self.review = true;
         self.cursor = 0;
     }
 
-    /// 처음 질문으로 돌아가 고친다.
+    /// Go back to the first question and revise.
     pub fn to_edit(&mut self) {
         self.review = false;
         self.step = 0;
         self.cursor = 0;
     }
 
-    /// 지금까지 답한 것을 사람이 읽을 수 있게. 검토 화면이 보여준다.
+    /// Everything answered so far, made human-readable. The review screen shows it.
     pub fn summary(&self) -> Vec<(String, String)> {
         self.steps
             .iter()
@@ -238,16 +238,16 @@ impl Answering {
         self.cursor = (self.cursor + 1) % self.rows().len();
     }
 
-    /// 이 단계에 직접 써 넣은 것. 화면이 보여준다.
+    /// What was typed directly into this step. The screen shows it.
     pub fn free_text(&self) -> &str {
         &self.free[self.step]
     }
 
-    /// 고르거나 푼다. 단일 선택이면 앞의 것을 대신한다.
+    /// Pick or unpick. For single-select, it replaces the previous pick.
     pub fn toggle(&mut self) {
         match self.row_at(self.cursor) {
             Some(RowKind::Free) => {
-                // 앞서 써 둔 것이 있으면 이어서 고칠 수 있게 되돌려 넣는다.
+                // If something was typed before, put it back so it can be continued and fixed.
                 self.input = Input::new();
                 self.input.insert_str(&self.free[self.step].clone());
                 self.typing = true;
@@ -268,7 +268,7 @@ impl Answering {
         }
     }
 
-    /// 앞 질문으로. 첫 질문이면 아무 일도 없다.
+    /// Back to the previous question. On the first question, nothing happens.
     pub fn back(&mut self) {
         if self.review {
             self.review = false;
@@ -279,10 +279,10 @@ impl Answering {
         }
     }
 
-    /// 다음으로. 마지막 질문이면 검토 화면으로 넘어간다.
+    /// Move on. On the last question, it moves to the review screen.
     ///
-    /// 답이 없어도 넘어간다 — 건너뛰기가 그것이다. 강제로 답하게 만들면 물어본 쪽이
-    /// 답을 얻는 게 아니라 사람이 아무거나 고르게 된다.
+    /// It moves on even without an answer — that's what skipping is. Forcing an answer means the asker
+    /// doesn't get an answer; the human just picks anything.
     pub fn advance(&mut self) {
         if self.step + 1 < self.steps.len() {
             self.step += 1;
@@ -292,20 +292,20 @@ impl Answering {
         }
     }
 
-    /// 하나라도 답한 것이 있는가. 제출할 수 있는지의 기준이다.
+    /// Whether anything has been answered. It's the criterion for being able to submit.
     pub fn any_answered(&self) -> bool {
         (0..self.steps.len()).any(|i| !self.chosen[i].is_empty() || !self.free[i].trim().is_empty())
     }
 
-    /// 이 단계에 답이 있는가. 없으면 다음으로 못 넘어간다.
+    /// Whether this step has an answer. Without one, it can't move to the next.
     pub fn answered(&self) -> bool {
         !self.chosen[self.step].is_empty() || !self.free[self.step].trim().is_empty()
     }
 
-    /// 확정. 다음 단계가 있으면 그리로 가고, 마지막이면 `true`.
+    /// Confirm. If there's a next step, go there; if it's the last, return `true`.
     pub fn confirm(&mut self) -> bool {
         if self.typing {
-            // 타자를 끝내는 것이 먼저다.
+            // Finishing the typing comes first.
             self.free[self.step] = self.input.take();
             self.typing = false;
             return false;
@@ -321,11 +321,11 @@ impl Answering {
         true
     }
 
-    /// 서버로 보낼 답. 자유 형식 텍스트다 — waiter가 다음 메시지를 그대로 답으로 쓴다.
+    /// The answer to send to the server. Free-form text — the waiter uses the next message verbatim as the answer.
     ///
-    /// **라벨만 던지지 않는다.** 모델은 답만 보고 무엇을 물었는지 되짚어야 하므로, 질문을
-    /// 그대로 싣고 고른 항목의 설명까지 붙인다. 직접 쓴 것은 그렇다고 밝힌다 — 선택지에
-    /// 없던 답이라는 사실 자체가 정보다.
+    /// **Don't just throw the labels.** The model must reconstruct what was asked from the answer alone, so the question is
+    /// carried verbatim and even the descriptions of picked items are attached. Free text is flagged as such — the fact that
+    /// the answer wasn't among the options is itself information.
     pub fn answer_text(&self) -> String {
         let mut out = Vec::new();
         for (i, step) in self.steps.iter().enumerate() {
@@ -336,7 +336,7 @@ impl Answering {
                 .iter()
                 .filter_map(|&j| step.options.get(j))
                 .map(|o| match &o.description {
-                    // 설명이 있으면 함께 싣는다 — 모델이 고른 이유를 알 수 있다.
+                    // If there's a description, carry it along — the model can see why it was picked.
                     Some(d) if !d.is_empty() => format!("{} ({})", o.label, d),
                     _ => o.label.clone(),
                 })
@@ -355,8 +355,8 @@ impl Answering {
                 _ => step.question.clone(),
             };
             let body = if parts.len() > 1 {
-                // 여러 개를 고른 단계는 줄로 나눠 적는다. 쉼표로 이으면 어디까지가
-                // 한 항목인지 흐려진다.
+                // A step with several picks is written one per line. Joined with commas, it blurs where
+                // one item ends.
                 parts.iter().map(|p| format!("  - {p}")).collect::<Vec<_>>().join("\n")
             } else {
                 format!("  {}", parts[0])
@@ -366,7 +366,7 @@ impl Answering {
         out.join("\n\n")
     }
 
-    /// 사용자가 **직접 써 넣은** 답들. 히스토리에서 다르게 보여주려고 따로 뽑는다.
+    /// Answers the user **typed directly**. Pulled out separately to be shown differently in the history.
     pub fn free_answers(&self) -> Vec<String> {
         self.free.iter().map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect()
     }
@@ -399,7 +399,7 @@ mod tests {
         assert!(steps[1].multi);
     }
 
-    /// options가 없으면 자유 입력만 받는 단계다.
+    /// Without options, the step only accepts free text.
     #[test]
     fn a_step_without_options_is_free_text_only() {
         let steps = parse(&json!({"questions": [{"question": "이름이 뭐예요?"}]})).unwrap();
@@ -413,7 +413,7 @@ mod tests {
         assert!(parse(&json!({"questions": []})).is_none());
     }
 
-    /// 자유 입력 줄은 언제나 맨 아래에 하나 더 있다 — 툴이 그렇게 약속하고 있다.
+    /// There is always one more free-text row at the bottom — the tool promises it.
     #[test]
     fn there_is_always_a_free_text_row_below_the_options() {
         let a = Answering::new(parse(&args()).unwrap());
@@ -421,7 +421,7 @@ mod tests {
         assert!(a.rows().iter().any(|r| matches!(r, RowKind::Free)));
     }
 
-    /// 조작 줄은 상황에 따라 달라진다. 없는 것을 보여주면 눌러 보고 고장인 줄 안다.
+    /// The action rows depend on the situation. Showing something that isn't there makes the user press it and think it's broken.
     #[test]
     fn the_action_rows_depend_on_where_we_are() {
         let mut a = Answering::new(parse(&args()).unwrap());
@@ -429,7 +429,7 @@ mod tests {
         let first: Vec<RowKind> = a.rows();
         assert!(!first.contains(&RowKind::Action(Act::Back)), "첫 질문에는 이전이 없다");
         assert!(first.contains(&RowKind::Action(Act::Skip)), "안 골랐으니 건너뛰기다");
-        // **질문 화면에는 제출이 없다.** 아직 안 본 질문을 남긴 채 보내기 쉽다.
+        // **There is no Submit on the question screen.** It's easy to send while leaving unseen questions behind.
         assert!(!first.contains(&RowKind::Action(Act::Submit)), "질문 화면에 제출이 있다");
 
         a.toggle();
@@ -437,7 +437,7 @@ mod tests {
         a.advance();
         assert!(a.rows().contains(&RowKind::Action(Act::Back)), "둘째 질문에는 이전이 있다");
 
-        // 마지막 질문을 지나면 검토 화면이고, 거기에만 제출이 있다.
+        // Past the last question is the review screen, and only there is there a Submit.
         a.advance();
         assert!(a.in_review());
         let review: Vec<RowKind> = a.rows();
@@ -456,8 +456,8 @@ mod tests {
         assert!(a.is_chosen(0), "앞 답이 남아 있어야 한다");
     }
 
-    /// **답이 없어도 넘어간다** — 그게 건너뛰기다. 강제로 답하게 만들면 물어본 쪽이
-    /// 답을 얻는 게 아니라 사람이 아무거나 고르게 된다.
+    /// **It moves on even without an answer** — that's what skipping is. Forcing an answer means the asker
+    /// doesn't get an answer; the human just picks anything.
     #[test]
     fn an_unanswered_step_can_be_skipped() {
         let mut a = Answering::new(parse(&args()).unwrap());
@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(a.step, 1, "건너뛰고 다음으로 갔어야 한다");
     }
 
-    /// 건너뛴 단계는 요약에 그렇게 적힌다.
+    /// A skipped step is marked as such in the summary.
     #[test]
     fn a_skipped_step_is_marked_in_the_summary() {
         let mut a = Answering::new(parse(&args()).unwrap());
@@ -479,7 +479,7 @@ mod tests {
         assert_ne!(s[1].1, "건너뜀");
     }
 
-    /// 검토 화면에서 고치기를 누르면 첫 질문으로 돌아간다.
+    /// Pressing Edit on the review screen returns to the first question.
     #[test]
     fn editing_returns_to_the_first_question() {
         let mut a = Answering::new(parse(&args()).unwrap());
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(a.cursor, 0);
     }
 
-    /// 아무것도 안 고르고는 넘어갈 수 없다.
+    /// You can't move on without picking anything.
     #[test]
     fn confirming_without_an_answer_does_nothing() {
         let mut a = Answering::new(parse(&args()).unwrap());
@@ -554,11 +554,11 @@ mod tests {
     #[test]
     fn the_answer_text_lists_one_line_per_step() {
         let mut a = Answering::new(parse(&args()).unwrap());
-        a.toggle(); // A안
+        a.toggle(); // Option A
         a.confirm();
-        a.toggle(); // 로그
+        a.toggle(); // Log
         a.down();
-        a.toggle(); // 지표
+        a.toggle(); // Metrics
         assert!(a.confirm(), "마지막 단계 확정이면 끝이다");
 
         let text = a.answer_text();

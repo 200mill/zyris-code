@@ -2,44 +2,44 @@
 resolver = "2"
 members = ["crates/zyris-code"]
 
-# zyris는 GitHub에서 당기는 git 의존성이다. 여기서 한 번만 선언하고 하위 크레이트는
-# `workspace = true`로 물린다 — 크레이트마다 따로 선언하면 서로 다른 커밋을 볼 수 있고,
-# 그러면 같은 크레이트가 두 벌 링크되어 "같은 타입인데 타입이 다르다"는 에러가 난다.
+# zyris is a git dependency pulled from GitHub. Declare it once here, and sub-crates
+# attach with `workspace = true` — declaring per-crate would let them see different commits,
+# and then the same crate gets linked twice, causing a "same type but the types differ" error.
 #
-# `rev`가 없으면 Cargo.lock만이 유일한 고정 장치라 `cargo update` 한 번에 기본 브랜치
-# 최신으로 조용히 넘어간다. 올리는 것은 이 줄을 고쳐 의도적으로 한다.
+# Without `rev`, Cargo.lock is the only pin, so a single `cargo update` quietly jumps to
+# the latest of the default branch. Bumping is done deliberately by editing this line.
 #
-# **로컬 경로로 물지 않는다.** 2026-08-03에 `[patch]`로 `../zyris` 워킹트리를 물고 있었는데,
-# 그 변경이 어디에도 올라가 있지 않은 채 디렉터리가 사라지자 `cargo metadata`부터 실패했다.
-# 그때 zyris-code는 **우리만 아는 코드**에 기대고 있었고, 사본이 하나뿐이라 복구할 것도
-# 없었다. 상류가 필요하면 PR을 올려 머지하고 그 커밋을 여기 적는다 — 경로로 물면 안 된다.
+# **Don't attach via a local path.** On 2026-08-03 the `../zyris` working tree was attached via
+# `[patch]`, and when the directory vanished with that change committed nowhere, even
+# `cargo metadata` failed. At the time zyris-code leaned on code **only we knew about**, and with a
+# single copy there was nothing to recover with. Open a PR, merge it, and write that commit here — never attach by path.
 [workspace.dependencies]
 zyris = { git = "https://github.com/attacca-cc/zyris", rev = "8f25c021d282e5be98ed90cf80fbd61c9e645c8f", features = ["enroll"] }
 zyris-attacca = { git = "https://github.com/attacca-cc/zyris", rev = "8f25c021d282e5be98ed90cf80fbd61c9e645c8f" }
-# 캐퍼빌리티 선언(caps)과 그 구현(capkit). **같은 rev여야 한다** — 다르면 같은 크레이트가
-# 두 벌 링크되어 "같은 타입인데 타입이 다르다"는 에러가 난다.
+# The capability declarations (caps) and their implementation (capkit). **Must be the same rev** —
+# otherwise the same crate gets linked twice, causing a "same type but the types differ" error.
 #
-# 와이어 타입(`CapabilityDescriptor`·`Payload` 등)은 `zyris`가 루트에 재수출하므로
-# `zyris-proto`를 따로 물지 않는다. `zyris::serve` 모듈도 비공개이고 항목만 루트에 나온다.
+# The wire types (`CapabilityDescriptor`, `Payload`, etc.) are re-exported at the root by `zyris`,
+# so `zyris-proto` isn't pulled separately. The `zyris::serve` module is also private; only its items appear at the root.
 #
-# capkit의 기본 기능은 `file-io`와 `terminal`뿐이라 디스플레이 의존이 딸려 오지 않는다.
-# `desktop`을 켜면 xcap이 X11/Wayland 개발 패키지를 요구해 이 머신에서 빌드가 막힌다.
+# capkit's default features are only `file-io` and `terminal`, so no display dependencies come along.
+# Enabling `desktop` makes xcap require X11/Wayland dev packages, blocking the build on this machine.
 zyris-caps = { git = "https://github.com/attacca-cc/zyris", rev = "8f25c021d282e5be98ed90cf80fbd61c9e645c8f" }
 zyris-capkit = { git = "https://github.com/attacca-cc/zyris", rev = "8f25c021d282e5be98ed90cf80fbd61c9e645c8f" }
 
-# 위 `rev`(8f25c02)는 `feat/enrollment-ui` 브랜치의 커밋이다(PR #6). `EnrollmentUi` 훅이
-# 거기 들어 있다 — `Enroller::with_ui`로 등록 코드를 화면이 직접 그릴 수 있게 하는 길이다.
-# `register_node`·`list_nodes`와 `nodes:write` 스코프는 그보다 앞선 `main`(3a21c93, PR #3)에
-# 이미 있었다.
+# The `rev` above (8f25c02) is a commit on the `feat/enrollment-ui` branch (PR #6). The `EnrollmentUi`
+# hook lives there — the way `Enroller::with_ui` lets the screen draw the enrollment code itself.
+# The `register_node`/`list_nodes` calls and the `nodes:write` scope were already in the earlier
+# `main` (3a21c93, PR #3).
 #
-# PR #6이 머지되면 `main`의 머지 커밋으로 올린다. 그 전에도 이 커밋은 GitHub에 실제로
-# 있으므로 빌드는 된다.
+# Once PR #6 merges, bump to `main`'s merge commit. Even before that, this commit really exists on
+# GitHub, so the build works.
 #
-# **`main`에 없는 것은 우리가 한다.** 앱별 자격 디렉터리는 `RunConfig::app`이 아니라
-# `$ZYRIS_CONFIG_DIR`을 우리가 채워서 정하고(`conn::credential_home`), 스코프 대조는 붙은
-# 뒤에 우리가 한다(`app.rs`). 상류에 없는 API를 로컬 브랜치로 만들어 쓰지 않는다.
+# **What's not in `main`, we do ourselves.** The per-app credential directory is set by us filling
+# `$ZYRIS_CONFIG_DIR` rather than `RunConfig::app` (`conn::credential_home`), and the scope check
+# is done by us after connecting (`app.rs`). APIs that don't exist upstream are not recreated on a local branch.
 
-# 전체 디버그 심볼이 붙으면 target 디렉터리가 수십 GB로 자란다. 이 머신에서 실제로
-# 디스크를 채워 시스템이 얼어붙은 적이 있다. 백트레이스에 필요한 줄 정보는 남긴다.
+# Full debug symbols make the target directory grow to tens of GB. On this machine it has actually
+# filled the disk and frozen the system. Keep the line info needed for backtraces.
 [profile.dev]
 debug = "line-tables-only"

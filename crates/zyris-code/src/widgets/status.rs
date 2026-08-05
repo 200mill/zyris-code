@@ -1,7 +1,7 @@
-//! 입력창 아래 한 줄 — 모드와 에이전트.
+//! The one line under the input field — mode and agent.
 //!
-//! **연결 상태는 여기 없다.** 잘 붙어 있다는 것을 화면 구석에 늘 띄워 둘 이유가 없어서
-//! 뺐다. 지금 무슨 일이 벌어지는지는 입력란 위 `activity` 줄이 말한다.
+//! **Connection status is not here.** There's no reason to always show "connected fine" in a screen
+//! corner, so it was removed. What's happening right now is told by the `activity` line above the input.
 
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -14,10 +14,10 @@ use crate::app::State;
 use crate::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, state: &State) {
-    // 맨 왼쪽에 붙인다 — 바로 위 상태 줄의 점과 열을 맞춘다.
+    // Attach at the far left — aligns with the dot of the status line directly above.
     //
-    // 가운뎃점에 공백을 두지 않는다. 모드와 에이전트는 **한 벌로 읽히는 것**이라
-    // 사이가 벌어지면 서로 다른 두 정보처럼 보인다 — 붙여 두면 눈이 한 번에 집는다.
+    // No spaces around the middle dot. Mode and agent are meant to be read as **one set**, so a gap
+    // makes them look like two separate pieces of info — close together, the eye takes them in at once.
     let mut spans = vec![
         Span::styled(state.mode.label(state.lang), Style::default().fg(state.mode.color())),
         Span::styled("·", Style::default().fg(theme::BORDER_LIGHT)),
@@ -27,7 +27,7 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State) {
         ),
     ];
 
-    // **아직 안 보낸 말이 있으면 반드시 말한다.** 들고 있는 것을 안 알리면 보냈다고 믿는다.
+    // **If there's unsent text, it must be said.** If it isn't announced, the user believes it was sent.
     if !state.queued.is_empty() {
         spans.push(Span::styled(" · ", Style::default().fg(theme::BORDER_LIGHT)));
         spans.push(Span::styled(

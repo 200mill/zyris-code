@@ -1,10 +1,10 @@
-//! 로컬 MCP 서버 하나와 stdio로 말한다.
+//! Talks to one local MCP server over stdio.
 //!
-//! **SDK를 당기지 않는다.** 우리가 쓰는 것은 `initialize`·`tools/list`·`tools/call` 셋뿐이고
-//! 전송은 줄 단위 JSON-RPC다. 그만한 것에 의존을 하나 더 얹을 이유가 없다.
+//! **We don't pull in an SDK.** All we use is the `initialize`·`tools/list`·`tools/call` trio, and
+//! the transport is line-delimited JSON-RPC. There's no reason to add another dependency for that much.
 //!
-//! 서버는 자식 프로세스다. **stderr는 로그로 보낸다** — 터미널로 새면 TUI 한가운데 찍히고,
-//! 그 자리를 ratatui의 이중 버퍼가 "안 바뀌었다"고 여겨 다시 그리지도 않는다.
+//! The server is a child process. **stderr goes to the log** — if it leaks to the terminal it lands in the middle of the TUI,
+//! and ratatui's double buffer treats that spot as "unchanged" and won't redraw it either.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -14,14 +14,14 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-/// 우리가 말한다고 밝히는 프로토콜 판. 서버가 더 새 것을 알아도 이걸로 맞춰 준다.
+/// The protocol version we declare we speak. Even if the server knows something newer, we settle on this.
 const PROTOCOL: &str = "2024-11-05";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpTool {
-    /// **씻어 낸 이름.** attacca가 도구 이름을 `__`로 쪼개므로 그 글자가 남으면 안 된다.
+    /// **The washed name.** attacca splits tool names on `__`, so that sequence must not remain.
     pub name: String,
-    /// 서버가 실제로 아는 이름. 부를 때 이것을 쓴다.
+    /// The name the server actually knows. This is what we use when calling it.
     pub raw: String,
     pub description: String,
     pub input_schema: Value,
@@ -35,7 +35,7 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    /// 서버를 띄우고 악수를 마친다. 여기서 실패하면 그 서버는 없는 셈 친다.
+    /// Spawns the server and completes the handshake. If this fails, we treat that server as nonexistent.
     pub async fn spawn(
         command: &str,
         args: &[String],
@@ -76,12 +76,12 @@ impl McpClient {
                 }),
             )
             .await?;
-        // 알림이라 답이 없다. 이걸 빠뜨리면 어떤 서버는 도구를 안 내준다.
+        // A notification, so there is no reply. Some servers won't hand out tools if this is skipped.
         client.notify("notifications/initialized", json!({})).await?;
         Ok(client)
     }
 
-    /// 이 서버가 내주는 도구들. 이름은 씻고, 겹치면 번호를 붙인다.
+    /// The tools this server offers. Names are washed; collisions get a number appended.
     pub async fn list_tools(&mut self) -> Result<Vec<McpTool>> {
         let result = self.request("tools/list", json!({})).await?;
         let listed = result.get("tools").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -107,7 +107,7 @@ impl McpClient {
             .collect())
     }
 
-    /// 도구 하나를 부른다. `name`은 **서버가 아는 이름**(`McpTool::raw`)이다.
+    /// Calls one tool. `name` is **the name the server knows** (`McpTool::raw`).
     pub async fn call(&mut self, name: &str, args: Value) -> Result<Value> {
         let result = self.request("tools/call", json!({"name": name, "arguments": args})).await?;
         Ok(json!({ "content": flatten_content(&result) }))
@@ -118,8 +118,8 @@ impl McpClient {
         let id = self.next_id;
         self.write(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).await?;
 
-        // **내 id가 올 때까지 읽는다.** 서버는 답 사이사이에 알림을 끼워 보낼 수 있고,
-        // 그것을 답으로 착각하면 그 뒤가 전부 한 칸씩 밀린다.
+        // **Keep reading until our id comes back.** The server may interleave notifications
+        // between replies, and mistaking one for the reply shifts everything after it by one.
         loop {
             let Some(line) = self.stdout.next_line().await? else {
                 bail!("MCP 서버가 답하기 전에 끊었습니다: {method}");
@@ -154,23 +154,23 @@ impl McpClient {
         Ok(())
     }
 
-    /// 서버를 끝낸다. `kill_on_drop`이 있지만 명시적으로 닫는 길도 둔다.
+    /// Shuts the server down. There's `kill_on_drop`, but we also keep an explicit way to close it.
     pub async fn shutdown(mut self) {
         let _ = self.child.kill().await;
     }
 }
 
-/// **`__`가 남으면 안 되고, 양 끝이 `_`여도 안 된다.**
+/// **A `__` must not remain, and neither end may be `_`.**
 ///
-/// attacca는 노드 도구 이름을 `zyris__{노드}__{캐퍼빌리티}__{도구}`로 만들고 그것을 `__`로
-/// 쪼개 되읽는다. 그래서 두 가지가 다 문제다:
+/// attacca builds node tool names as `zyris__{node}__{capability}__{tool}` and re-reads them by
+/// splitting on `__`. So both things are a problem:
 ///
-/// - 이름 **안에** `__`가 있으면 그 자리에서 갈라진다.
-/// - 이름이 `_`로 **끝나거나 시작하면** 이어 붙이는 `__`와 만나 `___`이 되어 역시 갈라진다.
-///   `mcp_` + `__` + `echo` = `mcp___echo`다. **라이브에서 실제로 이렇게 나갔고 그 도구는
-///   끝내 안 불렸다.**
+/// - A `__` **inside** the name splits it at that spot.
+/// - A name that **ends or starts** with `_` meets the joining `__` and becomes `___`, which
+///   splits too. `mcp_` + `__` + `echo` = `mcp___echo`. **This actually happened live, and that
+///   tool was never called.**
 ///
-/// 남는 것이 없으면 `unnamed`다 — 빈 이름은 부를 수가 없다. 겹치는 것은 `dedup`이 센다.
+/// If nothing remains, it's `unnamed` — an empty name can't be called. Collisions are counted by `dedup`.
 pub fn sanitize(name: &str) -> String {
     let mut out = String::new();
     for ch in name.chars() {
@@ -180,7 +180,7 @@ pub fn sanitize(name: &str) -> String {
             out.push('_');
         }
     }
-    // 원래부터 이어져 있던 `_`도 접는다.
+    // Also folds `_`s that were consecutive to begin with.
     let mut folded = String::new();
     for ch in out.chars() {
         if !(ch == '_' && folded.ends_with('_')) {
@@ -195,7 +195,7 @@ pub fn sanitize(name: &str) -> String {
     }
 }
 
-/// 씻고 나서 겹친 이름에 번호를 붙인다. 겹친 채로 두면 뒤엣것을 영영 못 부른다.
+/// After washing, appends a number to colliding names. Left collided, the later one can never be called.
 pub fn dedup(names: Vec<String>) -> Vec<String> {
     let mut seen: HashMap<String, u32> = HashMap::new();
     names
@@ -212,10 +212,10 @@ pub fn dedup(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// 결과의 `content` 배열에서 **모델이 볼 수 있는 것만** 남긴다.
+/// From the result's `content` array, keeps **only what the model can see**.
 ///
-/// 이미지나 리소스를 통째로 실어 보내 봐야 모델이 못 보고 토큰 예산만 먹는다 —
-/// 무엇이 있었는지만 적는다.
+/// Sending images or resources whole just means the model can't see them and they only eat the
+/// token budget — so we note only what was there.
 fn flatten_content(result: &Value) -> String {
     let Some(blocks) = result.get("content").and_then(Value::as_array) else {
         return result.to_string();
@@ -238,7 +238,7 @@ fn flatten_content(result: &Value) -> String {
 mod tests {
     use super::*;
 
-    /// attacca가 도구 이름을 `__`로 쪼갠다. 들어가면 라우팅이 깨진다.
+    /// attacca splits tool names on `__`. If one gets in, routing breaks.
     #[test]
     fn a_name_never_keeps_a_double_underscore() {
         assert_eq!(sanitize("a__b"), "a_b");
@@ -247,8 +247,8 @@ mod tests {
         assert!(!sanitize("a--__--b").contains("__"));
     }
 
-    /// **양 끝의 `_`도 없애야 한다.** 이어 붙이는 `__`와 만나 `___`이 되면 똑같이 갈라진다.
-    /// `mcp_` + `__` + `echo` = `mcp___echo` — 라이브에서 실제로 이렇게 나갔다.
+    /// **Trailing and leading `_`s must go too.** Meeting a joining `__` makes `___`, which splits the same way.
+    /// `mcp_` + `__` + `echo` = `mcp___echo` — this actually happened live.
     #[test]
     fn a_name_never_ends_or_starts_with_an_underscore() {
         for raw in ["연습", "mcp_", "_x_", "--", "파일 읽기", "  "] {
@@ -256,13 +256,13 @@ mod tests {
             assert!(!name.starts_with('_'), "{raw} → {name}");
             assert!(!name.ends_with('_'), "{raw} → {name}");
             assert!(!name.is_empty(), "{raw} → 빈 이름은 부를 수가 없다");
-            // 실제로 이어 붙여 보고 쪼개 본다. 이게 진짜 판정이다.
+            // Actually join them and split again. This is the real test.
             let wire = format!("zyris__arch__cap__{name}");
             assert_eq!(wire.split("__").count(), 4, "{raw} → {wire}");
         }
     }
 
-    /// 씻은 뒤 이름이 겹치면 뒤에 숫자를 붙인다. 겹친 채로 두면 뒤엣것을 못 부른다.
+    /// If washed names collide, append a number. Left collided, the later one can't be called.
     #[test]
     fn colliding_names_get_a_number() {
         let names = dedup(vec!["a-b".into(), "a_b".into()]);
@@ -271,7 +271,7 @@ mod tests {
         assert_eq!(names, vec!["a_b".to_string(), "a_b_2".to_string(), "a_b_3".to_string()]);
     }
 
-    /// 모델이 못 보는 블록은 자리만 먹는다. 무엇이 있었는지만 적는다.
+    /// Blocks the model can't see only take up space. We note only what was there.
     #[test]
     fn a_result_keeps_the_text_and_names_the_rest() {
         let r = json!({"content": [
@@ -284,7 +284,7 @@ mod tests {
         assert!(out.contains("image"), "무엇이 빠졌는지는 말해야 한다: {out}");
     }
 
-    /// **진짜 프로세스를 띄워 본다.** 모의 객체로는 stdio 프레이밍 실수가 안 잡힌다.
+    /// **Spawns a real process.** A mock wouldn't catch stdio framing mistakes.
     #[tokio::test]
     async fn it_talks_to_a_real_stdio_server() {
         let (_dir, script) = fake_server();
@@ -295,7 +295,7 @@ mod tests {
         let tools = c.list_tools().await.unwrap();
         assert_eq!(tools.len(), 2, "{tools:?}");
         assert_eq!(tools[0].name, "echo");
-        // 씻기 전 이름은 그대로 들고 있어야 부를 수 있다.
+        // The pre-wash name must be kept as-is so it can be called.
         assert_eq!(tools[1].raw, "get-issue");
         assert_eq!(tools[1].name, "get_issue");
 
@@ -304,7 +304,7 @@ mod tests {
         c.shutdown().await;
     }
 
-    /// 서버가 오류를 돌려주면 그 말이 그대로 올라와야 한다 — 삼키면 원인을 알 수 없다.
+    /// If the server returns an error, its words must come through unchanged — swallowing them hides the cause.
     #[tokio::test]
     async fn a_server_error_comes_back_as_an_error() {
         let (_dir, script) = fake_server();
@@ -314,12 +314,12 @@ mod tests {
         c.shutdown().await;
     }
 
-    /// 답 사이에 낀 알림을 답으로 착각하면 그 뒤가 전부 한 칸씩 밀린다.
+    /// Mistaking a notification wedged between replies for the reply shifts everything after it by one.
     #[tokio::test]
     async fn a_notification_between_replies_does_not_shift_anything() {
         let (_dir, script) = fake_server();
         let mut c = McpClient::spawn("python3", &[script], &HashMap::new()).await.unwrap();
-        // 가짜 서버는 tools/call마다 알림을 하나 먼저 보낸다.
+        // The fake server sends one notification first for every tools/call.
         for _ in 0..3 {
             let r = c.call("echo", json!({"say": "여전히"})).await.unwrap();
             assert!(r.to_string().contains("여전히"), "{r}");
