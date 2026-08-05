@@ -4,9 +4,22 @@
 //! 둘을 가른 이유는 테스트다 — 한 파일이면 마감을 재는 테스트마저 진짜 프로세스를
 //! 띄워야 한다.
 
-use std::sync::LazyLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
+use tokio::io::AsyncReadExt;
+use tokio::sync::watch;
+
+/// 한 작업의 출력 상한. 넘치면 앞이 사라지고 `dropped`가 그만큼 는다.
+const RING_CAP: usize = 1024 * 1024;
+/// 들고 있는 작업 수. 넘치면 **끝난 것 중** 오래된 것부터 버린다.
+const KEEP: usize = 20;
+/// `stop` 뒤 SIGKILL까지의 유예. 배포 스크립트가 정리할 틈이다.
+const GRACE: Duration = Duration::from_secs(2);
+/// 앱을 끌 때의 유예. **여기서는 짧아야 한다** — 나가는 길을 2초 붙들면 안 눌린 줄 안다.
+const QUIT_GRACE: Duration = Duration::from_millis(300);
 
 /// ANSI 이스케이프. CSI(`ESC [ … 최종문자`)·OSC(`ESC ] … BEL|ST`)·그 밖의 두 글자짜리.
 ///
@@ -105,6 +118,321 @@ impl Stripper {
     }
 }
 
+/// 배경에 걸 것.
+#[derive(Debug, Clone, Default)]
+pub struct Spec {
+    /// 셸 한 줄. `argv`와 **정확히 하나만** 준다.
+    pub command: Option<String>,
+    /// 셸 없이 그대로 띄울 프로그램과 인자.
+    pub argv: Option<Vec<String>>,
+    pub cwd: Option<PathBuf>,
+    pub env: Vec<(String, String)>,
+    pub label: Option<String>,
+}
+
+/// 사람과 에이전트가 보는 한 줄.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub id: String,
+    pub label: String,
+    pub running: bool,
+    pub exit_code: Option<i32>,
+    pub elapsed_ms: u64,
+}
+
+struct Job {
+    label: String,
+    started: Instant,
+    pid: Option<u32>,
+    exit_code: Option<i32>,
+    running: bool,
+    out: Ring,
+    /// 끝났음을 기다리는 쪽에게 알린다. `wait.until`이 이것을 기다린다.
+    ended: watch::Sender<bool>,
+}
+
+/// 이 앱이 배경에 걸어 둔 것 전부.
+///
+/// **레지스트리는 하나다.** 도구·화면·`/jobs`가 같은 것을 봐야 한다 — 두 벌이 되면
+/// 한쪽만 고쳤을 때 조용히 갈라진다. `Bridge::set_undo`와 같은 배선이다.
+#[derive(Clone)]
+pub struct Jobs {
+    root: PathBuf,
+    inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Default)]
+struct Inner {
+    jobs: Vec<(String, Job)>,
+    next: u64,
+}
+
+impl Jobs {
+    pub fn new(root: PathBuf) -> Jobs {
+        Jobs { root, inner: Arc::new(Mutex::new(Inner::default())) }
+    }
+
+    /// 배경에 걸고 즉시 돌아온다. **실행을 기다리지 않는다.**
+    pub fn start(&self, spec: Spec) -> Result<String, String> {
+        let mut cmd = build(&spec, &self.root)?;
+        let label = spec
+            .label
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| spec.command.clone())
+            .or_else(|| spec.argv.as_ref().map(|a| a.join(" ")))
+            .unwrap_or_default();
+
+        let mut child = cmd.spawn().map_err(|e| format!("띄우지 못했습니다: {e}"))?;
+        let pid = child.id();
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+        let (ended, _) = watch::channel(false);
+
+        let id = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.next += 1;
+            let id = format!("b{}", inner.next);
+            inner.jobs.push((
+                id.clone(),
+                Job {
+                    label,
+                    started: Instant::now(),
+                    pid,
+                    exit_code: None,
+                    running: true,
+                    out: Ring::new(RING_CAP),
+                    ended,
+                },
+            ));
+            // **끝난 것부터 버린다.** 도는 것을 버리면 죽일 손잡이를 잃는다.
+            while inner.jobs.len() > KEEP {
+                let Some(at) = inner.jobs.iter().position(|(_, j)| !j.running) else { break };
+                inner.jobs.remove(at);
+            }
+            id
+        };
+
+        let this = self.clone();
+        let for_task = id.clone();
+        tokio::spawn(async move {
+            // stdout·stderr를 **한 버퍼로** 모은다. 순서가 곧 읽는 사람의 이해다.
+            let pump = {
+                let (a, b) = (this.clone(), this.clone());
+                let (ia, ib) = (for_task.clone(), for_task.clone());
+                async move {
+                    tokio::join!(drain(a, ia, stdout), drain(b, ib, stderr));
+                }
+            };
+            let (status, ()) = tokio::join!(child.wait(), pump);
+            let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+            let mut inner = this.inner.lock().unwrap();
+            if let Some((_, job)) = inner.jobs.iter_mut().find(|(k, _)| *k == for_task) {
+                job.running = false;
+                job.exit_code = Some(code);
+                let _ = job.ended.send(true);
+            }
+        });
+        Ok(id)
+    }
+
+    pub fn snapshot(&self, id: &str) -> Option<Snapshot> {
+        let inner = self.inner.lock().unwrap();
+        inner.jobs.iter().find(|(k, _)| k == id).map(|(k, j)| snap(k, j))
+    }
+
+    pub fn list(&self) -> Vec<Snapshot> {
+        let inner = self.inner.lock().unwrap();
+        inner.jobs.iter().map(|(k, j)| snap(k, j)).collect()
+    }
+
+    pub fn read(&self, id: &str, offset: u64) -> Option<Chunk> {
+        let inner = self.inner.lock().unwrap();
+        inner.jobs.iter().find(|(k, _)| k == id).map(|(_, j)| j.out.read(offset))
+    }
+
+    pub fn tail(&self, id: &str, bytes: usize) -> String {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .jobs
+            .iter()
+            .find(|(k, _)| k == id)
+            .map(|(_, j)| j.out.tail(bytes))
+            .unwrap_or_default()
+    }
+
+    /// 끝났음을 기다릴 손잡이. **이미 끝났으면 처음부터 참이다.**
+    pub fn ended(&self, id: &str) -> Option<watch::Receiver<bool>> {
+        let inner = self.inner.lock().unwrap();
+        inner.jobs.iter().find(|(k, _)| k == id).map(|(_, j)| j.ended.subscribe())
+    }
+
+    /// 도는 작업을 그룹째 죽인다. 이미 끝났으면 거짓이다 — 오류는 아니다.
+    pub fn stop(&self, id: &str) -> bool {
+        let Some(pid) = self.running_pid(id) else { return false };
+        if !term_tree(pid) {
+            return true;
+        }
+        // 유예를 준 뒤 확실히 끝낸다. **나가는 길을 붙들지 않으려고** 따로 돈다.
+        std::thread::spawn(move || {
+            std::thread::sleep(GRACE);
+            kill_tree(pid);
+        });
+        true
+    }
+
+    /// 앱을 끄기 전에 부른다. **고아를 남기지 않는다.**
+    ///
+    /// 여기서는 유예가 짧다(`QUIT_GRACE`). 끝나기를 2초씩 기다리면 사람은 앱이 안
+    /// 닫힌 줄 안다. 그래도 TERM을 먼저 보내는 이유는 정리할 틈을 주기 위해서다.
+    pub fn stop_all(&self) {
+        let pids: Vec<u32> = {
+            let inner = self.inner.lock().unwrap();
+            inner.jobs.iter().filter(|(_, j)| j.running).filter_map(|(_, j)| j.pid).collect()
+        };
+        if pids.is_empty() {
+            return;
+        }
+        for pid in &pids {
+            term_tree(*pid);
+        }
+        std::thread::sleep(QUIT_GRACE);
+        for pid in &pids {
+            kill_tree(*pid);
+        }
+    }
+
+    fn running_pid(&self, id: &str) -> Option<u32> {
+        let inner = self.inner.lock().unwrap();
+        match inner.jobs.iter().find(|(k, _)| k == id) {
+            Some((_, j)) if j.running => j.pid,
+            _ => None,
+        }
+    }
+
+    fn absorb(&self, id: &str, text: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some((_, job)) = inner.jobs.iter_mut().find(|(k, _)| k == id) {
+            job.out.push(text);
+        }
+    }
+}
+
+fn snap(id: &str, j: &Job) -> Snapshot {
+    Snapshot {
+        id: id.to_string(),
+        label: j.label.clone(),
+        running: j.running,
+        exit_code: j.exit_code,
+        elapsed_ms: j.started.elapsed().as_millis() as u64,
+    }
+}
+
+/// 한 스트림을 끝까지 읽어 링에 넣는다.
+async fn drain<R: tokio::io::AsyncRead + Unpin>(jobs: Jobs, id: String, stream: Option<R>) {
+    let Some(mut stream) = stream else { return };
+    let mut strip = Stripper::default();
+    let mut buf = [0u8; 8192];
+    loop {
+        match stream.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let text = strip.push(&buf[..n]);
+                if !text.is_empty() {
+                    jobs.absorb(&id, &text);
+                }
+            }
+        }
+    }
+    let rest = strip.flush();
+    if !rest.is_empty() {
+        jobs.absorb(&id, &rest);
+    }
+}
+
+/// 명령을 만든다. **색이 덜 나오게** 환경을 미리 깔고, 사람이 준 것이 이긴다.
+fn build(spec: &Spec, root: &Path) -> Result<tokio::process::Command, String> {
+    let mut cmd = match (&spec.command, &spec.argv) {
+        (Some(_), Some(_)) | (None, None) => {
+            return Err("command와 argv 중 정확히 하나를 주세요.".into())
+        }
+        (Some(line), None) => {
+            if line.trim().is_empty() {
+                return Err("command가 비어 있습니다.".into());
+            }
+            let mut c = tokio::process::Command::new("/bin/sh");
+            c.arg("-c").arg(line);
+            c
+        }
+        (None, Some(argv)) => {
+            let Some((program, rest)) = argv.split_first() else {
+                return Err("argv가 비어 있습니다.".into());
+            };
+            let mut c = tokio::process::Command::new(program);
+            c.args(rest);
+            c
+        }
+    };
+    cmd.current_dir(spec.cwd.clone().unwrap_or_else(|| root.to_path_buf()));
+    cmd.env("TERM", "dumb").env("NO_COLOR", "1").env("CARGO_TERM_COLOR", "never");
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        // **새 그룹의 리더로 만든다.** 그래야 셸이 남긴 손자까지 한 번에 죽는다.
+        // 빼고 재 보면 `stopping_a_job_kills_the_whole_process_tree`가 문다 — 실제로
+        // 빼서 확인해 뒀다. tokio의 `Command`가 이것을 직접 준다(`CommandExt` 불필요).
+        cmd.process_group(0);
+    }
+    Ok(cmd)
+}
+
+/// 프로세스 그룹에 SIGTERM. 보냈으면 참이다.
+///
+/// **setpgid 경합을 넘긴다** — 자식이 아직 그룹을 만들기 전이면 신호가 실패한다.
+/// capkit의 `kill_tree`가 하는 것과 같은 재시도이고, 없으면 방금 건 작업을 곧바로
+/// 멈출 때 조용히 안 죽는다.
+#[cfg(unix)]
+fn term_tree(pid: u32) -> bool {
+    let group = -(pid as i32);
+    for _ in 0..50 {
+        // SAFETY: 음수 pid는 프로세스 그룹이다. 우리가 방금 만든 그룹이고 우리는 그 안에 없다.
+        if unsafe { libc::kill(group, libc::SIGTERM) } == 0 {
+            return true;
+        }
+        // 리더가 이미 죽었으면 그룹은 앞으로 안 생긴다.
+        if unsafe { libc::kill(pid as i32, 0) } != 0 {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    // SAFETY: 위와 같다.
+    unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+}
+
+/// 윈도우: `taskkill /T`가 트리를 죽인다. 부드러운 신호가 따로 없어 한 번에 간다.
+#[cfg(not(unix))]
+fn term_tree(pid: u32) -> bool {
+    kill_tree(pid);
+    false
+}
+
+#[cfg(not(unix))]
+fn kill_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .output();
+}
+
 /// 한 작업의 출력. **stdout과 stderr를 섞어 담는다** — cargo는 진행을 stderr로 내므로
 /// 나눠 담으면 순서가 사라지고, 순서가 곧 읽는 사람의 이해다.
 #[derive(Debug)]
@@ -183,6 +511,124 @@ fn split_incomplete_escape(text: &str) -> (&str, &str) {
         return (text, "");
     }
     text.split_at(at)
+}
+
+#[cfg(test)]
+mod jobs_tests {
+    use super::*;
+
+    fn jobs() -> Jobs {
+        Jobs::new(std::env::temp_dir())
+    }
+
+    fn shell(command: &str) -> Spec {
+        Spec { command: Some(command.into()), ..Default::default() }
+    }
+
+    async fn wait_for(j: &Jobs, id: &str) {
+        let mut ended = j.ended(id).expect("작업이 있어야 한다");
+        while !*ended.borrow() {
+            ended.changed().await.expect("보내는 쪽이 살아 있어야 한다");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_finished_job_keeps_its_output_readable() {
+        let j = jobs();
+        let id = j.start(shell("echo 안녕; exit 3")).unwrap();
+        wait_for(&j, &id).await;
+        let snap = j.snapshot(&id).unwrap();
+        assert!(!snap.running);
+        assert_eq!(snap.exit_code, Some(3));
+        // 끝난 뒤에도 읽힌다 — `until`이 done을 준 다음 에이전트가 logs를 부른다.
+        assert!(j.read(&id, 0).unwrap().text.contains("안녕"));
+    }
+
+    /// stdout과 stderr가 한 버퍼에 온다.
+    #[tokio::test]
+    async fn both_streams_land_in_one_buffer() {
+        let j = jobs();
+        let id = j.start(shell("echo 나감; echo 오류 1>&2")).unwrap();
+        wait_for(&j, &id).await;
+        let text = j.read(&id, 0).unwrap().text;
+        assert!(text.contains("나감"), "{text}");
+        assert!(text.contains("오류"), "{text}");
+    }
+
+    /// **셸만 죽이면 손자가 고아로 남는다.** 이 머신에서 그건 곧 프리즈다.
+    #[tokio::test]
+    async fn stopping_a_job_kills_the_whole_process_tree() {
+        let j = jobs();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("grandchild-lived");
+        // 손자는 3초 뒤에 파일을 남긴다. 그룹째 죽으면 파일이 안 생긴다.
+        let id = j.start(shell(&format!("(sleep 3; touch {}) & wait", marker.display()))).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(j.stop(&id));
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        assert!(!marker.exists(), "손자가 살아남았다");
+    }
+
+    /// 앱을 끄면 도는 작업도 같이 죽는다. 고아 cargo가 이 머신에 남으면 안 된다.
+    #[tokio::test]
+    async fn quitting_the_app_leaves_no_running_job() {
+        let j = jobs();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        j.start(shell(&format!("(sleep 3; touch {}) & wait", marker.display()))).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        j.stop_all();
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        assert!(!marker.exists(), "앱이 꺼졌는데 작업이 살아남았다");
+    }
+
+    /// 이미 끝난 것을 멈추라고 하면 거짓이다. 오류는 아니다.
+    #[tokio::test]
+    async fn stopping_a_finished_job_is_false_not_an_error() {
+        let j = jobs();
+        let id = j.start(shell("true")).unwrap();
+        wait_for(&j, &id).await;
+        assert!(!j.stop(&id));
+    }
+
+    /// 인자는 정확히 하나여야 한다.
+    #[tokio::test]
+    async fn a_spec_needs_exactly_one_of_command_or_argv() {
+        let j = jobs();
+        assert!(j.start(Spec::default()).is_err());
+        assert!(j
+            .start(Spec {
+                command: Some("ls".into()),
+                argv: Some(vec!["ls".into()]),
+                ..Default::default()
+            })
+            .is_err());
+        assert!(j.start(Spec { command: Some("   ".into()), ..Default::default() }).is_err());
+    }
+
+    /// id는 짧아야 한다 — 에이전트가 확인할 때마다 실어 나르는 글자다.
+    #[tokio::test]
+    async fn ids_are_short_and_ordered() {
+        let j = jobs();
+        assert_eq!(j.start(shell("true")).unwrap(), "b1");
+        assert_eq!(j.start(shell("true")).unwrap(), "b2");
+        assert_eq!(j.list().len(), 2);
+    }
+
+    /// 색이 애초에 덜 나오게 띄운다. 사람이 준 env가 이긴다.
+    #[tokio::test]
+    async fn the_environment_discourages_colour_but_the_caller_wins() {
+        let j = jobs();
+        let id = j
+            .start(Spec {
+                command: Some("echo $NO_COLOR-$TERM".into()),
+                env: vec![("TERM".into(), "xterm".into())],
+                ..Default::default()
+            })
+            .unwrap();
+        wait_for(&j, &id).await;
+        assert_eq!(j.read(&id, 0).unwrap().text.trim(), "1-xterm");
+    }
 }
 
 #[cfg(test)]
