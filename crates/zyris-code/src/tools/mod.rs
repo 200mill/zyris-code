@@ -10,6 +10,7 @@ pub mod diff;
 pub mod edit;
 pub mod gate;
 pub mod guard;
+pub mod jobs;
 pub mod readonly;
 pub mod search;
 pub mod skill;
