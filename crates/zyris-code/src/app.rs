@@ -335,6 +335,10 @@ pub struct State {
     /// the `AlwaysUpdate` flag bypasses the diff and overwrites. It does not clear, so it
     /// does not flicker.
     pub force_update: bool,
+    /// Self-heal while a turn is running. **Only blank cells are forced out again** —
+    /// residue only ever hides on blank cells, and a space is safe to overlap with
+    /// anything, so on a slow SSH link it can never show the same word twice.
+    pub force_update_blank: bool,
     /// The screen language. `/lang` changes it and it moves together with `lang::current()`.
     pub lang: crate::lang::Lang,
 }
@@ -434,6 +438,7 @@ impl Default for State {
             grants: crate::tools::gate::Grants::default(),
             running_exec: None,
             force_update: false,
+            force_update_blank: false,
             lang: crate::lang::current(),
         }
     }
@@ -723,6 +728,34 @@ fn ask_key(a: &crate::question::Answering, key: KeyEvent, ctrl: bool) -> Vec<Act
         KeyCode::Esc => vec![Action::AskCancel],
         _ => vec![],
     }
+}
+
+/// Whether an Enter that arrived mid-burst may be turned into a newline.
+///
+/// **Only when Enter really means "send" at that spot.** Looking only at the burst
+/// check would swallow the confirm key of an approval window, list, form or question
+/// and drop a newline into the invisible input behind it — the case where a quick
+/// ↓→Enter on the command list inserted a newline into "/m" instead of picking.
+///
+/// While typing free text in a question, that input is the send target — pasting
+/// several lines in a burst must not submit on the first line, so the newline stands.
+fn enter_becomes_newline(state: &State, key: &KeyEvent, in_burst: bool) -> bool {
+    // Windows sends a press and a release separately. Turning the release into a
+    // newline would double it on a plain Enter — the same filtering `on_key` does.
+    if key.kind == KeyEventKind::Release {
+        return false;
+    }
+    if !(in_burst && key.code == KeyCode::Enter && key.modifiers.is_empty()) {
+        return false;
+    }
+    if let Some((_, a)) = &state.asking {
+        return a.typing && !a.input.text.is_empty();
+    }
+    state.enroll.is_none()
+        && state.pending.is_none()
+        && state.new_project.is_none()
+        && state.picker.is_none()
+        && !state.input.text.is_empty()
 }
 
 pub fn apply(state: &mut State, action: &Action) {
@@ -1569,36 +1602,65 @@ fn kitty_probe_ok(resp: &[u8]) -> bool {
 /// again by hand. Only mouse capture is turned on separately. However it ends, not restoring
 /// leaves the shell broken, so the body lives in its own function and recovery happens
 /// regardless of the result.
+/// Turn one terminal feature on or off. **A failure must not kill the screen.**
+///
+/// Features are a bonus — when one fails, only that feature is lost and the app
+/// continues. The reason is left in the log only, so it can be found later why the
+/// screen came up without that feature.
+///
+/// **Why one at a time:** on Windows, crossterm 0.29's kitty keyboard protocol
+/// commands (`PushKeyboardEnhancementFlags`·`PopKeyboardEnhancementFlags`) are blocked
+/// on the ANSI path (`is_ansi_code_supported() == false`) and die with `Unsupported`.
+/// Bundled in one `execute!`, that single command **kills the whole screen** — with no
+/// screen, instead of the first enrollment's code window the shell's waiting line
+/// ("approve in the browser and it continues…") is all you see. Restoring in one chunk
+/// would also leave a trailing `EnableLineWrap` un-sent, so the shell's line wrap stays
+/// off.
+fn terminal_feature(label: &'static str, command: impl crossterm::Command) {
+    if let Err(e) = execute!(io::stdout(), command) {
+        tracing::warn!(label, error = %e, "terminal feature change failed — continuing without that feature");
+    }
+}
+
+/// The only place that talks to the terminal.
+///
+/// `ratatui::init()` takes raw mode and the alternate screen together — we don't take them again.
 pub async fn run(
     api_rx: ApiRx,
     bridge: crate::tools::bridge::Bridge,
     die: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    execute!(
-        io::stdout(),
-        crossterm::event::EnableMouseCapture,
-        // Coming back from another window, the terminal sometimes does not restore the
-        // screen for us. We have to know focus came back to redraw the whole thing.
-        crossterm::event::EnableFocusChange,
-        // **Receive a paste as one chunk.** With it off, the terminal lets a paste through
-        // as if it were typed, the newlines in the content get read as Enter, and the first
-        // line of a multi-line prompt gets sent as-is. With it on, the paste is wrapped in
-        // ESC[200~…ESC[201~ and arrives as one `Event::Paste`.
-        crossterm::event::EnableBracketedPaste,
-        // **Makes Shift+Enter distinguishable from Enter.** With the kitty keyboard protocol
-        // on, modified keys arrive separately as CSI-u sequences. A terminal that does not
-        // know it simply ignores this, so turning it on does no harm.
+    // Turn terminal features on **one at a time** — if any one fails, the screen still
+    // comes up (see `terminal_feature`). On Windows the kitty keyboard protocol always
+    // fails, so the line-wrap-off below must still be reached.
+    terminal_feature("mouse capture", crossterm::event::EnableMouseCapture);
+    // Coming back from another window, the terminal sometimes does not restore the
+    // screen for us. We have to know focus came back to redraw the whole thing.
+    terminal_feature("focus change", crossterm::event::EnableFocusChange);
+    // **Receive a paste as one chunk.** With it off, the terminal lets a paste through
+    // as if it were typed, the newlines in the content get read as Enter, and the first
+    // line of a multi-line prompt gets sent as-is. With it on, the paste is wrapped in
+    // ESC[200~…ESC[201~ and arrives as one `Event::Paste`.
+    terminal_feature("bracketed paste", crossterm::event::EnableBracketedPaste);
+    // **Makes Shift+Enter distinguishable from Enter.** With the kitty keyboard protocol
+    // on, modified keys arrive separately as CSI-u sequences. A terminal that does not
+    // know it simply ignores this, so turning it on does no harm. On Windows crossterm
+    // blocks the command and it fails (see the `terminal_feature` comment) — then
+    // Shift+Enter just sends instead of newlining, and Alt+Enter newline and paste-burst
+    // detection cover that spot.
+    terminal_feature(
+        "kitty keyboard protocol",
         crossterm::event::PushKeyboardEnhancementFlags(
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         ),
-        // **Turn off line wrapping.** If the width we counted and the width the terminal
-        // draws differ by even one cell (glyphs like `●`, `·`, `─` become two cells
-        // depending on terminal settings) the end of the line overflows and **spills onto
-        // the line below**, pushing everything under it down. With it off, the overflowing
-        // glyph is merely cut at that line, keeping the damage to one line.
-        crossterm::terminal::DisableLineWrap,
-    )?;
+    );
+    // **Turn off line wrapping.** If the width we counted and the width the terminal
+    // draws differ by even one cell (glyphs like `●`, `·`, `─` become two cells
+    // depending on terminal settings) the end of the line overflows and **spills onto
+    // the line below**, pushing everything under it down. With it off, the overflowing
+    // glyph is merely cut at that line, keeping the damage to one line.
+    terminal_feature("line wrap off", crossterm::terminal::DisableLineWrap);
 
     // **Find out now whether this terminal takes Shift+Enter as a newline.** On a terminal
     // without support we point at Alt+Enter from the start — otherwise the user does not
@@ -1615,16 +1677,16 @@ pub async fn run(
         jobs.stop_all();
     }
 
-    let _ = execute!(
-        io::stdout(),
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableFocusChange,
-        crossterm::event::DisableBracketedPaste,
-        crossterm::event::PopKeyboardEnhancementFlags,
-        // Line wrapping is something the shell uses. Not restoring it makes long commands
-        // look cut off in the shell.
-        crossterm::terminal::EnableLineWrap,
-    );
+    // Turn off one by one. Restoring also tolerates failure — if one command dies
+    // (on Windows `PopKeyboardEnhancementFlags` fails), the ones after it must still go
+    // out, or line wrap stays off in the shell and long lines look cut.
+    terminal_feature("mouse capture off", crossterm::event::DisableMouseCapture);
+    terminal_feature("focus change off", crossterm::event::DisableFocusChange);
+    terminal_feature("bracketed paste off", crossterm::event::DisableBracketedPaste);
+    terminal_feature("kitty keyboard protocol off", crossterm::event::PopKeyboardEnhancementFlags);
+    // Line wrapping is something the shell uses. Not restoring it makes long commands
+    // look cut off in the shell.
+    terminal_feature("line wrap on", crossterm::terminal::EnableLineWrap);
     ratatui::restore();
     result
 }
@@ -1952,12 +2014,10 @@ async fn run_inner(
                         let in_burst = last_key_at
                             .is_some_and(|t| now.duration_since(t) < PASTE_BURST);
                         last_key_at = Some(now);
-                        if in_burst
-                            && k.code == KeyCode::Enter
-                            && k.modifiers.is_empty()
-                            && !state.input.text.is_empty()
-                        {
-                            // An Enter that arrived mid-burst is a newline.
+                        if enter_becomes_newline(&state, &k, in_burst) {
+                            // An Enter that arrived mid-burst is a newline — and the
+                            // decision is `enter_becomes_newline`'s, so an approval,
+                            // list, form or question keeps its confirm key.
                             vec![Action::Insert('\n')]
                         } else {
                             on_key(&state, k)
@@ -2300,17 +2360,25 @@ async fn run_inner(
             // sitting still cannot break, and an idle session has no reason to keep pushing
             // bytes over SSH.
             _ = heal.tick(), if healing => {
-                // **Do not heal while a turn runs.** Streaming already redraws the screen
-                // every frame so crumbs have no chance to build up, and above all, on a slow
-                // link like SSH a full overwrite (~21KB) overlaps a streaming frame and gets
-                // redrawn at a shifted position over the drawn screen, making **the same
-                // word appear twice** (measured on Termius).
-                if drew_since_heal && !state.running {
-                    // **Force every cell out again without clearing.** clear is what causes
-                    // the flicker — `force_update` bypasses the diff and overwrites every
-                    // cell, wiping the residue in the trailing cell behind a wide character.
+                // **While a turn runs, heal only blank cells.** Streaming already redraws
+                // the screen every frame, but its diff never touches blank cells — when a
+                // wide character turns into a narrow one, the trailing cell stays "blank on
+                // both buffers" and is never redrawn, leaving a glyph crumb on SSH screens.
+                // A full overwrite (~21KB) fixes it but overlaps a streaming frame on slow
+                // links and shows **the same word twice** (measured on Termius). Writing
+                // only blanks costs a few KB, and a space can never corrupt or double
+                // content. The diff skips the cell right after a wide character, so the
+                // blank pass never writes under one.
+                if drew_since_heal {
+                    if state.running {
+                        state.force_update_blank = true;
+                    } else {
+                        state.force_update = true;
+                    }
+                    // **Force cells out again without clearing.** clear is what causes
+                    // the flicker — `AlwaysUpdate` bypasses the diff and overwrites,
+                    // wiping the residue in the trailing cell behind a wide character.
                     // The next draw goes back to the normal diff.
-                    state.force_update = true;
                     terminal.draw(|f| widgets::draw(f, &mut state))?;
                     dirty = false;
                     drew_since_heal = false;
@@ -2390,10 +2458,11 @@ fn shutdown_signals() -> mpsc::Receiver<()> {
                 tokio::time::sleep(SHUTDOWN_FORCE).await;
                 // Even on a forced exit, bracketed paste and the kitty keyboard protocol
                 // are restored on the way out — otherwise the shell keeps wrapping pastes
-                // in one chunk and Shift+Enter stays CSI-u.
-                let _ = execute!(
-                    io::stdout(),
-                    crossterm::event::DisableBracketedPaste,
+                // in one chunk and Shift+Enter stays CSI-u. Restoring also tolerates
+                // failure (Windows' kitty commands always fail — see `terminal_feature`).
+                terminal_feature("bracketed paste off", crossterm::event::DisableBracketedPaste);
+                terminal_feature(
+                    "kitty keyboard protocol off",
                     crossterm::event::PopKeyboardEnhancementFlags,
                 );
                 ratatui::restore();
@@ -4170,5 +4239,137 @@ mod tests {
         // Leaving a repository behind must clear it, not keep the last thing it said.
         apply(&mut s, &Action::Frame(Frame::Git(None)));
         assert_eq!(s.repo, None);
+    }
+
+    /// **An Enter arriving mid-burst becomes a newline** — the paste protection for
+    /// terminals without bracketed paste. But only when Enter really means "send" there.
+    #[test]
+    fn a_burst_enter_while_typing_becomes_a_newline() {
+        let mut s = state();
+        apply(&mut s, &Action::Insert('a'));
+        assert!(
+            enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true),
+            "a burst Enter must be a newline"
+        );
+    }
+
+    /// Outside a burst an Enter is a send — the interval between keys decides.
+    #[test]
+    fn a_lone_enter_is_not_a_paste_newline() {
+        let mut s = state();
+        apply(&mut s, &Action::Insert('a'));
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), false));
+    }
+
+    /// A Windows key-release must not become a newline — the same filtering `on_key` does.
+    #[test]
+    fn a_burst_release_enter_is_not_a_newline() {
+        let mut s = state();
+        apply(&mut s, &Action::Insert('a'));
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(!enter_becomes_newline(&s, &release, true));
+    }
+
+    /// With the command picker open, Enter is a pick. A burst must not swallow it — the
+    /// case where a quick ↓→Enter inserted a newline into `/m` instead of picking.
+    #[test]
+    fn a_burst_enter_does_not_swallow_the_pickers_confirm() {
+        let mut s = state();
+        for c in "/m".chars() {
+            apply(&mut s, &Action::Insert(c));
+        }
+        assert!(s.picker.is_some(), "the command list must be open");
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+    }
+
+    /// With the new-project form open, Enter confirms — it must not be swallowed by a burst.
+    #[test]
+    fn a_burst_enter_does_not_swallow_the_form_confirm() {
+        let mut s = state();
+        s.new_project = Some(crate::newproject::Form::new());
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+    }
+
+    /// With an approval open, Enter deliberately does nothing — a burst turning it into a
+    /// newline would leak text into the invisible input behind it.
+    #[test]
+    fn a_burst_enter_does_not_leak_behind_an_approval() {
+        let mut s = state();
+        apply(&mut s, &Action::Frame(Frame::Ask(ask(1))));
+        apply(&mut s, &Action::Insert('a'));
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+    }
+
+    /// While choosing an answer to a question, Enter confirms — same spot as a list.
+    #[test]
+    fn a_burst_enter_does_not_swallow_the_questions_confirm() {
+        let mut s = state();
+        s.asking = Some((
+            7,
+            crate::question::Answering::new(vec![crate::question::Step {
+                header: None,
+                question: "어느 쪽?".into(),
+                multi: false,
+                options: vec![
+                    crate::question::Opt { label: "A".into(), description: None },
+                    crate::question::Opt { label: "B".into(), description: None },
+                ],
+            }]),
+        ));
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+    }
+
+    /// While typing free text in a question, that input is the send target — pasting
+    /// several lines in a burst must not submit on the first line.
+    #[test]
+    fn a_burst_enter_keeps_multiline_pastes_in_the_free_answer() {
+        let mut s = state();
+        s.asking = Some((
+            7,
+            crate::question::Answering::new(vec![crate::question::Step {
+                header: None,
+                question: "하고 싶은 말?".into(),
+                multi: false,
+                options: vec![],
+            }]),
+        ));
+        {
+            let (_, a) = s.asking.as_mut().unwrap();
+            a.typing = true;
+            a.input.insert_str("한 줄");
+        }
+        assert!(enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+        // An empty field has nothing to newline — it submits as-is.
+        {
+            let (_, a) = s.asking.as_mut().unwrap();
+            a.input.take();
+        }
+        assert!(!enter_becomes_newline(&s, &key(KeyCode::Enter, KeyModifiers::NONE), true));
+    }
+
+    /// **A failing terminal feature does not kill the screen.** On Windows crossterm 0.29's
+    /// kitty keyboard protocol command (`PushKeyboardEnhancementFlags`) dies with
+    /// `Unsupported`. Bundled in one `execute!`, that single command killed the whole
+    /// screen — with no screen, instead of the enrollment code window the shell's waiting
+    /// line was all you saw. The helper swallows the failure and carries on.
+    #[test]
+    fn a_failing_terminal_feature_does_not_kill_the_screen() {
+        // The same failure `PushKeyboardEnhancementFlags` emits on Windows.
+        struct Unsupported;
+        impl crossterm::Command for Unsupported {
+            fn write_ansi(&self, _f: &mut impl std::fmt::Write) -> std::fmt::Result {
+                Ok(())
+            }
+            #[cfg(windows)]
+            fn execute_winapi(&self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "kitty keyboard protocol is not supported on Windows",
+                ))
+            }
+        }
+        // It must pass quietly — only the failed feature is lost, the screen still comes up.
+        terminal_feature("unsupported", Unsupported);
     }
 }

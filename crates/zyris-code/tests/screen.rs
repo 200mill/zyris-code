@@ -240,6 +240,73 @@ fn a_heal_frame_forces_every_cell_to_be_resent() {
     );
 }
 
+/// **A blank-only heal forces only blank cells to be resent.** Residue always hides on a
+/// blank cell — content cells are redrawn whenever they change, so the old glyph has no
+/// place to peek through. A full rewrite overlapped a streaming frame on a slow SSH link
+/// and showed the same word twice; writing only spaces can never corrupt or double content.
+///
+/// The cell right after a wide character (a blank) also gets `AlwaysUpdate` planted, but the
+/// diff always skips it (`cell_width > 1` branch) — the wide char's right half is never
+/// erased. That is pinned by `a_blank_heal_never_marks_a_wide_char_itself`.
+#[test]
+fn a_blank_heal_forces_only_blank_cells_to_be_resent() {
+    let mut s = State::new();
+    s.sidebar_on = false;
+    said(&mut s, 1, EntryKind::Agent("안녕하세요".into()));
+    s.force_update_blank = true;
+
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    let frame = term.draw(|f| widgets::draw(f, &mut s)).unwrap();
+    assert!(!s.force_update_blank, "the force flag must clear after one frame");
+    let blank_count = frame.buffer.content.iter().filter(|c| c.symbol() == " ").count();
+    assert!(blank_count > 0, "화면에 빈 칸이 하나도 없다 — 테스트가 헛돈다");
+    assert!(
+        frame.buffer.content.iter().all(|c| {
+            c.diff_option == ratatui::buffer::CellDiffOption::AlwaysUpdate || c.symbol() != " "
+        }),
+        "빈 칸은 강제 재출력, 내용 칸은 그대로여야 한다"
+    );
+
+    // The next draw goes back to a normal diff — the flag was cleared, so no AlwaysUpdate remains.
+    let frame2 = term.draw(|f| widgets::draw(f, &mut s)).unwrap();
+    assert!(
+        frame2
+            .buffer
+            .content
+            .iter()
+            .all(|c| { c.diff_option == ratatui::buffer::CellDiffOption::None }),
+        "한 프레임 뒤에는 일반 diff로 돌아와야 한다"
+    );
+}
+
+/// **A blank heal never marks a wide char itself.** The trailing cell behind a wide
+/// character is blank, so `AlwaysUpdate` gets planted on it — but the diff always skips it
+/// when emitting the wide char, or the right half of the glyph would be erased. The heal
+/// only plants blanks, so the wide char's own cell is never a target in the first place.
+#[test]
+fn a_blank_heal_never_marks_a_wide_char_itself() {
+    let mut s = State::new();
+    s.sidebar_on = false;
+    said(&mut s, 1, EntryKind::Agent("안녕".into()));
+    s.force_update_blank = true;
+
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    let frame = term.draw(|f| widgets::draw(f, &mut s)).unwrap();
+
+    let mut wide_chars = 0;
+    for c in frame.buffer.content.iter() {
+        let w = c.symbol().chars().next().map(unicode_width::UnicodeWidthChar::width);
+        if w.is_some_and(|w| w.unwrap_or(0) > 1) {
+            wide_chars += 1;
+            assert!(
+                c.diff_option != ratatui::buffer::CellDiffOption::AlwaysUpdate,
+                "전각 글자 자체에 강제 재출력을 심으면 안 된다"
+            );
+        }
+    }
+    assert!(wide_chars > 0, "전각 글자가 하나도 없다 — 테스트가 헛돈다");
+}
+
 /// **With a background, the trailing cell goes out on the wire when a wide char becomes a narrow one.**
 /// A single space must actually be written after 'a' — that space erases the wide char's right half.
 /// (The cursor already sits there, so only the space goes out, no cursor movement.)

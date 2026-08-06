@@ -165,6 +165,18 @@ pub fn draw(frame: &mut Frame, state: &mut State) {
             cell.set_diff_option(CellDiffOption::AlwaysUpdate);
         }
     }
+    // **Blank-only heal while a turn runs.** Residue always hides on blank cells, and a
+    // space is safe to overlap with anything — on a slow SSH link it can never show the
+    // same word twice the way a full rewrite did. The diff skips the cell right after a
+    // wide character, so the blank pass never writes under one.
+    if std::mem::take(&mut state.force_update_blank) {
+        use ratatui::buffer::CellDiffOption;
+        for cell in frame.buffer_mut().content.iter_mut() {
+            if cell.symbol() == " " {
+                cell.set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+        }
+    }
 
     // **Mouse selection covers the whole screen — blank space included.** Invert every cell
     // under the drag so the selection is visible everywhere: the transcript, the sidebar, the
