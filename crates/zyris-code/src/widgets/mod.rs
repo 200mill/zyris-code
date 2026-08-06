@@ -191,6 +191,51 @@ pub fn draw(frame: &mut Frame, state: &mut State) {
     // must always match the frame that is about to be shown. Cheap: a few thousand string
     // appends per frame against a full terminal redraw.
     state.screen = screen_rows(frame.buffer_mut());
+
+    // **Make links Ctrl+clickable.** The terminal opens an OSC 8 hyperlink on Ctrl+click, so
+    // the cells under a link get the hyperlink escape sequence. Runs after the `screen`
+    // snapshot — the snapshot must hold plain text, not escape sequences, for mouse selection.
+    // The diff sees the escaped symbols, so a changed link rewrites its cells and a removed
+    // one reverts to plain.
+    inject_links(frame, state);
+}
+
+/// Wraps the cells under each visible link in an OSC 8 hyperlink sequence, so the terminal
+/// opens the URL on Ctrl+click.
+///
+/// The escape sequence becomes part of the cell symbol. `ForcedWidth` tells the diff how many
+/// columns the cell really occupies — without it, the escape bytes would inflate the computed
+/// width and the diff would misplace every following cell. A wide glyph advances the column by
+/// its own width (2), so its empty placeholder cell is never visited and never written over.
+fn inject_links(frame: &mut Frame, state: &State) {
+    use ratatui::buffer::CellDiffOption;
+    use std::num::NonZeroU16;
+
+    if state.view_links.is_empty() {
+        return;
+    }
+    let (ox, oy) = state.view_origin;
+    for (i, links) in state.view_links.iter().enumerate() {
+        let y = oy + i as u16;
+        for link in links {
+            let open = format!("\x1b]8;;{}\x1b\\", link.url);
+            let mut col = link.start;
+            while col < link.end {
+                let x = ox + col as u16;
+                let Some(cell) = frame.buffer_mut().cell_mut((x, y)) else { break };
+                let sym = cell.symbol().to_string();
+                let w = crate::markdown::display_width(&sym).max(1) as u16;
+                // Wide glyphs occupy two buffer cells (the second is an empty placeholder).
+                // Advancing by the glyph's own width skips that placeholder, so it is never
+                // written over — the wide char's trailing column stays intact.
+                cell.set_symbol(&format!("{open}{sym}\x1b]8;;\x1b\\"));
+                cell.set_diff_option(CellDiffOption::ForcedWidth(
+                    NonZeroU16::new(w).expect("a glyph is at least one column wide"),
+                ));
+                col += w as usize;
+            }
+        }
+    }
 }
 
 /// The visible text of the frame, one row per screen line. Mouse selection reads from this —

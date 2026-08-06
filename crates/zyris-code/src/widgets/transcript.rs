@@ -33,6 +33,10 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &mut State) {
 
     // **Build only the visible lines.** Building all of them would grow with the conversation length and blow the frame budget.
     let mut shown = state.rows_cache.window(start, end);
+    // The links on those same lines, in the same order. `widgets::draw` wraps the link cells
+    // in OSC 8 (Ctrl+click) using these — they are in **display columns of the line as drawn**,
+    // so the injection needs no further mapping beyond `view_origin`.
+    state.view_links = state.rows_cache.window_links(start, end);
     // Stretch lines with a background to the screen edge. The selection highlight is applied
     // over the whole frame after every widget drew (`widgets::draw`), so it covers this
     // stretched space in the same block.

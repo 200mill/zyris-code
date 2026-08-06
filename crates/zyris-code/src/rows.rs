@@ -56,6 +56,8 @@ pub struct Rendered {
     pub lines: Vec<Line<'static>>,
     /// Row index → the seq of the card that clicking that row folds and unfolds.
     pub cards: HashMap<usize, i64>,
+    /// The links on each line, in that line's display columns.
+    pub links: Vec<Vec<crate::markdown::Link>>,
 }
 
 impl Rendered {
@@ -88,13 +90,20 @@ pub fn rows_with(
 ) -> Rendered {
     let mut cache = Cache::new();
     cache.layout(items, width, folds, active.map(|a| a.seq), lang);
-    Rendered { lines: cache.window(0, cache.total()), cards: cache.cards().clone() }
+    let total = cache.total();
+    Rendered {
+        lines: cache.window(0, total),
+        cards: cache.cards().clone(),
+        links: cache.window_links(0, total),
+    }
 }
 
 /// The result of rendering one item.
 #[derive(Debug, Clone)]
 struct Made {
     lines: Vec<Line<'static>>,
+    /// The links on each line, in that line's display columns. Parallel to `lines`.
+    links: Vec<Vec<crate::markdown::Link>>,
     /// The lines that fold/unfold when clicked. (which line within this item, which seq).
     ///
     /// There's one work-card head, plus one per tool row inside it —
@@ -254,6 +263,35 @@ impl Cache {
         out
     }
 
+    /// The links on the lines `window` returns, in the same order. The blank separator
+    /// line between items has no links — the drawing side wraps link cells in OSC 8
+    /// (Ctrl+click) using these, so they must match `window` line for line.
+    pub fn window_links(&self, from: usize, to: usize) -> Vec<Vec<crate::markdown::Link>> {
+        let to = to.min(self.total);
+        if from >= to {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(to - from);
+        for slot in &self.slots {
+            if slot.end() <= from {
+                continue;
+            }
+            if slot.begin >= to {
+                break;
+            }
+            let made = &self.made[&slot.seq].2;
+            for i in slot.begin.max(from)..slot.end().min(to) {
+                let inner = i - slot.begin;
+                out.push(match (slot.lead_blank, inner) {
+                    (true, 0) => Vec::new(),
+                    (true, n) => made.links[n - 1].clone(),
+                    (false, n) => made.links[n].clone(),
+                });
+            }
+        }
+        out
+    }
+
     /// Plain text of all lines. **Only called when copying a selection** — never per frame.
     pub fn plain(&self) -> Vec<String> {
         self.window(0, self.total)
@@ -268,8 +306,14 @@ fn blank() -> Line<'static> {
 }
 
 /// Lays one item out into lines. This is the only place markdown is parsed.
+///
+/// Alongside the lines it records the links on each line (shifted by the marker prefix), so the
+/// drawing side can wrap link cells in OSC 8 — Ctrl+click then opens them. `links` is kept in
+/// lockstep with `out`: **every** line pushed must push a link entry, empty unless the line's
+/// text came from a link.
 fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made {
     let mut out: Vec<Line<'static>> = Vec::new();
+    let mut links: Vec<Vec<crate::markdown::Link>> = Vec::new();
     let mut heads: Vec<(usize, i64)> = Vec::new();
     let fold = folds.get(&item.seq()).copied().unwrap_or_default();
     match item {
@@ -295,7 +339,10 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                 if typed {
                     spans.push(Span::styled("✎ ", Style::default().fg(theme::ACCENT_HOVER)));
                 }
-                for line in markdown::render(body, body_width(width)) {
+                let prefix_w =
+                    spans.iter().map(|s| markdown::display_width(&s.content)).sum::<usize>();
+                let rendered = markdown::render_rich(body, body_width(width));
+                for (li, line) in rendered.lines.into_iter().enumerate() {
                     let mut row = spans.clone();
                     row.extend(line.spans.into_iter().map(|sp| {
                         if typed {
@@ -309,6 +356,7 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                     // travel through `plain()` into the clipboard. Stretching to the screen width is
                     // done where it draws (`widgets::transcript::stretch`).
                     out.push(Line::from(row).style(Style::default().bg(theme::USER_BG)));
+                    links.push(shift_links(&rendered.links[li], prefix_w));
                     spans = vec![Span::styled("▌ ", Style::default().fg(theme::ACCENT))];
                 }
             }
@@ -320,13 +368,17 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
             // **The marker goes on the first line only.** On every line it reads like a blockquote, and since an answer is
             // the longest chunk in the conversation, that effect would cover the screen. With no marker at all,
             // only the answer lacks a sign — not "clean by default" but simply undifferentiated.
-            for (i, line) in markdown::render(text, body_width(width)).into_iter().enumerate() {
+            let rendered = markdown::render_rich(text, body_width(width));
+            for (i, line) in rendered.lines.into_iter().enumerate() {
                 let mut spans = match i {
                     0 => vec![Span::styled("◆ ", Style::default().fg(theme::ACCENT))],
                     _ => vec![pad()],
                 };
+                let prefix_w =
+                    spans.iter().map(|s| markdown::display_width(&s.content)).sum::<usize>();
                 spans.extend(line.spans);
                 out.push(Line::from(spans));
+                links.push(shift_links(&rendered.links[i], prefix_w));
             }
         }
         Item::Error { message, .. } => {
@@ -334,20 +386,28 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                 Span::styled("● ", Style::default().fg(theme::DANGER)),
                 Span::styled(message.clone(), Style::default().fg(theme::DANGER)),
             ]));
+            links.push(Vec::new());
         }
         // The question being answered doesn't come here — `layout` filters it out.
         Item::Question { steps, answered, .. } => {
-            out.extend(question_rows(steps, *answered, width, lang));
+            let rows = question_rows(steps, *answered, width, lang);
+            let n = rows.len();
+            out.extend(rows);
+            links.extend(std::iter::repeat_with(Vec::new).take(n));
         }
         // What the app said. It's a third voice that is neither person nor agent, so it gets its own marker.
         Item::System { text, .. } => {
-            for (i, line) in markdown::render(text, body_width(width)).into_iter().enumerate() {
+            let rendered = markdown::render_rich(text, body_width(width));
+            for (i, line) in rendered.lines.into_iter().enumerate() {
                 let mut spans = vec![Span::styled(
                     if i == 0 { "◈ " } else { "  " },
                     Style::default().fg(theme::TEXT_MUTED),
                 )];
+                let prefix_w =
+                    spans.iter().map(|s| markdown::display_width(&s.content)).sum::<usize>();
                 spans.extend(line.spans);
                 out.push(Line::from(spans));
+                links.push(shift_links(&rendered.links[i], prefix_w));
             }
         }
         Item::Subagent { summary, .. } => {
@@ -355,6 +415,7 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                 Span::styled("└ ", Style::default().fg(theme::TEXT_MUTED)),
                 Span::styled(summary.clone(), Style::default().fg(theme::TEXT_MUTED)),
             ]));
+            links.push(Vec::new());
         }
         Item::Work { seq, title, parts } => {
             let marker = if fold.open { "▾ " } else { "▸ " };
@@ -389,6 +450,7 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                 card.extend(counts(added, removed));
             }
             out.push(Line::from(card));
+            links.push(Vec::new());
 
             // **Tool rows show even when folded.** Folding a card hides reasoning, not what was
             // done — tool use is part of the conversation's flow, and buried under thinking
@@ -400,10 +462,15 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                     Part::Think(text) if fold.open => {
                         // **Thinking lines can fold and unfold the card by click too.** The same action
                         // as Ctrl+O — a click toggles the card fold, it doesn't open tool detail.
-                        for line in markdown::render(text, body_width(width)) {
+                        let rendered = markdown::render_rich(text, body_width(width));
+                        for (li, line) in rendered.lines.into_iter().enumerate() {
                             heads.push((out.len(), *seq));
                             let mut spans =
                                 vec![Span::styled("┊ ", Style::default().fg(theme::BORDER_LIGHT))];
+                            let prefix_w = spans
+                                .iter()
+                                .map(|s| markdown::display_width(&s.content))
+                                .sum::<usize>();
                             // The whole body is repainted dim. At the same brightness as the answer,
                             // the conclusion wouldn't be visible — losing emphasis and inline
                             // code colours inside reasoning is the price paid for that.
@@ -411,21 +478,26 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                                 Span::styled(s.content.to_string(), s.style.fg(theme::TEXT_MUTED))
                             }));
                             out.push(Line::from(spans));
+                            links.push(shift_links(&rendered.links[li], prefix_w));
                         }
                     }
                     Part::Text(text) => {
                         // **A run-time message.** It shows even when folded — folding a card hides reasoning,
                         // not the conversation flow. Same policy as tool rows. Not a click target — unlike thinking lines,
                         // a message is content, not a handle.
-                        for (i, line) in
-                            markdown::render(text, body_width(width)).into_iter().enumerate()
-                        {
-                            let mut spans = vec![match i {
+                        let rendered = markdown::render_rich(text, body_width(width));
+                        for (li, line) in rendered.lines.into_iter().enumerate() {
+                            let mut spans = vec![match li {
                                 0 => Span::styled("◆ ", Style::default().fg(theme::ACCENT)),
                                 _ => pad(),
                             }];
+                            let prefix_w = spans
+                                .iter()
+                                .map(|s| markdown::display_width(&s.content))
+                                .sum::<usize>();
                             spans.extend(line.spans);
                             out.push(Line::from(spans));
+                            links.push(shift_links(&rendered.links[li], prefix_w));
                         }
                     }
                     Part::Step(step) => {
@@ -472,6 +544,7 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                             Style::default().fg(theme::BORDER_LIGHT),
                         ));
                         out.push(Line::from(head));
+                        links.push(Vec::new());
                         if open {
                             match &step.diff {
                                 // **When a diff exists, only it is shown.** Layering the same content as JSON once more
@@ -479,6 +552,7 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                                 Some(d) => {
                                     for line in &d.lines {
                                         out.push(diff_line(line, body_width(width) as usize, lang));
+                                        links.push(Vec::new());
                                     }
                                 }
                                 // Detail is drawn **per section**. `event::tool_detail` assembles it with
@@ -486,12 +560,15 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
                                 // looked like one lump, the eye would have to re-read every time
                                 // what's an argument and what's a result.
                                 None => {
-                                    out.extend(tool_detail_lines(
+                                    let detail = tool_detail_lines(
                                         &step.detail,
                                         body_width(width),
                                         step.failed,
                                         lang,
-                                    ));
+                                    );
+                                    let n = detail.len();
+                                    out.extend(detail);
+                                    links.extend(std::iter::repeat_with(Vec::new).take(n));
                                 }
                             }
                         }
@@ -501,7 +578,19 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
             }
         }
     }
-    Made { lines: out, heads }
+    Made { lines: out, links, heads }
+}
+
+/// Shifts link columns by the marker prefix width so they land in the output line's columns.
+fn shift_links(links: &[crate::markdown::Link], shift: usize) -> Vec<crate::markdown::Link> {
+    links
+        .iter()
+        .map(|l| crate::markdown::Link {
+            start: l.start + shift,
+            end: l.end + shift,
+            url: l.url.clone(),
+        })
+        .collect()
 }
 
 /// The `  +12 −3` attached to summary lines.

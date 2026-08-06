@@ -84,6 +84,10 @@ pub const TOOL: Color = Color::Rgb(0x7f, 0xb0, 0xd4);
 /// The tool line's argument summary. One step below the name.
 pub const TOOL_ARG: Color = Color::Rgb(0x6b, 0x8a, 0xa0);
 
+/// A link's text. Underlined in the renderer; the underline plus a distinct color is what
+/// signals "this can be Ctrl+clicked" without needing a mouse hover in a terminal.
+pub const LINK: Color = Color::Rgb(0x7f, 0xb0, 0xd4);
+
 /// The added line in a diff. Green.
 ///
 /// `SUCCESS`·`DANGER` aren't used as-is. Those two say "tool worked / didn't work", so if a

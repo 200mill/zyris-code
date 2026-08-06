@@ -19,7 +19,35 @@ pub fn display_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
+/// A link on one output line, in that line's display columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    /// First display column, inclusive.
+    pub start: usize,
+    /// Last display column, exclusive.
+    pub end: usize,
+    pub url: String,
+}
+
+/// What `render_rich` produced: the lines plus, per line, the links on it.
+#[derive(Debug, Default)]
+pub struct Rendered {
+    pub lines: Vec<Line<'static>>,
+    pub links: Vec<Vec<Link>>,
+}
+
 pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
+    render_rich(src, width).lines
+}
+
+/// One span plus the link it belongs to, if any. `flush` needs the URL to record
+/// link ranges as it wraps words into lines.
+struct Piece {
+    span: Span<'static>,
+    url: Option<String>,
+}
+
+pub fn render_rich(src: &str, width: u16) -> Rendered {
     let owned;
     let src = match optimistic_table(src) {
         Some(fixed) => {
@@ -30,11 +58,18 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
     };
     let width = width.max(8) as usize;
     let mut out: Vec<Line<'static>> = Vec::new();
-    let mut buf: Vec<Span<'static>> = Vec::new();
+    let mut out_links: Vec<Vec<Link>> = Vec::new();
+    let mut buf: Vec<Piece> = Vec::new();
     let mut style = Style::default().fg(theme::TEXT);
     let mut in_code = false;
     let mut list_depth: usize = 0;
     let mut table: Option<Table> = None;
+    // The link currently being read. Its text carries this URL. `None` outside a link.
+    let mut cur_link: Option<String> = None;
+    // The style to restore when the current link ends. Links cannot nest (CommonMark),
+    // so one slot is enough. Without it, a link inside a blockquote would leave the rest
+    // of the quote in plain `TEXT`.
+    let mut link_saved: Option<Style> = None;
 
     let parser = Parser::new_ext(src, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES);
     for event in parser {
@@ -43,7 +78,7 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
                 style = Style::default().fg(theme::TEXT_HEADING).add_modifier(Modifier::BOLD);
             }
             Event::End(TagEnd::Heading(_)) => {
-                flush(&mut out, &mut buf, width, "");
+                flush(&mut out, &mut out_links, &mut buf, width, "");
                 style = Style::default().fg(theme::TEXT);
             }
             Event::Start(Tag::Emphasis) => style = style.add_modifier(Modifier::ITALIC),
@@ -54,20 +89,23 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
             Event::End(TagEnd::Strong) => style = Style::default().fg(theme::TEXT),
             Event::Start(Tag::BlockQuote(_)) => style = Style::default().fg(theme::TEXT_MUTED),
             Event::End(TagEnd::BlockQuote(_)) => {
-                flush(&mut out, &mut buf, width, "│ ");
+                flush(&mut out, &mut out_links, &mut buf, width, "│ ");
                 style = Style::default().fg(theme::TEXT);
             }
             Event::Start(Tag::List(_)) => list_depth += 1,
             Event::End(TagEnd::List(_)) => list_depth = list_depth.saturating_sub(1),
             Event::Start(Tag::Item) => {
-                buf.push(Span::styled(
-                    format!("{}· ", "  ".repeat(list_depth.saturating_sub(1))),
-                    Style::default().fg(theme::ACCENT),
-                ));
+                buf.push(Piece {
+                    span: Span::styled(
+                        format!("{}· ", "  ".repeat(list_depth.saturating_sub(1))),
+                        Style::default().fg(theme::ACCENT),
+                    ),
+                    url: None,
+                });
             }
-            Event::End(TagEnd::Item) => flush(&mut out, &mut buf, width, "  "),
+            Event::End(TagEnd::Item) => flush(&mut out, &mut out_links, &mut buf, width, "  "),
             Event::Start(Tag::CodeBlock(kind)) => {
-                flush(&mut out, &mut buf, width, "");
+                flush(&mut out, &mut out_links, &mut buf, width, "");
                 let lang = match &kind {
                     CodeBlockKind::Fenced(l) if !l.is_empty() => l.to_string(),
                     _ => String::new(),
@@ -76,10 +114,12 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
                     format!("┌─ {lang} "),
                     Style::default().fg(theme::BORDER_LIGHT),
                 )));
+                out_links.push(Vec::new());
                 in_code = true;
             }
             Event::End(TagEnd::CodeBlock) => {
                 out.push(Line::from(Span::styled("└─", Style::default().fg(theme::BORDER_LIGHT))));
+                out_links.push(Vec::new());
                 in_code = false;
             }
             Event::Code(t) => {
@@ -87,7 +127,10 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
                 if let Some(tb) = &mut table {
                     tb.cell.push_str(&t);
                 } else {
-                    buf.push(Span::styled(t.to_string(), Style::default().fg(theme::ACCENT)));
+                    buf.push(Piece {
+                        span: Span::styled(t.to_string(), Style::default().fg(theme::ACCENT)),
+                        url: cur_link.clone(),
+                    });
                 }
             }
             Event::Text(t) if in_code => {
@@ -96,18 +139,33 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
                         Span::styled("│ ", Style::default().fg(theme::BORDER_LIGHT)),
                         Span::styled(raw.to_string(), Style::default().fg(theme::TEXT)),
                     ]));
+                    out_links.push(Vec::new());
                 }
+            }
+            // A link. Its text renders styled (underlined) and **its URL rides along** so the
+            // drawing side can wrap the cells in OSC 8 — that is what makes Ctrl+click open it.
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                cur_link = Some(dest_url.to_string());
+                link_saved = Some(style);
+                style = Style::default().fg(theme::LINK).add_modifier(Modifier::UNDERLINED);
+            }
+            Event::End(TagEnd::Link) => {
+                cur_link = None;
+                style = link_saved.take().unwrap_or(Style::default().fg(theme::TEXT));
             }
             // --- table ---------------------------------------------------------
             // Cell text is collected, then drawn once with widths aligned when the table ends. Column
             // widths need every row, so they can't be drawn midway.
             Event::Start(Tag::Table(_)) => {
-                flush(&mut out, &mut buf, width, "");
+                flush(&mut out, &mut out_links, &mut buf, width, "");
                 table = Some(Table::default());
             }
             Event::End(TagEnd::Table) => {
                 if let Some(t) = table.take() {
-                    out.extend(t.render(width));
+                    for line in t.render(width) {
+                        out.push(line);
+                        out_links.push(Vec::new());
+                    }
                 }
             }
             Event::Start(Tag::TableHead) => {
@@ -136,18 +194,25 @@ pub fn render(src: &str, width: u16) -> Vec<Line<'static>> {
                     tb.cell.push_str(&t);
                 }
             }
-            Event::Text(t) => buf.push(Span::styled(t.to_string(), style)),
-            Event::SoftBreak | Event::HardBreak => buf.push(Span::styled(" ", style)),
-            Event::End(TagEnd::Paragraph) => flush(&mut out, &mut buf, width, ""),
-            Event::Rule => out.push(Line::from(Span::styled(
-                "─".repeat(width),
-                Style::default().fg(theme::BORDER),
-            ))),
+            Event::Text(t) => {
+                buf.push(Piece { span: Span::styled(t.to_string(), style), url: cur_link.clone() })
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                buf.push(Piece { span: Span::styled(" ", style), url: cur_link.clone() })
+            }
+            Event::End(TagEnd::Paragraph) => flush(&mut out, &mut out_links, &mut buf, width, ""),
+            Event::Rule => {
+                out.push(Line::from(Span::styled(
+                    "─".repeat(width),
+                    Style::default().fg(theme::BORDER),
+                )));
+                out_links.push(Vec::new());
+            }
             _ => {}
         }
     }
-    flush(&mut out, &mut buf, width, "");
-    out
+    flush(&mut out, &mut out_links, &mut buf, width, "");
+    Rendered { lines: out, links: out_links }
 }
 
 /// **Pre-draws as a table** one whose delimiter row hasn't arrived yet during streaming.
@@ -378,32 +443,72 @@ fn truncate_to(s: &str, limit: usize) -> String {
 }
 
 /// Folds accumulated spans into lines at the width. Fullwidth counts as 2 columns.
-fn flush(out: &mut Vec<Line<'static>>, buf: &mut Vec<Span<'static>>, width: usize, indent: &str) {
+///
+/// Along with each line it records the links on it — a word that carries a URL opens a
+/// range at its column, and the range closes when the next word has a different URL (or none).
+fn flush(
+    out: &mut Vec<Line<'static>>,
+    out_links: &mut Vec<Vec<Link>>,
+    buf: &mut Vec<Piece>,
+    width: usize,
+    indent: &str,
+) {
     if buf.is_empty() {
         return;
     }
     let indent_w = display_width(indent);
     let limit = width.saturating_sub(indent_w).max(1);
     let mut line: Vec<Span<'static>> = Vec::new();
+    let mut links: Vec<Link> = Vec::new();
     let mut used = 0usize;
+    // The link currently being placed on this line, and the column it started at.
+    let mut open: Option<(usize, String)> = None;
 
-    for span in buf.drain(..) {
-        for word in split_keeping_spaces(&span.content) {
+    for piece in buf.drain(..) {
+        for word in split_keeping_spaces(&piece.span.content) {
             let w = display_width(&word);
             if used + w > limit && used > 0 {
+                // Close the open link at the end of this line; the next line reopens it.
+                if let Some((start, url)) = open.take() {
+                    links.push(Link { start, end: used, url });
+                }
                 out.push(Line::from(std::mem::take(&mut line)));
+                out_links.push(std::mem::take(&mut links));
                 used = 0;
                 // Leading spaces carried onto a new line are dropped — they'd look like indentation.
                 if word.trim().is_empty() {
                     continue;
                 }
             }
+            match (&open, &piece.url) {
+                // Same link continues. Nothing to record.
+                (Some((_, u)), Some(wurl)) if u == wurl => {}
+                // Opening a link at this word's column.
+                (None, Some(wurl)) => open = Some((used, wurl.clone())),
+                // A different link starts — close the previous one first.
+                (Some(_), Some(wurl)) => {
+                    if let Some((start, url)) = open.take() {
+                        links.push(Link { start, end: used, url });
+                    }
+                    open = Some((used, wurl.clone()));
+                }
+                // Non-link text closes any open link.
+                (_, None) => {
+                    if let Some((start, url)) = open.take() {
+                        links.push(Link { start, end: used, url });
+                    }
+                }
+            }
             used += w;
-            line.push(Span::styled(word, span.style));
+            line.push(Span::styled(word, piece.span.style));
         }
+    }
+    if let Some((start, url)) = open.take() {
+        links.push(Link { start, end: used, url });
     }
     if !line.is_empty() {
         out.push(Line::from(line));
+        out_links.push(links);
     }
 }
 
@@ -437,6 +542,60 @@ mod tests {
 
     fn plain(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
         lines.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect()
+    }
+
+    /// A link's URL rides along so the drawing side can wrap the cells in OSC 8.
+    #[test]
+    fn a_link_records_its_range_and_url() {
+        let r = render_rich("[문서](https://example.com/x) 끝", 40);
+        let text = plain(&r.lines).join("\n");
+        assert!(text.contains("문서"), "{text:?}");
+        let links = &r.links[0];
+        assert_eq!(links.len(), 1, "{links:?}");
+        let l = &links[0];
+        assert_eq!(l.url, "https://example.com/x");
+        // The range is in display columns; walk the text by display width to compare.
+        let mut col = 0usize;
+        let mut covered = String::new();
+        for ch in text.chars() {
+            let w = display_width(&ch.to_string());
+            if col >= l.start && col + w <= l.end {
+                covered.push(ch);
+            }
+            col += w;
+        }
+        assert_eq!(covered, "문서", "the range must cover the link text");
+    }
+
+    /// Two links on one line are separate ranges with their own URLs.
+    #[test]
+    fn two_links_on_one_line_are_separate_ranges() {
+        let r = render_rich("[a](https://a) [b](https://b)", 40);
+        let links = &r.links[0];
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].url, "https://a");
+        assert_eq!(links[1].url, "https://b");
+        assert!(links[0].end <= links[1].start);
+    }
+
+    /// A link split across a wrap still marks both parts.
+    #[test]
+    fn a_link_wrapping_over_lines_marks_each_line() {
+        let r = render_rich("[abcdefghijklmnop](https://x)", 8);
+        let ranges: Vec<usize> = r.links.iter().map(|l| l.len()).collect();
+        assert!(ranges.iter().any(|&n| n > 0), "no line carries the link: {ranges:?}");
+        for links in &r.links {
+            for l in links {
+                assert_eq!(l.url, "https://x");
+            }
+        }
+    }
+
+    /// A bare URL in plain text is not a link — only `[text](url)` and autolinks are.
+    #[test]
+    fn a_bare_url_in_plain_text_is_not_a_link() {
+        let r = render_rich("가 https://example.com 나", 40);
+        assert!(r.links.iter().all(|l| l.is_empty()), "{r:?}");
     }
 
     /// Fullwidth is 2 columns. Counting by bytes or chars goes wrong for Korean.

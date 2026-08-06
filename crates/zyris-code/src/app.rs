@@ -250,6 +250,10 @@ pub struct State {
     pub rows_cache: crate::rows::Cache,
     /// Row index → seq of the card that pressing that row folds and unfolds.
     pub view_cards: std::collections::HashMap<usize, i64>,
+    /// The links on the visible transcript lines, in screen coordinates' line order.
+    /// `transcript::draw` fills it from the rows cache; `widgets::draw` wraps those cells
+    /// in OSC 8 so the terminal makes them Ctrl+clickable.
+    pub view_links: Vec<Vec<crate::markdown::Link>>,
     /// The selected range, in **screen** coordinates. **It survives releasing the mouse** — if
     /// it vanished on release there would be no moment to press Ctrl+C. Scrolling drops it
     /// (`Action::Wheel`): it is anchored to the screen, so the text under it would no longer
@@ -401,6 +405,7 @@ impl Default for State {
             view_top: 0,
             rows_cache: crate::rows::Cache::new(),
             view_cards: std::collections::HashMap::new(),
+            view_links: Vec::new(),
             drag: None,
             dragging: false,
             screen: Vec::new(),

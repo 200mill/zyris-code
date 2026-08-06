@@ -1743,3 +1743,40 @@ fn without_git_the_rule_resumes_right_after_the_path() {
     let screen = dump(&mut state, 80, 24);
     assert!(screen.contains("─ ~/zyris-code ─"), "{screen}");
 }
+
+/// A link in an agent answer is wrapped in an OSC 8 hyperlink sequence, so the terminal
+/// opens it on Ctrl+click. The escape sequence lives in the cell symbol — this inspects
+/// the buffer directly, because `dump` counts the escape bytes as width and skips cells.
+#[test]
+fn a_link_in_an_answer_is_wrapped_in_osc8() {
+    let mut s = State::new();
+    s.sidebar_on = false;
+    said(&mut s, 1, EntryKind::Agent("[문서](https://example.com/x) 끝".into()));
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| widgets::draw(f, &mut s)).unwrap();
+    let buf = term.backend().buffer().clone();
+    let syms: Vec<String> = buf.content.iter().map(|c| c.symbol().to_string()).collect();
+    assert!(
+        syms.iter().any(|sym| sym.starts_with("\u{1b}]8;;https://example.com/x")),
+        "no OSC 8 open sequence: {syms:?}"
+    );
+    assert!(
+        syms.iter().any(|sym| sym.contains("\u{1b}]8;;\u{1b}\\")),
+        "no OSC 8 close sequence: {syms:?}"
+    );
+}
+
+/// A bare URL in plain text is not wrapped — the terminal detects those itself.
+#[test]
+fn a_bare_url_in_an_answer_is_not_wrapped() {
+    let mut s = State::new();
+    s.sidebar_on = false;
+    said(&mut s, 1, EntryKind::Agent("가 https://example.com 나".into()));
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| widgets::draw(f, &mut s)).unwrap();
+    let buf = term.backend().buffer().clone();
+    assert!(
+        buf.content.iter().all(|c| !c.symbol().starts_with("\u{1b}]8;;")),
+        "a bare URL must not be wrapped in OSC 8"
+    );
+}
