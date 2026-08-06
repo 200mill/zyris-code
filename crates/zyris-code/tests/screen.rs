@@ -1715,3 +1715,31 @@ fn the_default_mode_is_not_just_grey() {
     let y = 24 - 1;
     assert_eq!(cell_fg(&mut s, 80, 24, 0, y), Some(zyris_code::theme::SUCCESS));
 }
+
+/// The divider above the input carries the working directory and what git says about it.
+///
+/// **Without it nobody can tell which checkout the `src/app.rs` on a tool line belongs to** —
+/// this machine keeps several side by side.
+#[test]
+fn the_divider_above_the_input_carries_the_working_directory() {
+    let mut state = State::new();
+    state.home = Some(std::path::PathBuf::from("/home/ruma"));
+    state.cwd = std::path::PathBuf::from("/home/ruma/zyris-code");
+    state.repo =
+        Some(zyris_code::repo::Repo { branch: "main".into(), staged: 2, ..Default::default() });
+    let screen = dump(&mut state, 80, 24);
+    assert!(screen.contains("~/zyris-code"), "{screen}");
+    assert!(screen.contains("⎇ main +2"), "{screen}");
+}
+
+/// **No git, no residue.** On a machine without git the rule must resume right after the path —
+/// a dangling separator is what the piece-list design exists to prevent.
+#[test]
+fn without_git_the_rule_resumes_right_after_the_path() {
+    let mut state = State::new();
+    state.home = Some(std::path::PathBuf::from("/home/ruma"));
+    state.cwd = std::path::PathBuf::from("/home/ruma/zyris-code");
+    state.repo = None;
+    let screen = dump(&mut state, 80, 24);
+    assert!(screen.contains("─ ~/zyris-code ─"), "{screen}");
+}

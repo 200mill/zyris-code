@@ -42,9 +42,14 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State) {
     let rows = area.height.saturating_sub(1).max(1) as usize;
     let start = (crow as usize + 1).saturating_sub(rows).min(wrapped.len().saturating_sub(1));
 
-    let mut lines = vec![Line::from(Span::styled(
-        "─".repeat(area.width as usize),
-        Style::default().fg(theme::BORDER),
+    // **The strip belongs to the ordinary input state only.** This row is shared with `ask`,
+    // which paints it `ACCENT` to say "this is a question", and with `approve`, which draws no
+    // rule at all. Putting standing context into either would blunt a signal doing real work.
+    let mut lines = vec![Line::from(crate::repo::spans(
+        area.width,
+        &state.cwd,
+        state.home.as_deref(),
+        state.repo.as_ref(),
     ))];
     for (i, text) in wrapped[start..].iter().take(rows).enumerate() {
         // The prompt is only on the first line. Continuation lines start at the same column so the text stays tidy.

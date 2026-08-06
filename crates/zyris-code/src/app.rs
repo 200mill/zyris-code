@@ -1834,6 +1834,14 @@ async fn run_inner(
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(frame_interval());
     let mut poll = tokio::time::interval(POLL_INTERVAL);
+    // Off means the branch is simply never polled — the strip then shows the path alone.
+    let git_every = crate::repo::poll_interval();
+    let git_on = git_every.is_some();
+    let mut git = tokio::time::interval(git_every.unwrap_or(Duration::from_secs(86400)));
+    // **Runs must not overlap.** On a slow checkout the previous `git status` may still be out
+    // when the next tick lands, and stacking them would put several gits on a four-thread
+    // machine at once.
+    let git_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // When the last key event happened — the basis for detecting a paste burst on a
     // terminal without bracketed paste.
     let mut last_key_at: Option<Instant> = None;
@@ -2127,6 +2135,14 @@ async fn run_inner(
                 if !frame_is_current(&sid, session.id()) {
                     continue;
                 }
+                // **A poll that found nothing new must not wake the screen.** git is read every
+                // few seconds; marking the frame dirty each time would redraw an idle terminal
+                // forever for a value that did not move.
+                if let Action::Frame(Frame::Git(got)) = &action {
+                    if got == &state.repo {
+                        continue;
+                    }
+                }
                 apply(&mut state, &action);
                 // If background polling changed the title, the window title follows. `switch`
                 // changes state.title too, so both are watched here in one place.
@@ -2160,6 +2176,23 @@ async fn run_inner(
             // meanwhile — that is exactly where the screen stutters on a flaky network. Here
             // we only spawn a task and the result comes back as `Frame::Poll`. That is when
             // `dirty = true` is set and it gets drawn.
+            // **git runs outside the loop, exactly like `poll`.** `read` shells out to a
+            // process; awaiting that here would stall keys and drawing for as long as it takes.
+            _ = git.tick(), if git_on => {
+                use std::sync::atomic::Ordering;
+                if !git_busy.swap(true, Ordering::SeqCst) {
+                    let cwd = state.cwd.clone();
+                    let tx = tx.clone();
+                    let busy = Arc::clone(&git_busy);
+                    tokio::spawn(async move {
+                        let got = crate::repo::read(&cwd).await;
+                        busy.store(false, Ordering::SeqCst);
+                        // No session tag — this is about the machine, not the conversation, so
+                        // it must survive a session switch (`frame_is_current`).
+                        let _ = tx.send((None, Action::Frame(Frame::Git(got))));
+                    });
+                }
+            }
             _ = poll.tick() => {
                 if let Some(id) = session.id().map(str::to_string) {
                     let api = Arc::clone(&api);
