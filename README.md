@@ -214,10 +214,6 @@ since the record outlives the process.
 
 ## Project instructions
 
-USE ENGLISH IN COMMIT MESSAGE AND COMMENTS
-DO NOT USE OTHER LANGUAGES
-
-
 `CLAUDE.md` and `AGENTS.md` are loaded into the session, walking **up** from the
 working directory so both a repository's own conventions and any broader rules
 above it apply. Files closer to the working directory come last and win. If both
@@ -366,6 +362,22 @@ cargo clippy --workspace --all-targets
 ```
 
 `rustfmt.toml` is checked in and `cargo fmt` is expected to be clean.
+
+## Contributing
+
+**Write English.** Code comments, doc comments, test names, commit messages, pull request
+titles and bodies, and issues are all in English. Contributors read them, and anything else
+shuts most of them out. `panic!`, `expect` and log messages count as writing too — they are
+read by whoever is debugging.
+
+**The one exception is `lang.rs`.** The interface is bilingual and switches with `/lang`, so
+the Korean side of `lang.rs` is a feature, not a leftover — don't translate it away. User-facing
+text belongs there rather than hardcoded at the call site, which is also how it gets an English
+version at all.
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org)
+(`type(scope)!: description`). A `commit-msg` hook installed by `cargo-husky` on the first
+`cargo test` enforces the subject line; `CARGO_HUSKY_DONT_INSTALL_HOOKS=true` skips installing it.
 
 ## Licence
 
