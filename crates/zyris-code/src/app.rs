@@ -1663,6 +1663,35 @@ fn repaint(terminal: &mut ratatui::DefaultTerminal) {
     }
 }
 
+/// Kicks off one `git status` in the background and sends the answer back as a frame.
+///
+/// **Both loops in `run_inner` go through this one definition.** The pre-connection loop draws a
+/// screen too, so the strip has to be right from the first frame; two copies of "how to read
+/// git" would drift the way `/mode` once drifted from Shift+Tab.
+///
+/// Returns without doing anything if a read is already out. **Runs must not overlap** — on a
+/// slow checkout the previous call may still be running when the next tick lands.
+fn spawn_git(
+    cwd: &std::path::Path,
+    tx: &mpsc::UnboundedSender<AppMsg>,
+    busy: &Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    if busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let cwd = cwd.to_path_buf();
+    let tx = tx.clone();
+    let busy = Arc::clone(busy);
+    tokio::spawn(async move {
+        let got = crate::repo::read(&cwd).await;
+        busy.store(false, Ordering::SeqCst);
+        // No session tag — this is about the machine, not the conversation, so it must survive
+        // a session switch (`frame_is_current`).
+        let _ = tx.send((None, Action::Frame(Frame::Git(got))));
+    });
+}
+
 async fn run_inner(
     terminal: &mut ratatui::DefaultTerminal,
     mut api_rx: ApiRx,
@@ -1681,6 +1710,20 @@ async fn run_inner(
     // approval.
     bridge.attach(tx.clone());
     bridge.sync(state.mode, &state.grants);
+
+    // Off means the branch is simply never polled — the strip then shows the path alone.
+    let git_every = crate::repo::poll_interval();
+    let git_on = git_every.is_some();
+    // **Runs must not overlap.** On a slow checkout the previous `git status` may still be out
+    // when the next tick lands, and stacking them would put several gits on a four-thread
+    // machine at once.
+    let git_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // **Ask once before the wait loop.** That loop draws a screen too — first enrollment sits
+    // in it for as long as it takes someone to walk to a browser — and a strip that only fills
+    // in after connecting would read as "this machine has no git".
+    if git_on {
+        spawn_git(&state.cwd, &tx, &git_busy);
+    }
 
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(frame_interval());
@@ -1834,14 +1877,7 @@ async fn run_inner(
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(frame_interval());
     let mut poll = tokio::time::interval(POLL_INTERVAL);
-    // Off means the branch is simply never polled — the strip then shows the path alone.
-    let git_every = crate::repo::poll_interval();
-    let git_on = git_every.is_some();
     let mut git = tokio::time::interval(git_every.unwrap_or(Duration::from_secs(86400)));
-    // **Runs must not overlap.** On a slow checkout the previous `git status` may still be out
-    // when the next tick lands, and stacking them would put several gits on a four-thread
-    // machine at once.
-    let git_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // When the last key event happened — the basis for detecting a paste burst on a
     // terminal without bracketed paste.
     let mut last_key_at: Option<Instant> = None;
@@ -2178,21 +2214,7 @@ async fn run_inner(
             // `dirty = true` is set and it gets drawn.
             // **git runs outside the loop, exactly like `poll`.** `read` shells out to a
             // process; awaiting that here would stall keys and drawing for as long as it takes.
-            _ = git.tick(), if git_on => {
-                use std::sync::atomic::Ordering;
-                if !git_busy.swap(true, Ordering::SeqCst) {
-                    let cwd = state.cwd.clone();
-                    let tx = tx.clone();
-                    let busy = Arc::clone(&git_busy);
-                    tokio::spawn(async move {
-                        let got = crate::repo::read(&cwd).await;
-                        busy.store(false, Ordering::SeqCst);
-                        // No session tag — this is about the machine, not the conversation, so
-                        // it must survive a session switch (`frame_is_current`).
-                        let _ = tx.send((None, Action::Frame(Frame::Git(got))));
-                    });
-                }
-            }
+            _ = git.tick(), if git_on => spawn_git(&state.cwd, &tx, &git_busy),
             _ = poll.tick() => {
                 if let Some(id) = session.id().map(str::to_string) {
                     let api = Arc::clone(&api);
