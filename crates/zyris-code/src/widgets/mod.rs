@@ -3,11 +3,15 @@
 //! ```text
 //! │   (conversation)                    │ sidebar
 //! │ ● working…                 Esc stop │ what's happening now
-//! ├─────────────────────────────────────┤
+//! ├─ ~/zyris-code · ⎇ main +2 ~1 ───────┤ where tools run, and what git says (`repo::spans`)
 //! │ > input                             │ input box (grows with content)
 //! ├─────────────────────────────────────┤
 //! │ base·Main Agent                     │ bottom bar
 //! ```
+//!
+//! **That upper divider carries standing context, and only in the ordinary input state.** The
+//! same row belongs to `ask`, which paints it `ACCENT` to say "this is a question", and to
+//! `approve`, which draws no rule at all — context there would blunt a signal doing real work.
 //!
 //! **The input box is clamped between lines above and below.** If a blank line separated them, the
 //! status line would read as the box's heading and the bottom bar as its footer — the drawn lines show at a glance how far the box extends.
