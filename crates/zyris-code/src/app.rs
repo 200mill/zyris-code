@@ -74,6 +74,11 @@ pub enum Frame {
         usage: Option<crate::sidebar::Usage>,
         title: Option<String>,
     },
+    /// **What git says about the working directory.** Same reason as `Poll`: reading it needs
+    /// a process, and awaiting that on the draw loop would stall keys and drawing. The
+    /// background arm sends the answer in and the strip above the input picks it up. `None`
+    /// means there is nothing to say — no repository, no git, or it timed out.
+    Git(Option<crate::repo::Repo>),
     /// **The socket dropped.** The zyris `Runner` reconnects on its own, but meanwhile the
     /// screen looks like nothing happened — silent failure is the worst kind. Carries the
     /// reason verbatim.
@@ -283,6 +288,12 @@ pub struct State {
     /// What the tools resolve relative paths against. The screen has to show it, or there is
     /// no telling which repo the `src/app.rs` on a tool line belongs to.
     pub cwd: std::path::PathBuf,
+    /// What git says about `cwd` right now. `None` is the ordinary case on a machine without
+    /// git, and the strip then shows the path with nothing after it.
+    pub repo: Option<crate::repo::Repo>,
+    /// The home directory, for shortening the path to `~/…`. Read once — the strip is drawn
+    /// every frame and must not touch the environment.
+    pub home: Option<std::path::PathBuf>,
     /// PTYs currently open. **If they are invisible a ghost shell runs** — a shell the agent
     /// opened stays there without the user knowing.
     pub shells: Vec<Shell>,
@@ -401,6 +412,8 @@ impl Default for State {
             // Must be **the same place** the tools use. `tools::working_dir` is the one
             // definition.
             cwd: crate::tools::working_dir(),
+            repo: None,
+            home: std::env::var_os("HOME").map(std::path::PathBuf::from),
             shells: Vec::new(),
             jobs: Vec::new(),
             command_out: None,
@@ -1134,6 +1147,9 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                 }
             }
         }
+        // Replace, never merge. Leaving a repository behind has to clear the strip, and the
+        // background arm only sends this when the value actually changed.
+        Frame::Git(got) => state.repo = got.clone(),
         // **The screen says when it dropped.** The activity line turns to "connecting…" and
         // the reason goes by once as a notice. Reconnecting is the Runner's job, and
         // `api_rx` tells us once it is back.
@@ -4005,5 +4021,18 @@ mod tests {
             s.queued
         );
         assert_eq!(s.sent, vec!["새 쓰레드에서 보낸 말"]);
+    }
+
+    /// What the strip shows is replaced wholesale, never merged.
+    #[test]
+    fn a_git_frame_replaces_what_the_strip_shows() {
+        let mut s = State::new();
+        assert_eq!(s.repo, None);
+        let got = crate::repo::Repo { branch: "main".into(), staged: 1, ..Default::default() };
+        apply(&mut s, &Action::Frame(Frame::Git(Some(got.clone()))));
+        assert_eq!(s.repo, Some(got));
+        // Leaving a repository behind must clear it, not keep the last thing it said.
+        apply(&mut s, &Action::Frame(Frame::Git(None)));
+        assert_eq!(s.repo, None);
     }
 }
