@@ -23,10 +23,7 @@ pub fn clip(text: &str, limit: usize) -> String {
         return text.to_string();
     }
     let cut = text.floor_char_boundary(limit);
-    let end = text[..cut]
-        .rfind(['.', '\n'])
-        .map(|i| i + 1)
-        .unwrap_or(cut);
+    let end = text[..cut].rfind(['.', '\n']).map(|i| i + 1).unwrap_or(cut);
     let mut out = text[..end].trim_end().to_string();
     out.push('…');
     out

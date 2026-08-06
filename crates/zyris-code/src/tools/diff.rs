@@ -138,8 +138,8 @@ mod tests {
         let old: String = (0..40).map(|i| format!("{i}\n")).collect();
         let new = old.replace("20\n", "스물\n");
         let d = diff(&old, &new, "x.rs");
-        assert!(d.lines.iter().any(|l| matches!(l, DiffLine::Skip(_))), "먼 문맥은 접혀야 한다");
-        assert!(d.lines.len() < 20, "40줄짜리가 그대로 나오면 안 된다: {}", d.lines.len());
+        assert!(d.lines.iter().any(|l| matches!(l, DiffLine::Skip(_))), "far context must fold");
+        assert!(d.lines.len() < 20, "40 lines must not come out whole: {}", d.lines.len());
     }
 
     /// Fixing a file without a trailing newline must not count the last line as changed.
@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn a_diff_survives_the_round_trip_through_text() {
         let d = diff("a\nb\nc\n", "a\nB\nc\n", "x.rs");
-        let back = Diff::parse(&d.to_unified(), "x.rs", d.added, d.removed).expect("다시 읽힌다");
+        let back = Diff::parse(&d.to_unified(), "x.rs", d.added, d.removed).expect("reads back");
         assert_eq!(back.lines, d.lines);
     }
 
@@ -169,7 +169,7 @@ mod tests {
         let old: String = (0..40).map(|i| format!("{i}\n")).collect();
         let new = old.replace("20\n", "스물\n");
         let d = diff(&old, &new, "x.rs");
-        let back = Diff::parse(&d.to_unified(), "x.rs", d.added, d.removed).expect("다시 읽힌다");
+        let back = Diff::parse(&d.to_unified(), "x.rs", d.added, d.removed).expect("reads back");
         assert_eq!(back.lines, d.lines);
     }
 

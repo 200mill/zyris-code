@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn waiting_is_not_the_same_as_failing() {
         let n = Notice::new();
-        assert!(n.0.last.lock().unwrap().is_none(), "아직 아무 오류도 없다");
+        assert!(n.0.last.lock().unwrap().is_none(), "there is no error yet");
         // Only once a reason appears is it a failure.
         n.remember("Connection reset by peer".into());
         assert!(n.0.last.lock().unwrap().is_some());
@@ -293,6 +293,6 @@ mod tests {
     #[test]
     fn no_color_turns_the_escapes_off() {
         // A test isn't a terminal, so it should be off anyway.
-        assert!(!colours(), "터미널이 아닌 곳에 색을 내보내면 안 된다");
+        assert!(!colours(), "colour must not go out to somewhere that isn't a terminal");
     }
 }

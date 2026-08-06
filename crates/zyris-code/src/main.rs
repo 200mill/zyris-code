@@ -79,7 +79,7 @@ async fn main() -> ExitCode {
                     .unwrap_or_else(|_| zyris_code::conn::APP.to_string());
                 let moved = zyris_code::conn::migrate_credentials(&legacy, &dir, &profile);
                 if moved > 0 {
-                    tracing::info!(moved, "옛 자격 디렉터리에서 자격을 옮겨 왔다");
+                    tracing::info!(moved, "moved credentials from the old credential directory");
                 }
             }
         }
@@ -153,7 +153,10 @@ async fn main() -> ExitCode {
         let profile =
             std::env::var("ZYRIS_PROFILE").unwrap_or_else(|_| zyris_code::conn::APP.to_string());
         if zyris_code::conn::another_instance_alive(&dir, &profile) {
-            tracing::warn!("다른 zyris-code 창이 같은 자격으로 붙어 있습니다. 도구 호출은 서버가 고른 창으로 갑니다.");
+            tracing::warn!(
+                "another zyris-code window is attached with the same credentials. tool calls go \
+                 to whichever window the server picked."
+            );
             bridge.frame(zyris_code::app::Frame::Notice(
                 zyris_code::lang::current().another_window_notice().to_string(),
             ));
@@ -233,7 +236,7 @@ async fn main() -> ExitCode {
                     let bridge = bridge.clone();
                     tokio::spawn(async move {
                         let reason = watching.closed().await;
-                        tracing::warn!(%reason, "연결이 끊겼다. Runner가 다시 붙는다");
+                        tracing::warn!(%reason, "the connection dropped. Runner reattaches");
                         bridge.frame(app::Frame::Disconnected(reason.to_string()));
                     });
                 }
@@ -244,7 +247,7 @@ async fn main() -> ExitCode {
                         let _ = api_tx.send(Some(Arc::new(api)));
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, "서버가 attacca_api를 announce하지 않았다")
+                        tracing::error!(error = %e, "the server did not announce attacca_api")
                     }
                 }
             }

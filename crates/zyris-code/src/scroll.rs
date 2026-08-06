@@ -81,7 +81,7 @@ mod tests {
         s.wheel(3, 100, 10); // 3 notches up = 9 lines
         let before = s.window(100, 10);
         s.on_content(120, 10);
-        assert_eq!(s.window(120, 10), before, "위로 올려 둔 자리를 지켜야 한다");
+        assert_eq!(s.window(120, 10), before, "the scrolled-up position must be kept");
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
         s.wheel(3, 100, 10);
         assert!(!s.stick);
         s.wheel(-3, 100, 10);
-        assert!(s.stick, "바닥에 닿으면 다시 붙어야 한다");
+        assert!(s.stick, "reaching the bottom must stick again");
     }
 
     #[test]

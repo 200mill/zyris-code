@@ -284,7 +284,7 @@ pub fn discover_in(dirs: &[PathBuf]) -> Vec<Plugin> {
             let manifest: Manifest = match serde_json::from_str(&text) {
                 Ok(m) => m,
                 Err(e) => {
-                    tracing::warn!("플러그인 설정을 읽지 못했다({}): {e}", root.display());
+                    tracing::warn!("could not read the plugin config ({}): {e}", root.display());
                     continue;
                 }
             };
@@ -338,7 +338,8 @@ mod tests {
     /// **The shape people type most.** If `owner/repo` didn't work, they'd paste the address every time.
     #[test]
     fn a_bare_owner_slash_repo_means_github() {
-        let (url, name) = source("attacca-cc/zyris").expect("받을 곳이 나와야 한다");
+        let (url, name) =
+            source("attacca-cc/zyris").expect("the place to clone into must be reported");
         assert_eq!(url, "https://github.com/attacca-cc/zyris.git");
         assert_eq!(name, "zyris");
     }
@@ -360,7 +361,7 @@ mod tests {
     /// **Local repos are accepted too.** This path is needed when testing while building a plugin.
     #[test]
     fn a_local_path_is_a_source_too() {
-        let (url, name) = source("/tmp/내플러그인").expect("로컬 경로도 받아야 한다");
+        let (url, name) = source("/tmp/내플러그인").expect("a local path must be accepted too");
         assert_eq!(url, "/tmp/내플러그인");
         assert_eq!(name, "내플러그인");
     }
@@ -420,7 +421,8 @@ mod tests {
         let into = into.path();
         let from = origin(MANIFEST);
 
-        let got = install_into(into, &from.path().to_string_lossy()).await.expect("받아져야 한다");
+        let got =
+            install_into(into, &from.path().to_string_lossy()).await.expect("it must be accepted");
         assert_eq!(got.name, "깃허브");
         assert_eq!(got.mcp.len(), 1);
 
@@ -469,7 +471,7 @@ mod tests {
 
         let why = install_into(into, &from.path().to_string_lossy()).await.unwrap_err();
         assert!(why.contains("plugin.json"), "{why}");
-        assert!(discover_in(&[into.to_path_buf()]).is_empty(), "받은 것이 남아 있다");
+        assert!(discover_in(&[into.to_path_buf()]).is_empty(), "what was fetched is still there");
     }
 
     /// Overwriting would silently erase local edits.
@@ -524,7 +526,7 @@ mod tests {
         let from = origin(MANIFEST);
         install_into(into, &from.path().to_string_lossy()).await.unwrap();
 
-        remove_from(into, "깃허브").expect("보이는 이름으로 지워져야 한다");
+        remove_from(into, "깃허브").expect("it must be removable by the name shown");
         assert!(discover_in(&[into.to_path_buf()]).is_empty());
     }
 
@@ -543,14 +545,14 @@ mod tests {
         let victim = into.path().join("건드리면안됨");
         std::fs::create_dir_all(&victim).unwrap();
         let _ = remove_from(&into.path().join("plugins"), "../건드리면안됨");
-        assert!(victim.exists(), "밖의 디렉터리가 지워졌다");
+        assert!(victim.exists(), "a directory outside was deleted");
     }
 
     /// When it's unclear what to fetch, it must not pass silently.
     #[test]
     fn nonsense_is_not_a_source() {
         for bad in ["", "   ", "그냥 글자 여럿", "onlyone", "owner/repo/extra"] {
-            assert_eq!(source(bad), None, "{bad:?}가 받을 곳으로 잡혔다");
+            assert_eq!(source(bad), None, "{bad:?} was taken as a place to clone into");
         }
     }
 

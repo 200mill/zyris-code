@@ -135,7 +135,7 @@ pub fn save(lang: Lang) {
         let _ = std::fs::create_dir_all(dir);
     }
     if let Err(e) = std::fs::write(&at, lang.code()) {
-        tracing::warn!(error = %e, "고른 언어를 남기지 못했다");
+        tracing::warn!(error = %e, "couldn't save the chosen language");
     }
 }
 
@@ -684,7 +684,8 @@ impl Lang {
         for root in roots {
             s.push_str(&format!("\n- `{}`", root.display()));
         }
-        // **끄면 잊는다는 것을 같이 말한다.** 디스크에 남는 줄 알면 필요 이상으로 겁을 낸다.
+        // **Say that quitting forgets them.** Thinking they land on disk makes people
+        // more wary than they need to be.
         s.push_str(match self {
             Lang::Ko => {
                 "\n\n여기와 그 아래는 묻지 않고 만집니다. `/grants close`로 전부 닫습니다 — \
@@ -762,7 +763,8 @@ impl Lang {
         };
         for c in changed {
             let shown = c.path.strip_prefix(cwd).unwrap_or(&c.path);
-            // 만든 파일이라는 것이 +N보다 먼저다 — 되돌리면 지워진다는 뜻이라 무게가 다르다.
+            // That a file was created comes before +N — undoing it means deleting it,
+            // so it carries a different weight.
             let note = if c.created {
                 self.pick(" · 새로 만든 것", " · created").to_string()
             } else if c.edits > 1 {
@@ -775,8 +777,8 @@ impl Lang {
             };
             s.push_str(&format!("\n- `{}`  +{} −{}{note}", shown.display(), c.added, c.removed));
         }
-        // **되돌릴 수 있는 범위와 같다는 것을 말해 둔다.** 이 목록을 보고 `/undo`를 누르므로,
-        // 둘의 범위가 다르면 눌러 보고서야 안다.
+        // **Say it matches the range that can be undone.** People press `/undo` after
+        // seeing this list, so a mismatch is only discovered by pressing it.
         s.push_str(self.pick(
             "\n\n`/undo`가 이 기록을 뒤에서부터 되돌립니다. 앱을 껐다 켜도 남습니다.",
             "\n\n`/undo` reverts this log from the end. It survives an app restart.",
@@ -1359,7 +1361,7 @@ mod tests {
         assert_eq!(from_locale(Some("KO")), Lang::Ko);
         assert_eq!(from_locale(Some("en_US.UTF-8")), Lang::En);
         assert_eq!(from_locale(Some("fr_FR")), Lang::En);
-        assert_eq!(from_locale(None), Lang::En, "모르면 영어다");
+        assert_eq!(from_locale(None), Lang::En, "unknown means English");
         assert_eq!(from_locale(Some("  ")), Lang::En);
     }
 
@@ -1444,7 +1446,7 @@ mod tests {
             (ko.free_mark(), en.free_mark()),
         ];
         for (k, e) in pairs {
-            assert_ne!(k, e, "번역이 안 된 문구가 있다: {k}");
+            assert_ne!(k, e, "a phrase was left untranslated: {k}");
             assert!(!k.is_empty() && !e.is_empty());
         }
     }
@@ -1519,7 +1521,7 @@ mod tests {
         for text in said {
             assert!(
                 !text.chars().any(|c| ('가'..='힣').contains(&c)),
-                "영어 문구에 한글이 남았다: {text}"
+                "Hangul left in an English phrase: {text}"
             );
         }
         // **Arguments-filled phrases.** These take data, so they can't sit in the array above —
@@ -1594,7 +1596,7 @@ mod tests {
         for text in with_args {
             assert!(
                 !text.chars().any(|c| ('가'..='힣').contains(&c)),
-                "영어 문구에 한글이 남았다: {text}"
+                "Hangul left in an English phrase: {text}"
             );
         }
         assert!(!en.queued(3).chars().any(|c| ('가'..='힣').contains(&c)));

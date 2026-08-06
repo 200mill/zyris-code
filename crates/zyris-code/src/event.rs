@@ -307,8 +307,8 @@ mod tests {
     #[test]
     fn a_long_summary_is_clipped() {
         let got = tool_summary(&json!({"arguments": {"command": "x".repeat(400)}}), &wire("exec"));
-        assert!(got.chars().count() <= SUMMARY_LIMIT + 1, "{}칸", got.chars().count());
-        assert!(got.ends_with('…'), "잘렸다는 표시가 없다");
+        assert!(got.chars().count() <= SUMMARY_LIMIT + 1, "{} columns", got.chars().count());
+        assert!(got.ends_with('…'), "no marker saying it was cut");
     }
 
     /// Unknown tools must still say something — server built-ins and MCP come here.
@@ -333,10 +333,10 @@ mod tests {
             timed_out: false,
         };
         let got = exec_detail(&wire("exec"), Some(&serde_json::to_value(&out).unwrap()))
-            .expect("exec 결과를 못 알아봤다");
+            .expect("did not recognise the exec result");
         assert!(got.contains("   Compiling zyris-code\n    Finished dev"), "{got:?}");
-        assert!(!got.contains("\\n"), "줄바꿈이 이스케이프로 남았다: {got:?}");
-        assert!(!got.contains("exit_code"), "JSON 키가 그대로 보인다: {got:?}");
+        assert!(!got.contains("\\n"), "a newline was left escaped: {got:?}");
+        assert!(!got.contains("exit_code"), "raw JSON keys are visible: {got:?}");
     }
 
     /// A failed command must show its exit code. If 0 and 3 can't be told apart, the log has to be read again.
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn a_silent_command_still_says_something() {
         let got = exec_detail(&wire("exec"), Some(&exec_json(0, "", "", false))).unwrap();
-        assert!(!got.trim().is_empty(), "빈 결과가 빈 화면이 됐다");
+        assert!(!got.trim().is_empty(), "an empty result turned into an empty screen");
     }
 
     /// A different shape falls to `None` and JSON comes out as now. **Not dying is the point.**
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn a_pty_screen_is_shown_as_text_too() {
         let got = exec_detail(&wire("screen"), Some(&json!({"data": "$ ls\na.rs  b.rs\n"})))
-            .expect("screen 결과를 못 알아봤다");
+            .expect("did not recognise the screen result");
         assert!(got.contains("a.rs  b.rs"), "{got:?}");
         assert!(!got.contains("\\n"), "{got:?}");
     }
@@ -399,7 +399,7 @@ mod tests {
             }),
         );
         let EntryKind::Tool { detail, .. } = entry_from(&e).unwrap().kind else {
-            panic!("도구 항목이 아니다");
+            panic!("not a tool entry");
         };
         assert!(detail.contains("   Compiling zyris-code"), "{detail:?}");
         assert!(!detail.contains("\\n"), "{detail:?}");
@@ -408,7 +408,7 @@ mod tests {
     #[test]
     fn a_user_message_becomes_a_user_entry() {
         let e = ev(1, "chat_user", json!({"kind": "chat_user", "content": "안녕"}));
-        let entry = entry_from(&e).expect("사용자 메시지는 렌더한다");
+        let entry = entry_from(&e).expect("a user message is rendered");
         assert_eq!(entry.seq, 1);
         assert_eq!(entry.kind, EntryKind::User("안녕".into()));
     }
@@ -440,7 +440,7 @@ mod tests {
                 assert_eq!(name, "web_search");
                 assert!(failed);
             }
-            other => panic!("도구 항목이어야 한다: {other:?}"),
+            other => panic!("it must be a tool entry: {other:?}"),
         }
     }
 
@@ -469,9 +469,9 @@ mod tests {
             EntryKind::Question { steps, answered } => {
                 assert_eq!(steps.len(), 1);
                 assert_eq!(steps[0].options.len(), 2);
-                assert!(!answered, "아직 답이 없다");
+                assert!(!answered, "there is no answer yet");
             }
-            other => panic!("질문이어야 한다: {other:?}"),
+            other => panic!("it must be a question: {other:?}"),
         }
     }
 
@@ -489,7 +489,7 @@ mod tests {
         );
         match entry_from(&e).unwrap().kind {
             EntryKind::Question { answered, .. } => assert!(answered),
-            other => panic!("질문이어야 한다: {other:?}"),
+            other => panic!("it must be a question: {other:?}"),
         }
     }
 
@@ -524,7 +524,7 @@ mod tests {
                 assert_eq!((d.added, d.removed), (1, 1));
                 assert_eq!(d.lines.len(), 2);
             }
-            other => panic!("diff가 붙어야 한다: {other:?}"),
+            other => panic!("a diff must be attached: {other:?}"),
         }
     }
 
@@ -554,7 +554,7 @@ mod tests {
         );
         match entry_from(&e).unwrap().kind {
             EntryKind::Tool { diff: Some(back), .. } => assert_eq!(back, d),
-            other => panic!("diff가 붙어야 한다: {other:?}"),
+            other => panic!("a diff must be attached: {other:?}"),
         }
     }
 

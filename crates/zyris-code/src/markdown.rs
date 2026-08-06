@@ -458,7 +458,7 @@ mod tests {
     fn a_korean_paragraph_never_exceeds_the_width() {
         for line in render("가나다라마바사아자차카타파하", 10) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(display_width(&text) <= 10, "폭을 넘었다: {text:?}");
+            assert!(display_width(&text) <= 10, "it exceeded the width: {text:?}");
         }
     }
 
@@ -466,8 +466,14 @@ mod tests {
     #[test]
     fn an_unclosed_code_fence_still_renders_as_code() {
         let out = plain(&render("```rust\nfn main() {\n", 40));
-        assert!(out.iter().any(|l| l.contains("fn main() {")), "코드 본문이 보여야 한다: {out:?}");
-        assert!(out.iter().any(|l| l.contains("rust")), "언어 라벨이 보여야 한다: {out:?}");
+        assert!(
+            out.iter().any(|l| l.contains("fn main() {")),
+            "the code body must be visible: {out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.contains("rust")),
+            "the language label must be visible: {out:?}"
+        );
     }
 
     /// A span without a colour lets the terminal's default foreground bleed through.
@@ -476,7 +482,7 @@ mod tests {
         let lines = render("# 제목\n\n본문 **강조** 와 `코드`\n\n- 목록", 40);
         for line in &lines {
             for span in &line.spans {
-                assert!(span.style.fg.is_some(), "색 없는 span: {:?}", span.content);
+                assert!(span.style.fg.is_some(), "a span with no colour: {:?}", span.content);
             }
         }
     }
@@ -492,7 +498,7 @@ mod tests {
         let out = plain(&render(TABLE, 40));
         let all = out.join("\n");
         for cell in ["이름", "값", "가나다", "1", "ab", "22"] {
-            assert!(all.contains(cell), "{cell:?}가 없다:\n{all}");
+            assert!(all.contains(cell), "{cell:?} is missing:\n{all}");
         }
     }
 
@@ -501,7 +507,7 @@ mod tests {
     fn table_columns_line_up_even_with_wide_characters() {
         let out = plain(&render(TABLE, 40));
         let rows: Vec<&String> = out.iter().filter(|l| l.contains('│')).collect();
-        assert!(rows.len() >= 3, "표 줄이 모자라다: {out:?}");
+        assert!(rows.len() >= 3, "the table is missing rows: {out:?}");
 
         let cols: Vec<Vec<usize>> = rows
             .iter()
@@ -518,7 +524,12 @@ mod tests {
             })
             .collect();
         for c in &cols {
-            assert_eq!(c, &cols[0], "구분선 위치가 줄마다 다르다:\n{}", out.join("\n"));
+            assert_eq!(
+                c,
+                &cols[0],
+                "the separator sits at a different column per row:\n{}",
+                out.join("\n")
+            );
         }
     }
 
@@ -526,7 +537,7 @@ mod tests {
     fn a_table_never_exceeds_the_width() {
         for line in render(TABLE, 24) {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(display_width(&text) <= 24, "폭을 넘었다: {text:?}");
+            assert!(display_width(&text) <= 24, "it exceeded the width: {text:?}");
         }
     }
 
@@ -535,7 +546,7 @@ mod tests {
     #[test]
     fn a_table_renders_before_its_delimiter_row_arrives() {
         let out = plain(&render("| 이름 | 값 |", 30));
-        assert!(out.iter().any(|l| l.contains('┌')), "표 테두리가 없다: {out:?}");
+        assert!(out.iter().any(|l| l.contains('┌')), "the table has no border: {out:?}");
         assert!(out.iter().any(|l| l.contains("이름")), "{out:?}");
     }
 
@@ -545,8 +556,8 @@ mod tests {
         let one = plain(&render("| 이름 | 값 |\n|---|---|\n| 가 | 1 |", 30));
         let two = plain(&render("| 이름 | 값 |\n|---|---|\n| 가 | 1 |\n| 나 | 2 |", 30));
         assert!(one.iter().any(|l| l.contains('가')));
-        assert!(!one.iter().any(|l| l.contains('나')), "아직 안 온 행이 보인다");
-        assert!(two.iter().any(|l| l.contains('나')), "새 행이 안 붙었다");
+        assert!(!one.iter().any(|l| l.contains('나')), "a row that has not arrived is visible");
+        assert!(two.iter().any(|l| l.contains('나')), "the new row was not appended");
     }
 
     /// A real delimiter row is not invented around.
@@ -555,7 +566,7 @@ mod tests {
         let md = "| 이름 | 값 |\n|---|---|\n| 가 | 1 |";
         let out = plain(&render(md, 30));
         let borders = out.iter().filter(|l| l.contains('├')).count();
-        assert_eq!(borders, 1, "구분선이 두 벌이 됐다: {out:?}");
+        assert_eq!(borders, 1, "the separator row was doubled: {out:?}");
     }
 
     /// Ordinary text with a single pipe is not a table.
@@ -594,7 +605,10 @@ mod tests {
                 .iter()
                 .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
                 .collect();
-            assert!(out.iter().any(|l| l.contains('┌')), "{partial:?}에서 표가 아니다: {out:?}");
+            assert!(
+                out.iter().any(|l| l.contains('┌')),
+                "{partial:?} did not render as a table: {out:?}"
+            );
         }
     }
 
@@ -603,8 +617,8 @@ mod tests {
     #[test]
     fn a_table_glued_to_the_previous_line_still_renders() {
         let out = plain(&render("다음은 표입니다:\n| 이름 | 값 |\n|---|---|\n| 가 | 1 |", 40));
-        assert!(out.iter().any(|l| l.contains('┌')), "표가 아니다:\n{}", out.join("\n"));
-        assert!(out.iter().any(|l| l.contains("다음은 표입니다")), "앞 글이 사라졌다");
+        assert!(out.iter().any(|l| l.contains('┌')), "not a table:\n{}", out.join("\n"));
+        assert!(out.iter().any(|l| l.contains("다음은 표입니다")), "the earlier text disappeared");
     }
 
     /// Even streaming in character by character with preceding text attached, it must stay a table.
@@ -635,13 +649,10 @@ mod tests {
     #[test]
     fn rows_glued_onto_one_line_are_split_apart() {
         let out = plain(&render("설명:\n\n| 이름 | 값 || 가 | 1 |", 44));
-        let cols = out
-            .iter()
-            .find(|l| l.contains('┌'))
-            .map(|l| l.matches('┬').count())
-            .expect("표가 없다");
-        assert_eq!(cols, 1, "열이 늘어났다 (구분자 {cols}개):\n{}", out.join("\n"));
-        assert!(out.iter().any(|l| l.contains("가")), "붙었던 행이 사라졌다");
+        let cols =
+            out.iter().find(|l| l.contains('┌')).map(|l| l.matches('┬').count()).expect("no table");
+        assert_eq!(cols, 1, "the columns grew (separator count {cols}):\n{}", out.join("\n"));
+        assert!(out.iter().any(|l| l.contains("가")), "a row that had arrived disappeared");
     }
 
     /// A genuine empty cell with a space inside is left alone.
@@ -650,7 +661,7 @@ mod tests {
         let out = plain(&render("| a | b |\n|---|---|\n| 1 | |", 30));
         assert!(out.iter().any(|l| l.contains('1')), "{out:?}");
         let rows = out.iter().filter(|l| l.starts_with('│')).count();
-        assert_eq!(rows, 2, "행이 쪼개졌다: {out:?}");
+        assert_eq!(rows, 2, "the row was split: {out:?}");
     }
 
     #[test]

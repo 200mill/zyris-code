@@ -119,7 +119,7 @@ pub fn start_mcp(caps: zyris::Capabilities, cwd: PathBuf, bridge: Bridge) {
         }
         let (started, failed) = crate::mcp::bridge::start_all(&specs).await;
         for (slug, why) in &failed {
-            tracing::warn!("MCP 서버 '{slug}'를 띄우지 못했다: {why}");
+            tracing::warn!("could not start MCP server '{slug}': {why}");
             // **If it fails silently, a person waits thinking the tool exists.** The status line
             // disappears after 6 seconds, so we note it separately so `/mcp` can still show it later.
             bridge.note_mcp(slug, Err(why.clone()));
@@ -131,10 +131,10 @@ pub fn start_mcp(caps: zyris::Capabilities, cwd: PathBuf, bridge: Bridge) {
             let d = zyris::ServeCapability::descriptor(&cap);
             let (name, tools) = (d.name, d.tools.len());
             if let Err(e) = caps.add(Gate::new(cap, bridge.clone())).await {
-                tracing::warn!("{name}을 내주지 못했다: {e}");
+                tracing::warn!("could not announce {name}: {e}");
                 bridge.note_mcp(&name, Err(e.to_string()));
             } else {
-                tracing::info!("{name}을 내준다");
+                tracing::info!("announcing {name}");
                 bridge.note_mcp(&name, Ok(tools));
             }
         }

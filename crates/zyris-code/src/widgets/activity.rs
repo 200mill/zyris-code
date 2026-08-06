@@ -55,9 +55,9 @@ pub fn parts_at(
         let secs = now.saturating_duration_since(*since).as_secs();
         return (theme::ACCENT, lang.running_command(command, secs), lang.esc_stops());
     }
-    // **배경에서 도는 것이 "작업 중…"보다 구체적이다.** 도는 턴이 있어도 이쪽을
-    // 보여 준다 — 그 턴은 대개 이 작업을 기다리는 중이고, 사람이 알고 싶은 것은
-    // 무엇이 얼마나 돌았는가다. 안 보여 주면 모른 채로 앱을 끄고 빌드가 죽는다.
+    // **What runs in the background is more specific than "working…".** It is shown even while a
+    // turn is running — that turn is usually waiting on this job, and what a person wants to know
+    // is what has been running and for how long. Unseen, they quit the app and kill the build.
     if let Some(job) = state.jobs.first() {
         let secs = now.saturating_duration_since(job.since).as_secs();
         let text = lang.background_job(state.jobs.len(), &job.id, &job.label, secs);
@@ -68,11 +68,7 @@ pub fn parts_at(
         return (theme::ACCENT, lang.working().to_string(), lang.esc_stops());
     }
     if state.asking.is_some() {
-        return (
-            theme::WARNING,
-            lang.waiting_answer().to_string(),
-            lang.waiting_answer_hint(),
-        );
+        return (theme::WARNING, lang.waiting_answer().to_string(), lang.waiting_answer_hint());
     }
     // No hint when idle. An always-on hint stops getting read.
     (theme::TEXT_MUTED, lang.idle().to_string(), "")

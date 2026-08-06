@@ -139,7 +139,7 @@ impl Input {
             if i == self.cursor {
                 at = (row, col as u16);
             }
-            lines.last_mut().expect("줄은 하나 이상이다").push(ch);
+            lines.last_mut().expect("there is always at least one line").push(ch);
             col += w;
         }
         // If the cursor is at the very end, it's the end of the last line.
@@ -196,7 +196,10 @@ mod tests {
         for c in "가나다라마바사아자차".chars() {
             i.insert(c);
         }
-        assert!(i.height(10) >= 2, "폭 10에 전각 10글자(20칸)면 두 줄 이상이다");
+        assert!(
+            i.height(10) >= 2,
+            "ten wide glyphs (20 columns) in a width of 10 take more than one line"
+        );
     }
 
     #[test]
@@ -213,7 +216,7 @@ mod tests {
         }
         let (lines, at) = i.wrapped(4);
         assert_eq!(lines, vec!["abcd", "efgh", "ij"]);
-        assert_eq!(at, (2, 2), "커서는 마지막 줄 끝이다");
+        assert_eq!(at, (2, 2), "the cursor is at the end of the last line");
     }
 
     /// If the wrap point and the cursor spot disagree, the cursor stands in the wrong place on long text.

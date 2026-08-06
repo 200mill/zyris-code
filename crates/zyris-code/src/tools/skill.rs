@@ -229,7 +229,7 @@ mod tests {
         let p = preamble(&Skills::new(vec![dir.path().to_path_buf()])).unwrap();
         assert!(p.contains("검색"));
         assert!(p.contains("찾는다"));
-        assert!(!p.contains("아주 긴 본문"), "본문이 실리면 안 된다:\n{p}");
+        assert!(!p.contains("아주 긴 본문"), "the body must not be carried:\n{p}");
     }
 
     /// No skills means no preamble. An empty list would only take up space.

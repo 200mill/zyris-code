@@ -53,9 +53,9 @@ mod tests {
     fn the_announced_file_io_cannot_write() {
         let cap = ReadOnlyFileIo::new(PathBuf::from("/tmp")).descriptor();
         let names: Vec<&str> = cap.tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"read"), "읽기는 있어야 한다: {names:?}");
+        assert!(names.contains(&"read"), "reading must be there: {names:?}");
         for banned in ["write", "remove", "mkdir"] {
-            assert!(!names.contains(&banned), "{banned}이 내줘지면 안 된다: {names:?}");
+            assert!(!names.contains(&banned), "{banned} must not be announced: {names:?}");
         }
     }
 
@@ -76,6 +76,6 @@ mod tests {
             params: zyris::Payload::from_json(serde_json::json!({"path": "a"})),
             serialization: zyris::Serialization::Json,
         };
-        assert!(cap.dispatch(call).await.is_err(), "거른 도구가 불려서는 안 된다");
+        assert!(cap.dispatch(call).await.is_err(), "a filtered tool must not be callable");
     }
 }

@@ -132,9 +132,9 @@ mod tests {
         let got = extract(&rows(), &d);
         let lines: Vec<&str> = got.lines().collect();
         assert_eq!(lines.len(), 3, "{got:?}");
-        assert_eq!(lines[1], "second line", "가운데 줄은 통째로여야 한다");
+        assert_eq!(lines[1], "second line", "a middle line must be selected whole");
         // That glyph is full-width (columns 3–4), so dragging to column 4 covers it and includes it.
-        assert_eq!(lines[2], "세 번", "마지막 줄은 열 4가 걸친 글자까지");
+        assert_eq!(lines[2], "세 번", "the last line runs to the glyph covering column 4");
     }
 
     /// Pointing off-screen must not crash — the mouse can go anywhere.
@@ -149,11 +149,15 @@ mod tests {
     #[test]
     fn the_highlight_span_matches_what_gets_extracted() {
         let d = Drag { from: (1, 3), to: (3, 5) };
-        assert_eq!(highlight_span(&d, 0), None, "범위 위는 반전하지 않는다");
-        assert_eq!(highlight_span(&d, 1), Some((3, usize::MAX)), "첫 행은 시작 열부터 끝까지");
-        assert_eq!(highlight_span(&d, 2), Some((0, usize::MAX)), "가운데 행은 통째로");
-        assert_eq!(highlight_span(&d, 3), Some((0, 5)), "마지막 행은 끝 열까지");
-        assert_eq!(highlight_span(&d, 4), None, "범위 아래도 반전하지 않는다");
+        assert_eq!(highlight_span(&d, 0), None, "above the range is not inverted");
+        assert_eq!(
+            highlight_span(&d, 1),
+            Some((3, usize::MAX)),
+            "the first row runs from the start column to the end"
+        );
+        assert_eq!(highlight_span(&d, 2), Some((0, usize::MAX)), "a middle row goes whole");
+        assert_eq!(highlight_span(&d, 3), Some((0, 5)), "the last row runs to the end column");
+        assert_eq!(highlight_span(&d, 4), None, "below the range is not inverted either");
     }
 
     /// Selecting within one line inverts only that span of that line — not the whole line.

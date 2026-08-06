@@ -47,9 +47,6 @@ pub struct Fold {
 
 pub type Folds = HashMap<i64, Fold>;
 
-/// The prefix in the answer text that marks a "direct input". `question::answer_text` attaches it
-/// with `lang::free_mark()` — `make` detects it with the same lang.
-
 /// The rendered result. Along with the lines it gives **which line is the head of which work card**.
 ///
 /// Folding a card by click requires knowing what a given screen line is, and the only place that knows
@@ -280,8 +277,8 @@ fn make(item: &Item, width: u16, folds: &Folds, lang: crate::lang::Lang) -> Made
             for (i, raw) in text.lines().enumerate() {
                 // **Typed-in answers look different.** The fact that the answer wasn't among the options is itself
                 // information, and if it blends in with the picked ones that distinction disappears.
-                // Answer lines come in the form `  - 직접 입력: …` — the list marker must be stripped first
-                // for the prefix to show.
+                // Answer lines arrive as `  - {free_mark}…` — the list marker must be stripped
+                // first for the prefix to show.
                 let bare = raw.trim_start().trim_start_matches("- ").trim_start();
                 let typed = bare.starts_with(lang.free_mark());
                 let body =
@@ -592,7 +589,8 @@ fn wrap_plain(text: &str, width: u16) -> Vec<String> {
 /// Draws the tool detail ("Args\n…\n\nOutput\n…") **as a box**.
 ///
 /// Laid out as plain text, JSON dumps and shell output wouldn't be told apart. The whole detail is
-/// wrapped in a border to separate it from the space below the tool row, and the "인자/출력/결과/오류" heads are
+/// wrapped in a border to separate it from the space below the tool row, and the
+/// "Args/Output/Result/Error" heads are
 /// painted separately in colour and markers. A failed tool is danger-coloured down to its border. Not parsing
 /// it as markdown is as before — if JSON's `*`·`_` got eaten as emphasis, the original text would break.
 fn tool_detail_lines(
@@ -738,8 +736,11 @@ mod tests {
     fn a_folded_card_hides_thinking_but_shows_tools() {
         let folds = Folds::from([(1, Fold::default())]);
         let out = plain(&rows(&[work()], 40, &folds, crate::lang::Lang::Ko));
-        assert!(out[0].contains("스크롤 계산 위치를 찾는 중"), "머리줄이 없다: {out:?}");
-        assert!(out.iter().any(|l| l.contains("grep")), "접혀도 도구는 보여야 한다: {out:?}");
+        assert!(out[0].contains("스크롤 계산 위치를 찾는 중"), "no header row: {out:?}");
+        assert!(
+            out.iter().any(|l| l.contains("grep")),
+            "tools stay visible even when folded: {out:?}"
+        );
         assert!(
             !out.iter().any(|l| l.contains("먼저 구조를 보자")),
             "추론은 접혀 있어야 한다: {out:?}"
@@ -751,9 +752,9 @@ mod tests {
     fn an_open_card_interleaves_thinking_with_tools() {
         let folds = Folds::from([(1, Fold { open: true })]);
         let out = plain(&rows(&[work()], 40, &folds, crate::lang::Lang::Ko));
-        let think = out.iter().position(|l| l.contains("먼저 구조를 보자")).expect("생각이 없다");
-        let tool = out.iter().position(|l| l.contains("grep")).expect("도구가 없다");
-        assert!(think < tool, "생각이 도구보다 앞에 있어야 한다: {out:?}");
+        let think = out.iter().position(|l| l.contains("먼저 구조를 보자")).expect("no thought");
+        let tool = out.iter().position(|l| l.contains("grep")).expect("no tool");
+        assert!(think < tool, "the thought must come before the tool: {out:?}");
     }
 
     #[test]
@@ -779,8 +780,11 @@ mod tests {
     fn a_card_with_no_fold_state_defaults_to_folded() {
         let out = plain(&rows(&[work()], 40, &Folds::new(), crate::lang::Lang::Ko));
         assert!(out[0].contains("스크롤 계산 위치를 찾는 중"), "{out:?}");
-        assert!(!out.iter().any(|l| l.contains("먼저 구조를 보자")), "추론이 보인다: {out:?}");
-        assert!(out.iter().any(|l| l.contains("grep")), "도구가 안 보인다: {out:?}");
+        assert!(
+            !out.iter().any(|l| l.contains("먼저 구조를 보자")),
+            "reasoning is visible: {out:?}"
+        );
+        assert!(out.iter().any(|l| l.contains("grep")), "the tool is not visible: {out:?}");
     }
 
     #[test]
@@ -802,7 +806,7 @@ mod tests {
         let folds = Folds::from([(1, Fold { open: true })]);
         let out = plain(&rows(&items, 60, &folds, crate::lang::Lang::Ko));
         let row = out.iter().find(|l| l.contains("grep")).expect("{out:?}");
-        assert!(!row.contains("zyris__"), "와이어 이름이 그대로 나온다: {row:?}");
+        assert!(!row.contains("zyris__"), "the raw wire name is shown: {row:?}");
     }
 
     /// **Tools must be a different colour from reasoning.** In an open card, reasoning fills the screen;
@@ -816,10 +820,14 @@ mod tests {
             .lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content.contains("grep")))
-            .expect("도구 줄이 없다");
+            .expect("no tool row");
         let name = row.spans.iter().find(|s| s.content.contains("grep")).unwrap();
         assert_eq!(name.style.fg, Some(theme::TOOL));
-        assert_ne!(name.style.fg, Some(theme::TEXT_MUTED), "추론과 같은 색이면 안 된다");
+        assert_ne!(
+            name.style.fg,
+            Some(theme::TEXT_MUTED),
+            "it must not share the reasoning colour"
+        );
     }
 
     /// The name and its summary are **coloured separately** — one span can't split colours.
@@ -832,8 +840,8 @@ mod tests {
             .lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content.contains("grep")))
-            .expect("도구 줄이 없다");
-        let note = row.spans.iter().find(|s| s.content.contains("viewport")).expect("요약이 없다");
+            .expect("no tool row");
+        let note = row.spans.iter().find(|s| s.content.contains("viewport")).expect("no summary");
         assert_eq!(note.style.fg, Some(theme::TOOL_ARG));
     }
 
@@ -854,8 +862,8 @@ mod tests {
             })],
         }];
         let out = plain(&rows(&items, 60, &Folds::new(), crate::lang::Lang::Ko));
-        assert!(out[0].contains("+12"), "머리줄에 수치가 없다: {out:?}");
-        assert!(out[0].contains("−3"), "머리줄에 수치가 없다: {out:?}");
+        assert!(out[0].contains("+12"), "the header row carries no counts: {out:?}");
+        assert!(out[0].contains("−3"), "the header row carries no counts: {out:?}");
         assert!(
             out.iter().any(|l| l.contains("src/app.rs")),
             "접힌 상태에도 도구 줄은 보여야 한다: {out:?}"
@@ -875,7 +883,7 @@ mod tests {
     fn the_band_never_leaks_trailing_spaces_into_the_copy() {
         let items = [Item::User { seq: 1, text: "안녕".into() }];
         for line in plain(&rows(&items, 60, &Folds::new(), crate::lang::Lang::Ko)) {
-            assert_eq!(line, line.trim_end(), "꼬리 공백이 붙었다: {line:?}");
+            assert_eq!(line, line.trim_end(), "trailing spaces were added: {line:?}");
         }
     }
 
@@ -885,7 +893,7 @@ mod tests {
         let items = [Item::User { seq: 1, text: "안녕".into() }];
         let r = rows(&items, 60, &Folds::new(), crate::lang::Lang::Ko);
         assert_eq!(r.lines[0].style.bg, Some(theme::USER_BG));
-        assert!(r.lines[0].spans.iter().all(|s| s.style.bg.is_none()), "span에 배경이 칠해졌다");
+        assert!(r.lines[0].spans.iter().all(|s| s.style.bg.is_none()), "a span got a background");
     }
 
     /// **The bar runs down every line.** Only on the first line, the second line onward wouldn't be distinguishable from an answer.
@@ -903,7 +911,7 @@ mod tests {
         let long = "아주 긴 문장을 하나 적어서 좁은 폭에서 반드시 여러 줄로 접히게 만든다";
         let items = [Item::User { seq: 1, text: long.into() }];
         let out = plain(&rows(&items, 24, &Folds::new(), crate::lang::Lang::Ko));
-        assert!(out.len() >= 2, "안 접혔다: {out:?}");
+        assert!(out.len() >= 2, "it did not fold: {out:?}");
         assert!(out.iter().all(|l| l.starts_with('▌')), "{out:?}");
     }
 
@@ -931,7 +939,7 @@ mod tests {
     fn reasoning_does_not_use_the_code_block_gutter() {
         let folds = Folds::from([(1, Fold { open: true })]);
         let out = plain(&rows(&[work()], 40, &folds, crate::lang::Lang::Ko));
-        let think = out.iter().find(|l| l.contains("먼저 구조를 보자")).expect("추론 줄이 없다");
+        let think = out.iter().find(|l| l.contains("먼저 구조를 보자")).expect("no reasoning row");
         assert!(think.starts_with('┊'), "{think:?}");
     }
 
@@ -947,7 +955,7 @@ mod tests {
             .lines
             .iter()
             .find(|l| joined(l).contains("먼저 구조를 보자"))
-            .expect("추론 줄이 없다");
+            .expect("no reasoning row");
         // The gutter (`┊`) is a line, not text, so it stays BORDER_LIGHT. Only the body is checked.
         assert!(
             line.spans
@@ -996,9 +1004,9 @@ mod tests {
             let mut cache = Cache::new();
             cache.layout(&items, 40, &folds, None, crate::lang::Lang::Ko);
 
-            assert_eq!(cache.total(), want.lines.len(), "줄 수가 같아야 한다");
-            assert_eq!(cache.plain(), want.plain(), "내용이 같아야 한다");
-            assert_eq!(cache.cards(), &want.cards, "카드 머리 위치가 같아야 한다");
+            assert_eq!(cache.total(), want.lines.len(), "the row counts must match");
+            assert_eq!(cache.plain(), want.plain(), "the contents must match");
+            assert_eq!(cache.cards(), &want.cards, "the card head must sit at the same place");
         }
     }
 
@@ -1017,10 +1025,10 @@ mod tests {
                 .iter()
                 .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
                 .collect();
-            assert_eq!(got, all[from..to], "{from}..{to} 구간이 어긋난다");
+            assert_eq!(got, all[from..to], "the {from}..{to} range is off");
         }
-        assert!(cache.window(3, 3).is_empty(), "빈 구간은 빈 결과다");
-        assert_eq!(cache.window(0, 9999).len(), cache.total(), "끝을 넘겨도 잘려야 한다");
+        assert!(cache.window(3, 3).is_empty(), "an empty range gives an empty result");
+        assert_eq!(cache.window(0, 9999).len(), cache.total(), "past the end it must still clamp");
     }
 
     /// **Only the changed item is drawn again.** If this breaks, it's slow again proportional to conversation length.
@@ -1032,17 +1040,17 @@ mod tests {
 
         cache.layout(&items, 40, &folds, None, crate::lang::Lang::Ko);
         let first = cache.renders();
-        assert_eq!(first, items.len() as u64, "처음에는 전부 그린다");
+        assert_eq!(first, items.len() as u64, "everything is drawn the first time");
 
         cache.layout(&items, 40, &folds, None, crate::lang::Lang::Ko);
-        assert_eq!(cache.renders(), first, "안 바뀌었으면 한 줄도 다시 그리지 않는다");
+        assert_eq!(cache.renders(), first, "unchanged, not a single row is drawn again");
 
         // A delta was appended to the answer — only that item should be redrawn.
         if let Item::Agent { text, .. } = &mut items[2] {
             text.push_str("| c | 3 |\n");
         }
         cache.layout(&items, 40, &folds, None, crate::lang::Lang::Ko);
-        assert_eq!(cache.renders(), first + 1, "바뀐 하나만 다시 그린다");
+        assert_eq!(cache.renders(), first + 1, "only the changed one is drawn again");
     }
 
     /// Folding or unfolding redraws only that card.
@@ -1055,7 +1063,7 @@ mod tests {
 
         let opened = Folds::from([(2, Fold { open: true })]);
         cache.layout(&items, 40, &opened, None, crate::lang::Lang::Ko);
-        assert_eq!(cache.renders(), before + 1, "펼친 카드 하나만 다시 그린다");
+        assert_eq!(cache.renders(), before + 1, "only the unfolded card is drawn again");
         assert!(
             cache.plain().iter().any(|l| l.contains("먼저 구조를 보자")),
             "펼쳤으면 추론이 보여야 한다"
@@ -1124,7 +1132,7 @@ mod tests {
         let mut both = card_open.clone();
         both.insert(100, Fold { open: true });
         let open = plain(&rows(&items, 60, &both, crate::lang::Lang::Ko));
-        assert!(open.iter().any(|l| l.contains("인자")), "상세가 안 나온다: {open:?}");
+        assert!(open.iter().any(|l| l.contains("인자")), "the detail is not shown: {open:?}");
         assert!(open.iter().any(|l| l.contains("viewport")), "{open:?}");
     }
 
@@ -1140,7 +1148,7 @@ mod tests {
         let mut by_seq: Vec<i64> = r.cards.values().copied().collect();
         by_seq.sort();
         by_seq.dedup();
-        assert_eq!(by_seq, vec![1, 100], "카드 머리와 도구 줄 둘 다 눌려야 한다");
+        assert_eq!(by_seq, vec![1, 100], "both the card head and the tool row must be clickable");
 
         // The tool row's index must actually be that tool row — off by one and the wrong thing unfolds.
         let lines = r.plain();
@@ -1156,7 +1164,7 @@ mod tests {
         let r = rows(&items, 60, &Folds::new(), crate::lang::Lang::Ko);
         let mut by_seq: Vec<i64> = r.cards.values().copied().collect();
         by_seq.sort();
-        assert_eq!(by_seq, vec![1], "접힌 카드에서는 머리만 눌려야 한다");
+        assert_eq!(by_seq, vec![1], "on a folded card only the head may be clickable");
     }
 
     /// **In a folded card, open tool details aren't visible either** — folding the card means
@@ -1168,8 +1176,11 @@ mod tests {
         // The tool detail is open, but the card is folded.
         let folds = Folds::from([(100, Fold { open: true })]);
         let out = plain(&rows(&items, 60, &folds, crate::lang::Lang::Ko));
-        assert!(out.iter().any(|l| l.contains("grep")), "도구 줄은 보여야 한다: {out:?}");
-        assert!(!out.iter().any(|l| l.contains("인자")), "접힌 카드에 도구 상세가 보인다: {out:?}");
+        assert!(out.iter().any(|l| l.contains("grep")), "the tool row must be visible: {out:?}");
+        assert!(
+            !out.iter().any(|l| l.contains("인자")),
+            "tool details are visible on a folded card: {out:?}"
+        );
     }
 
     /// **Run-time messages show even when folded** — folding a card hides reasoning, not the whole
@@ -1200,8 +1211,12 @@ mod tests {
         }];
         let r = rows(&items, 60, &Folds::new(), crate::lang::Lang::Ko);
         let lines = r.plain();
-        let row = lines.iter().position(|l| l.contains("이제 커밋합니다")).expect("메시지 줄");
-        assert!(!r.cards.contains_key(&row), "메시지 줄이 클릭 대상으로 잡혔다: {:?}", lines[row]);
+        let row = lines.iter().position(|l| l.contains("이제 커밋합니다")).expect("message row");
+        assert!(
+            !r.cards.contains_key(&row),
+            "a message row was taken as clickable: {:?}",
+            lines[row]
+        );
     }
 
     /// **Messages, thinking, and tools stand in the order they came.** In an open card the three must interleave
@@ -1222,7 +1237,7 @@ mod tests {
         let think = out.iter().position(|l| l.contains("먼저 상태를 보자")).unwrap();
         let text = out.iter().position(|l| l.contains("이제 커밋합니다")).unwrap();
         let tool = out.iter().position(|l| l.contains("exec")).unwrap();
-        assert!(think < text && text < tool, "온 순서가 어긋났다: {out:?}");
+        assert!(think < text && text < tool, "the arrival order is wrong: {out:?}");
     }
 
     /// **Thinking lines must be clickable too** — clicking folds and unfolds the card (the same
@@ -1232,9 +1247,9 @@ mod tests {
         let items = [work_at(1)];
         let r = rows(&items, 60, &Folds::from([(1, Fold { open: true })]), crate::lang::Lang::Ko);
         let lines = r.plain();
-        let row = lines.iter().position(|l| l.contains("먼저 구조를 보자")).expect("추론 줄");
-        let seq = r.cards.get(&row).copied().expect("추론 줄이 클릭 대상이어야 한다");
-        assert_eq!(seq, 1, "추론 줄 클릭은 카드를 접고 펴야 한다");
+        let row = lines.iter().position(|l| l.contains("먼저 구조를 보자")).expect("reasoning row");
+        let seq = r.cards.get(&row).copied().expect("a reasoning line must be clickable");
+        assert_eq!(seq, 1, "clicking a reasoning line must fold and unfold the card");
     }
 
     /// **Open tool detail is set apart in a box.** The "Args/Output/Result/Error" heads stand out in
@@ -1249,12 +1264,12 @@ mod tests {
         );
         let plain: Vec<String> =
             out.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-        assert!(plain[0].starts_with('┌'), "위 테두리가 있어야 한다: {plain:?}");
-        assert!(plain.last().unwrap().starts_with('└'), "아래 테두리가 있어야 한다: {plain:?}");
-        assert!(plain.iter().any(|l| l.contains("⎿ 인자")), "인자 머리말이 없다: {plain:?}");
-        assert!(plain.iter().any(|l| l.contains("⎿ 출력")), "출력 머리말이 없다: {plain:?}");
-        assert!(plain.iter().any(|l| l.contains("git push")), "인자 본문이 없다: {plain:?}");
-        assert!(plain.iter().any(|l| l.contains("Up to date")), "출력 본문이 없다: {plain:?}");
+        assert!(plain[0].starts_with('┌'), "there must be a top border: {plain:?}");
+        assert!(plain.last().unwrap().starts_with('└'), "there must be a bottom border: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("⎿ 인자")), "no arguments heading: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("⎿ 출력")), "no output heading: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("git push")), "no arguments body: {plain:?}");
+        assert!(plain.iter().any(|l| l.contains("Up to date")), "no output body: {plain:?}");
 
         // The error section is painted in the danger colour.
         let err = tool_detail_lines("오류\nboom", 60, false, crate::lang::Lang::Ko);
@@ -1271,7 +1286,10 @@ mod tests {
     #[test]
     fn a_failed_tools_detail_box_is_red() {
         let out = tool_detail_lines("인자\n{}", 60, true, crate::lang::Lang::Ko);
-        assert!(out[0].spans[0].style.fg == Some(theme::DANGER), "위 테두리가 위험색이 아니다");
+        assert!(
+            out[0].spans[0].style.fg == Some(theme::DANGER),
+            "the top border is not in the danger colour"
+        );
         assert!(
             out.last().unwrap().spans[0].style.fg == Some(theme::DANGER),
             "아래 테두리가 위험색이 아니다"
@@ -1320,7 +1338,7 @@ mod tests {
         let mut both = card_open.clone();
         both.insert(100, Fold { open: true });
         cache.layout(&items, 60, &both, None, crate::lang::Lang::Ko);
-        assert_eq!(cache.renders(), before + 1, "도구를 폈는데 다시 안 그렸다");
+        assert_eq!(cache.renders(), before + 1, "a tool was unfolded but nothing was redrawn");
         assert!(cache.plain().iter().any(|l| l.contains("인자")), "{:?}", cache.plain());
     }
 

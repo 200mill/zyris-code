@@ -290,7 +290,7 @@ mod tests {
         let s = LocalSearch::new(d.path().to_path_buf());
         let out = s.glob("**/*.rs".into(), None, None).await.unwrap();
         assert!(out.iter().any(|p| p == "src/app.rs"), "{out:?}");
-        assert!(!out.iter().any(|p| p.starts_with("target/")), "gitignore가 안 걸렸다: {out:?}");
+        assert!(!out.iter().any(|p| p.starts_with("target/")), "gitignore did not apply: {out:?}");
     }
 
     /// **Paths are relative.** Given an absolute path, the home directory name rides on every result.
@@ -310,7 +310,7 @@ mod tests {
         let f = s.grep("fn scroll".into(), None, None, None).await.unwrap();
         assert_eq!(f.hits.len(), 1, "{:?}", f.hits);
         assert_eq!(f.hits[0].path, "src/app.rs");
-        assert_eq!(f.hits[0].line, 2, "1부터 세야 한다");
+        assert_eq!(f.hits[0].line, 2, "counting must start at 1");
         assert!(f.hits[0].text.contains("fn scroll"));
         assert!(!f.truncated);
     }
@@ -332,7 +332,7 @@ mod tests {
         let s = LocalSearch::new(d.path().to_path_buf());
         let f = s.grep("fn ".into(), None, None, Some(1)).await.unwrap();
         assert_eq!(f.hits.len(), 1);
-        assert!(f.truncated, "잘렸는데 말하지 않았다");
+        assert!(f.truncated, "it was truncated but did not say so");
     }
 
     /// Carrying binaries as-is would fill the screen and context with garbage bytes.

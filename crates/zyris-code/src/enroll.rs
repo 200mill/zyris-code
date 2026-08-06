@@ -130,7 +130,7 @@ impl Reauth {
         match self.store.clear().await {
             Ok(()) => true,
             Err(e) => {
-                tracing::warn!(error = %e, "자격을 버리지 못했다");
+                tracing::warn!(error = %e, "could not discard the credentials");
                 false
             }
         }
@@ -180,13 +180,13 @@ mod tests {
         let (bridge, mut screen) = with_screen();
         ScreenEnroll { bridge }.show(&authorize());
 
-        match screen.try_recv().expect("화면에 가야 한다") {
+        match screen.try_recv().expect("must reach the screen") {
             (_, Action::Frame(Frame::Enroll(view))) => {
                 assert_eq!(view.code, "WXQR-7KBD");
                 assert_eq!(view.uri, "https://attacca.example/settings/zyris/device");
                 assert_eq!(view.phase, EnrollPhase::Waiting);
             }
-            other => panic!("등록 프레임이어야 한다: {other:?}"),
+            other => panic!("must be an enrollment frame: {other:?}"),
         }
     }
 
@@ -205,15 +205,15 @@ mod tests {
         let ui = ScreenEnroll { bridge };
 
         ui.lapsed();
-        match screen.try_recv().expect("만료가 화면에 가야 한다") {
+        match screen.try_recv().expect("expiry must reach the screen") {
             (_, Action::Frame(Frame::EnrollPhase(EnrollPhase::Lapsed))) => {}
-            other => panic!("만료 프레임이어야 한다: {other:?}"),
+            other => panic!("must be an expiry frame: {other:?}"),
         }
 
         ui.denied();
-        match screen.try_recv().expect("거부가 화면에 가야 한다") {
+        match screen.try_recv().expect("denial must reach the screen") {
             (_, Action::Frame(Frame::EnrollPhase(EnrollPhase::Denied))) => {}
-            other => panic!("거부 프레임이어야 한다: {other:?}"),
+            other => panic!("must be a denial frame: {other:?}"),
         }
 
         ui.authorized(&TokenResponse {
@@ -237,14 +237,14 @@ mod tests {
         let reauth = Reauth { store: store.clone(), spent: Arc::new(AtomicBool::new(false)) };
 
         assert!(!reauth.spent());
-        assert!(reauth.discard_once().await, "첫 번째는 버린다");
-        assert!(store.load().await.unwrap().is_none(), "자격이 실제로 비어야 한다");
+        assert!(reauth.discard_once().await, "the first one is discarded");
+        assert!(store.load().await.unwrap().is_none(), "the credential must actually be empty");
 
         // Even if a fresh credential arrives in between, the second time is left untouched.
         store.save(&stored()).await.unwrap();
-        assert!(!reauth.discard_once().await, "두 번째는 안 버린다");
-        assert!(store.load().await.unwrap().is_some(), "새로 받은 자격은 그대로다");
-        assert!(reauth.spent(), "해 봤다는 것이 판정에 들어간다");
+        assert!(!reauth.discard_once().await, "the second one is not discarded");
+        assert!(store.load().await.unwrap().is_some(), "the newly received credential stays");
+        assert!(reauth.spent(), "having tried once feeds into the decision");
     }
 
     /// **Where a token was given directly there is nothing to discard.** Not having a `Reauth` is that state.

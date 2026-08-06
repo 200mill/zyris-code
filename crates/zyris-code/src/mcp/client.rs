@@ -128,7 +128,7 @@ impl McpClient {
                 continue;
             }
             let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                tracing::debug!("JSON이 아닌 줄을 넘긴다: {line}");
+                tracing::debug!("skipping a non-JSON line: {line}");
                 continue;
             };
             if msg.get("id").and_then(Value::as_u64) != Some(id) {
@@ -255,7 +255,7 @@ mod tests {
             let name = sanitize(raw);
             assert!(!name.starts_with('_'), "{raw} → {name}");
             assert!(!name.ends_with('_'), "{raw} → {name}");
-            assert!(!name.is_empty(), "{raw} → 빈 이름은 부를 수가 없다");
+            assert!(!name.is_empty(), "{raw} → an empty name cannot be called");
             // Actually join them and split again. This is the real test.
             let wire = format!("zyris__arch__cap__{name}");
             assert_eq!(wire.split("__").count(), 4, "{raw} → {wire}");
@@ -280,8 +280,8 @@ mod tests {
         ]});
         let out = flatten_content(&r);
         assert!(out.contains("첫 줄"));
-        assert!(!out.contains("AAAA"), "이미지 바이트가 그대로 실렸다: {out}");
-        assert!(out.contains("image"), "무엇이 빠졌는지는 말해야 한다: {out}");
+        assert!(!out.contains("AAAA"), "raw image bytes were carried through: {out}");
+        assert!(out.contains("image"), "it must say what is missing: {out}");
     }
 
     /// **Spawns a real process.** A mock wouldn't catch stdio framing mistakes.
@@ -290,7 +290,7 @@ mod tests {
         let (_dir, script) = fake_server();
         let mut c = McpClient::spawn("python3", &[script], &HashMap::new())
             .await
-            .expect("가짜 서버가 떠야 한다");
+            .expect("the fake server must come up");
 
         let tools = c.list_tools().await.unwrap();
         assert_eq!(tools.len(), 2, "{tools:?}");

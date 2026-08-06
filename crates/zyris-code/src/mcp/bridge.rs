@@ -127,7 +127,7 @@ pub fn load_config(cwd: &Path) -> Vec<ServerSpec> {
         .filter_map(|s| match serde_json::from_str::<Value>(&s) {
             Ok(v) => Some(v),
             Err(e) => {
-                tracing::warn!("MCP 설정을 읽지 못했다: {e}");
+                tracing::warn!("could not read the MCP config: {e}");
                 None
             }
         })
@@ -212,7 +212,7 @@ mod tests {
         McpCapability {
             name: sanitize(&format!("mcp_{slug}")),
             tools,
-            client: Mutex::new(client.expect("cat은 어디에나 있다")),
+            client: Mutex::new(client.expect("cat exists everywhere")),
         }
     }
 
@@ -223,7 +223,7 @@ mod tests {
         let cap = cap_of("github", vec![tool("create-issue")]).await;
         let d = cap.descriptor();
         assert_eq!(d.name, "mcp_github");
-        assert_eq!(d.tools[0].name, "create_issue", "이름이 씻겨야 한다");
+        assert_eq!(d.tools[0].name, "create_issue", "the name must be sanitised");
         assert_eq!(d.tools[0].request_schema["properties"]["title"]["type"], json!("string"));
     }
 
@@ -272,7 +272,7 @@ mod tests {
         let (started, _) = start_all(&specs).await;
         let names: Vec<String> = started.iter().map(|c| c.descriptor().name).collect();
         assert_eq!(names.len(), 2);
-        assert_ne!(names[0], names[1], "겹친 이름이 그대로 나갔다: {names:?}");
+        assert_ne!(names[0], names[1], "colliding names went out unchanged: {names:?}");
         for n in &names {
             assert!(!n.contains("__"), "{n}");
         }
@@ -318,8 +318,8 @@ mod tests {
             },
         ];
         let (started, failed) = start_all(&specs).await;
-        assert_eq!(started.len(), 1, "되는 것은 떠야 한다");
-        assert_eq!(failed.len(), 1, "안 된 것은 알려야 한다");
+        assert_eq!(started.len(), 1, "the one that works must come up");
+        assert_eq!(failed.len(), 1, "what failed must be reported");
         assert_eq!(failed[0].0, "없는놈");
     }
 

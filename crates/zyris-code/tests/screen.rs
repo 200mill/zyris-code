@@ -90,10 +90,13 @@ fn a_rule_separates_the_input_box_from_the_bottom_bar() {
     apply(&mut s, &Action::Insert('안'));
     let screen = dump(&mut s, 40, 10);
     let lines: Vec<&str> = screen.lines().collect();
-    assert!(lines[lines.len() - 3].contains('안'), "입력이 그 자리에 없다:\n{screen}");
-    assert!(lines[lines.len() - 2].starts_with('─'), "가름선이 없다:\n{screen}");
+    assert!(lines[lines.len() - 3].contains('안'), "the input is not in its place:\n{screen}");
+    assert!(lines[lines.len() - 2].starts_with('─'), "no rule:\n{screen}");
     // The default screen language is English (the `lang::Lang` default). We look at the mode name in the bottom bar.
-    assert!(lines[lines.len() - 1].contains("normal"), "맨 아래가 하단 바가 아니다:\n{screen}");
+    assert!(
+        lines[lines.len() - 1].contains("normal"),
+        "the bottom line is not the status bar:\n{screen}"
+    );
 }
 
 /// Long input wraps to the next line. If it were cut off, you couldn't tell what you're typing.
@@ -107,7 +110,7 @@ fn a_long_input_wraps_instead_of_being_cut_off() {
     let lines: Vec<&str> = screen.lines().collect();
     // The input box grows upward from above the bottom bar.
     let tail = lines[lines.len() - 4..].join("\n");
-    assert!(tail.contains("파하"), "뒷글자가 잘렸다:\n{screen}");
+    assert!(tail.contains("파하"), "the trailing characters were cut:\n{screen}");
     assert!(
         lines.iter().filter(|l| l.contains('가') || l.contains('파')).count() >= 1,
         "\n{screen}"
@@ -194,11 +197,11 @@ fn nothing_but_the_user_band_paints_a_background_by_default() {
 #[test]
 fn the_page_background_can_be_asked_for_by_name_or_by_hex() {
     use zyris_code::theme::page_bg_from;
-    assert_eq!(page_bg_from(None), None, "안 주면 안 칠한다");
-    assert_eq!(page_bg_from(Some("")), None, "빈 값도 안 준 것이다");
+    assert_eq!(page_bg_from(None), None, "with none given, nothing is painted");
+    assert_eq!(page_bg_from(Some("")), None, "an empty value counts as not given");
     assert_eq!(page_bg_from(Some("zyris")), Some(zyris_code::theme::BG));
     assert_eq!(page_bg_from(Some("#101820")), Some(Color::Rgb(0x10, 0x18, 0x20)));
-    assert_eq!(page_bg_from(Some("none")), None, "끄는 쪽도 명시할 수 있다");
+    assert_eq!(page_bg_from(Some("none")), None, "turning it off can be stated explicitly too");
     // **A single typo must not kill the app.** If it can't be read, it falls back to not painting.
     assert_eq!(page_bg_from(Some("보라색")), None);
 }
@@ -215,7 +218,7 @@ fn a_heal_frame_forces_every_cell_to_be_resent() {
 
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     let frame = term.draw(|f| widgets::draw(f, &mut s)).unwrap();
-    assert!(!s.force_update, "강제 플래그는 한 프레임이면 풀려야 한다");
+    assert!(!s.force_update, "the force flag must clear after one frame");
     assert!(
         frame
             .buffer
@@ -254,7 +257,7 @@ fn a_wide_char_with_a_background_emits_its_trailing_cell_when_replaced() {
     wire.take();
     backend.draw(prev.diff_iter(&next)).unwrap();
     let out = String::from_utf8_lossy(&wire.take()).into_owned();
-    assert_eq!(strip_ansi(&out), "a ", "trailing 칸이 지워지지 않았다: {out:?}");
+    assert_eq!(strip_ansi(&out), "a ", "the trailing cell was not cleared: {out:?}");
 }
 
 /// **Without a background, the trailing cell doesn't go out on the wire — the very cause of ghosting.**
@@ -274,7 +277,11 @@ fn a_wide_char_without_a_background_skips_its_trailing_cell() {
     wire.take();
     backend.draw(prev.diff_iter(&next)).unwrap();
     let out = String::from_utf8_lossy(&wire.take()).into_owned();
-    assert_eq!(strip_ansi(&out), "a", "배경 없이 trailing 칸이 나가면 안 된다(예전 동작): {out:?}");
+    assert_eq!(
+        strip_ansi(&out),
+        "a",
+        "a trailing cell must not go out without a background (the old behaviour): {out:?}"
+    );
 }
 
 /// There is no header. The conversation starts on the very first line — no reason to give a line to the app name and directory.
@@ -290,8 +297,8 @@ fn there_is_no_header_taking_up_the_top_line() {
     );
     let screen = dump(&mut s, 40, 10);
     let top = screen.lines().next().unwrap();
-    assert!(!top.contains("zyris-code"), "머리글이 남아 있다:\n{screen}");
-    assert!(top.contains("첫 줄"), "맨 윗줄이 대화가 아니다:\n{screen}");
+    assert!(!top.contains("zyris-code"), "a header is still drawn:\n{screen}");
+    assert!(top.contains("첫 줄"), "the top line is not the transcript:\n{screen}");
 }
 
 /// If drawing panics, the terminal is left broken. It happens especially at narrow widths.
@@ -317,7 +324,7 @@ fn a_healthy_connection_is_not_announced_anywhere() {
     let mut s = State::new();
     s.connected = true;
     let screen = dump(&mut s, 40, 10);
-    assert!(!screen.contains("연결됨"), "연결 표시가 남아 있다:\n{screen}");
+    assert!(!screen.contains("연결됨"), "the connected marker is still shown:\n{screen}");
 }
 
 /// A broken connection must always be said aloud — silent failure is the worst kind.
@@ -326,7 +333,7 @@ fn a_broken_connection_is_always_said_out_loud() {
     let mut s = State::new();
     s.connected = false;
     let screen = dump(&mut s, 40, 10);
-    assert!(screen.contains("Connecting"), "끊겼는데 아무 말이 없다:\n{screen}");
+    assert!(screen.contains("Connecting"), "it disconnected and said nothing:\n{screen}");
 
     // The Korean screen says it in the same place.
     let mut s = State::new();
@@ -348,9 +355,9 @@ fn what_is_happening_now_sits_between_the_chat_and_the_input_box() {
     let screen = dump(&mut s, 40, 12);
     let lines: Vec<&str> = screen.lines().collect();
     let at = lines.len() - ACTIVITY_FROM_BOTTOM;
-    assert!(lines[at].contains("쉬는 중"), "상태 줄이 그 자리에 없다:\n{screen}");
-    assert!(lines[at - 1].trim().is_empty(), "대화와 안 떨어졌다:\n{screen}");
-    assert!(lines[at + 1].starts_with('─'), "바로 아래가 가름선이 아니다:\n{screen}");
+    assert!(lines[at].contains("쉬는 중"), "the status line is not in its place:\n{screen}");
+    assert!(lines[at - 1].trim().is_empty(), "it is not separated from the transcript:\n{screen}");
+    assert!(lines[at + 1].starts_with('─'), "the line right below is not a rule:\n{screen}");
 
     s.running = true;
     let screen = dump(&mut s, 40, 12);
@@ -370,7 +377,7 @@ fn the_quit_hint_wins_over_everything_else() {
     s.running = true;
     s.quit_armed_at = Some(std::time::Instant::now());
     let screen = dump(&mut s, 60, 12);
-    assert!(screen.contains("한 번 더"), "종료 안내가 없다:\n{screen}");
+    assert!(screen.contains("한 번 더"), "no quit hint:\n{screen}");
     let lines: Vec<&str> = screen.lines().collect();
     assert!(
         !lines[lines.len() - ACTIVITY_FROM_BOTTOM].contains("작업 중"),
@@ -402,14 +409,14 @@ fn the_dot_blinks_only_while_working() {
     let idle_a = cell_fg(&mut s, 40, H, DOT_X, y);
     s.tick = 8;
     let idle_b = cell_fg(&mut s, 40, H, DOT_X, y);
-    assert_eq!(idle_a, idle_b, "쉬는 중인데 점이 깜박인다");
+    assert_eq!(idle_a, idle_b, "the dot blinks while idle");
 
     s.running = true;
     s.tick = 0;
     let on = cell_fg(&mut s, 40, H, DOT_X, y);
     s.tick = 8;
     let off = cell_fg(&mut s, 40, H, DOT_X, y);
-    assert_ne!(on, off, "작업 중인데 점이 안 깜박인다");
+    assert_ne!(on, off, "the dot does not blink while working");
 }
 
 /// The mode and agent sit at the left of the bottom bar, in a fixed spot.
@@ -419,8 +426,8 @@ fn the_mode_and_agent_sit_at_the_left_of_the_bottom_bar() {
     s.agent = "Main Agent".into();
     let screen = dump(&mut s, 40, 10);
     let bottom = screen.lines().last().unwrap();
-    assert!(bottom.trim_start().starts_with("normal"), "모드가 맨 왼쪽이 아니다: {bottom:?}");
-    assert!(bottom.contains("Main Agent"), "에이전트가 없다: {bottom:?}");
+    assert!(bottom.trim_start().starts_with("normal"), "the mode is not flush left: {bottom:?}");
+    assert!(bottom.contains("Main Agent"), "no agent: {bottom:?}");
 }
 
 /// Shift+Tab cycles normal → plan → work → job → normal.
@@ -459,7 +466,10 @@ fn the_status_bar_names_the_mode_it_is_in() {
         }
         let screen = dump(&mut s, 80, 24);
         let bar = screen.lines().last().unwrap_or_default().trim_start();
-        assert!(bar.starts_with(expected), "하단 바가 '{expected}'로 시작하지 않는다: {bar:?}");
+        assert!(
+            bar.starts_with(expected),
+            "the status bar does not start with '{expected}': {bar:?}"
+        );
     }
 }
 
@@ -479,7 +489,7 @@ fn clicking_a_work_card_toggles_it() {
     // It must be drawn once so the widget records coordinates and card positions.
     let _ = dump(&mut s, 60, 12);
 
-    let (row, seq) = s.view_cards.iter().map(|(r, q)| (*r, *q)).next().expect("카드가 없다");
+    let (row, seq) = s.view_cards.iter().map(|(r, q)| (*r, *q)).next().expect("no card");
     assert_eq!(seq, 1);
 
     let (ox, oy) = s.view_origin;
@@ -487,11 +497,11 @@ fn clicking_a_work_card_toggles_it() {
     apply(&mut s, &Action::Press(ox + 1, y));
     apply(&mut s, &Action::Release);
 
-    assert_eq!(s.folds[&1], Fold { open: true }, "클릭으로 펴져야 한다");
+    assert_eq!(s.folds[&1], Fold { open: true }, "a click must unfold it");
 
     apply(&mut s, &Action::Press(ox + 1, y));
     apply(&mut s, &Action::Release);
-    assert!(!s.folds[&1].open, "다시 클릭하면 접혀야 한다");
+    assert!(!s.folds[&1].open, "clicking again must fold it");
 }
 
 /// Dragging selects text, and the selection **survives the release** — the I/O layer exports it to the clipboard.
@@ -513,7 +523,7 @@ fn dragging_selects_text_and_the_selection_survives_the_release() {
     let (ox, oy) = s.view_origin;
     apply(&mut s, &Action::Press(ox, oy));
     apply(&mut s, &Action::DragTo(ox + 10, oy));
-    let selected = s.selection.clone().expect("선택이 안 잡혔다");
+    let selected = s.selection.clone().expect("the selection was not taken");
     assert!(selected.contains("안녕"), "{selected:?}");
 
     // **It stays after release.** Exporting to the clipboard is the I/O layer's job, so here we only
@@ -561,9 +571,9 @@ fn the_selection_survives_releasing_the_mouse() {
     apply(&mut s, &Action::DragTo(ox + 10, oy));
     apply(&mut s, &Action::Release);
 
-    assert!(s.selection.is_some(), "떼고 나서 선택이 사라졌다");
-    assert!(s.drag.is_some(), "반전 표시도 남아 있어야 한다");
-    assert!(!s.dragging, "버튼은 뗀 상태여야 한다");
+    assert!(s.selection.is_some(), "the selection vanished after releasing");
+    assert!(s.drag.is_some(), "the inverted marker must survive too");
+    assert!(!s.dragging, "the button must be released");
 }
 
 /// Moving the mouse after release must not grow the range.
@@ -587,7 +597,7 @@ fn moving_after_release_does_not_grow_the_selection() {
     let before = s.selection.clone();
     apply(&mut s, &Action::Release);
     apply(&mut s, &Action::DragTo(ox + 20, oy));
-    assert_eq!(s.selection, before, "뗀 뒤에는 안 자라야 한다");
+    assert_eq!(s.selection, before, "after releasing it must not grow");
 }
 
 /// Scrolling must not lose the selection — it is in content coordinates, so it should follow along.
@@ -613,11 +623,15 @@ fn scrolling_keeps_the_selection() {
     apply(&mut s, &Action::DragTo(ox + 6, oy + 2));
     apply(&mut s, &Action::Release);
     let before = s.selection.clone();
-    assert!(before.is_some(), "선택이 안 잡혔다: rows={:?}", &s.rows_cache.plain()[s.view_top..]);
+    assert!(
+        before.is_some(),
+        "the selection was not taken: rows={:?}",
+        &s.rows_cache.plain()[s.view_top..]
+    );
 
     apply(&mut s, &Action::Wheel(2));
     let _ = dump(&mut s, 60, 10);
-    assert_eq!(s.selection, before, "휠을 굴렸다고 선택이 날아가면 안 된다");
+    assert_eq!(s.selection, before, "scrolling the wheel must not drop the selection");
 }
 
 /// The highlight must cover only the selected columns. If the whole row were reversed, what's selected and what's shown would differ.
@@ -645,9 +659,9 @@ fn the_highlight_covers_only_the_selected_columns() {
 
     let y = oy;
     let reversed = |x: u16| buf[(x, y)].style().add_modifier.contains(Modifier::REVERSED);
-    assert!(reversed(ox), "고른 첫 칸은 반전이어야 한다");
-    assert!(reversed(ox + 3), "고른 마지막 칸도 반전");
-    assert!(!reversed(ox + 8), "안 고른 칸은 반전이 아니어야 한다");
+    assert!(reversed(ox), "the first selected cell must be inverted");
+    assert!(reversed(ox + 3), "the last selected cell is inverted too");
+    assert!(!reversed(ox + 8), "an unselected cell must not be inverted");
 }
 
 fn question_event(seq: i64, result: serde_json::Value) -> AppFrame {
@@ -676,13 +690,13 @@ fn a_question_opens_for_answering_and_shows_its_options() {
     let mut s = State::new();
     s.lang = zyris_code::lang::Lang::Ko;
     apply(&mut s, &Action::Frame(question_event(1, serde_json::Value::Null)));
-    assert!(s.asking.is_some(), "답하기 모드로 안 들어갔다");
+    assert!(s.asking.is_some(), "it did not enter answering mode");
 
     let screen = dump(&mut s, 70, 16);
     assert!(screen.contains("어느 쪽으로 갈까요?"), "\n{screen}");
     assert!(screen.contains("A안"), "\n{screen}");
-    assert!(screen.contains("빠르다"), "설명도 보여야 한다\n{screen}");
-    assert!(screen.contains("직접 입력"), "자유 입력 대안이 없다\n{screen}");
+    assert!(screen.contains("빠르다"), "the description must be shown too\n{screen}");
+    assert!(screen.contains("직접 입력"), "no free-input alternative\n{screen}");
 }
 
 /// An already-answered question must not reopen.
@@ -722,7 +736,7 @@ fn choosing_then_submitting_fills_the_answer_and_marks_it_for_sending() {
             }
             press(s, KeyCode::Down);
         }
-        panic!("{want:?} 줄이 없다: {:?}", s.asking.as_ref().map(|(_, a)| a.rows()));
+        panic!("no {want:?} row: {:?}", s.asking.as_ref().map(|(_, a)| a.rows()));
     };
 
     press(&mut s, KeyCode::Down); // to option B
@@ -734,9 +748,13 @@ fn choosing_then_submitting_fills_the_answer_and_marks_it_for_sending() {
     go_to(&mut s, Act::Submit);
     press(&mut s, KeyCode::Enter);
 
-    assert!(s.asking.is_none(), "제출하면 질문이 닫힌다");
-    assert!(s.submit_now, "곧바로 보낼 표시가 서야 한다");
-    assert!(s.input.text.contains("어느 쪽으로 갈까요?"), "질문을 실어야 한다: {}", s.input.text);
+    assert!(s.asking.is_none(), "submitting closes the question");
+    assert!(s.submit_now, "the send-now flag must be set");
+    assert!(
+        s.input.text.contains("어느 쪽으로 갈까요?"),
+        "the question must be carried: {}",
+        s.input.text
+    );
     assert!(s.input.text.contains("B안"), "{}", s.input.text);
 }
 
@@ -748,9 +766,9 @@ fn the_question_replaces_the_input_box() {
     apply(&mut s, &Action::Frame(question_event(1, serde_json::Value::Null)));
     let screen = dump(&mut s, 70, 16);
     // The question screen only has back-and-forth. Submit appears only on the review screen after all questions are asked.
-    assert!(screen.contains("건너뛰기"), "건너뛰기 줄이 없다\n{screen}");
-    assert!(!screen.contains("제출"), "질문 화면에 제출이 있다\n{screen}");
-    assert!(screen.contains("✎ 직접 입력"), "자유 입력 줄이 없다\n{screen}");
+    assert!(screen.contains("건너뛰기"), "no skip row\n{screen}");
+    assert!(!screen.contains("제출"), "submit appears on the question screen\n{screen}");
+    assert!(screen.contains("✎ 직접 입력"), "no free-input row\n{screen}");
     // While a question is open, the usual input prompt gives up its place.
     let bottom: Vec<&str> = screen.lines().rev().take(3).collect();
     assert!(
@@ -770,7 +788,7 @@ fn typing_while_a_question_is_open_does_not_leak_into_the_message_box() {
     for a in on_key(&s, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)) {
         apply(&mut s, &a);
     }
-    assert_eq!(s.input.text, "", "질문 중에 글자가 입력란으로 샜다");
+    assert_eq!(s.input.text, "", "a keystroke leaked into the input during a question");
 }
 
 /// ← opens the list only when the input is empty. If there's text, cursor movement comes first.
@@ -784,7 +802,7 @@ fn left_arrow_opens_the_picker_only_when_the_input_is_empty() {
     assert_eq!(on_key(&s, left), vec![Action::OpenPicker]);
 
     apply(&mut s, &Action::Insert('가'));
-    assert_eq!(on_key(&s, left), vec![Action::Left], "글자가 있으면 커서 이동");
+    assert_eq!(on_key(&s, left), vec![Action::Left], "with text present, it moves the cursor");
 }
 
 /// When the list opens, keys go to it, and it overlays the conversation.
@@ -809,7 +827,7 @@ fn the_picker_overlays_the_conversation_and_takes_the_keys() {
 
     let screen = dump(&mut s, 70, 16);
     assert!(screen.contains("프로젝트"), "\n{screen}");
-    assert!(screen.contains("＋ 새 프로젝트"), "생성 줄이 없다\n{screen}");
+    assert!(screen.contains("＋ 새 프로젝트"), "no create row\n{screen}");
     assert!(screen.contains("zyris"), "\n{screen}");
 
     // While the list is open, typed characters must not leak into the input box.
@@ -855,10 +873,10 @@ fn the_new_project_form_renders_and_types_into_the_name_field() {
     s.new_project = Some(Form::new());
 
     let screen = dump(&mut s, 70, 16);
-    assert!(screen.contains("새 프로젝트"), "제목이 없다\n{screen}");
-    assert!(screen.contains("이름"), "이름 칸이 없다\n{screen}");
-    assert!(screen.contains("설명"), "설명 칸이 없다\n{screen}");
-    assert!(screen.contains("Enter 만들기"), "안내가 없다\n{screen}");
+    assert!(screen.contains("새 프로젝트"), "no title\n{screen}");
+    assert!(screen.contains("이름"), "no name field\n{screen}");
+    assert!(screen.contains("설명"), "no description field\n{screen}");
+    assert!(screen.contains("Enter 만들기"), "no hint\n{screen}");
 
     // Typed characters go to the form's name field — they must not leak into the input box below.
     for a in on_key(&s, key(KeyCode::Char('가'))) {
@@ -867,13 +885,13 @@ fn the_new_project_form_renders_and_types_into_the_name_field() {
     assert_eq!(s.new_project.as_ref().unwrap().name.text, "가");
     assert_eq!(s.input.text, "");
     let screen = dump(&mut s, 70, 16);
-    assert!(screen.contains('가'), "친 글자가 화면에 없다\n{screen}");
+    assert!(screen.contains('가'), "the typed characters are not on screen\n{screen}");
 
     // Esc closes the form.
     for a in on_key(&s, key(KeyCode::Esc)) {
         apply(&mut s, &a);
     }
-    assert!(s.new_project.is_none(), "Esc가 양식을 안 닫았다");
+    assert!(s.new_project.is_none(), "Esc did not close the form");
 }
 
 /// Session titles come in arbitrary lengths. Without truncation they'd punch through the box and break the screen.
@@ -894,9 +912,9 @@ fn long_picker_labels_are_truncated_inside_the_box() {
     ));
     let screen = dump(&mut s, 70, 16);
     for line in screen.lines() {
-        assert!(zyris_code::markdown::display_width(line) <= 70, "폭을 넘었다: {line:?}");
+        assert!(zyris_code::markdown::display_width(line) <= 70, "it exceeded the width: {line:?}");
     }
-    assert!(screen.contains('…'), "잘렸다는 표시가 없다\n{screen}");
+    assert!(screen.contains('…'), "no marker saying it was cut\n{screen}");
 }
 
 fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
@@ -933,7 +951,7 @@ fn inside_the_picker_right_does_nothing_and_left_goes_back() {
         vec![("p1".into(), "기본".into(), true)],
         zyris_code::lang::Lang::Ko,
     ));
-    assert!(on_key(&s, key(KeyCode::Right)).is_empty(), "→ 는 아무 일도 안 해야 한다");
+    assert!(on_key(&s, key(KeyCode::Right)).is_empty(), "→ must do nothing");
     // ← is the same action at both the project and session levels. **What it does is decided by I/O** —
     // at the session level it returns to the project list; at the project level it closes.
     assert_eq!(on_key(&s, key(KeyCode::Left)), vec![Action::PickBack]);
@@ -952,7 +970,7 @@ fn going_back_from_sessions_never_closes_the_picker_in_apply() {
     s.picker =
         Some(Picker::sessions("p1".into(), "기본".into(), vec![], zyris_code::lang::Lang::Ko));
     apply(&mut s, &Action::PickBack);
-    assert!(s.picker.is_some(), "세션 단계에서 닫히면 안 된다");
+    assert!(s.picker.is_some(), "it must not close at the session level");
 
     // Even after I/O has moved it back to the project list, apply must not close it.
     s.picker = Some(Picker::projects(
@@ -984,7 +1002,7 @@ fn the_sidebar_is_on_by_default_and_ctrl_b_toggles_it() {
     }
     assert!(!s.sidebar_on);
     let screen = dump(&mut s, 90, 16);
-    assert!(!screen.contains("사용량"), "접었는데 남아 있다\n{screen}");
+    assert!(!screen.contains("사용량"), "it was folded but is still shown\n{screen}");
 }
 
 /// Tasks are collected from todo_* tool calls — the todo_change event has no body.
@@ -1023,7 +1041,7 @@ fn nothing_in_the_left_column_touches_the_sidebar_divider() {
     for line in screen.lines() {
         let Some(at) = line.find('│') else { continue };
         let before: String = line[..at].chars().rev().take(1).collect();
-        assert!(before.is_empty() || before == " ", "경계선에 글이 닿았다: {line:?}\n{screen}");
+        assert!(before.is_empty() || before == " ", "text touches the divider: {line:?}\n{screen}");
     }
 }
 
@@ -1032,7 +1050,7 @@ fn nothing_in_the_left_column_touches_the_sidebar_divider() {
 fn a_narrow_screen_drops_the_sidebar() {
     let mut s = State::new();
     let screen = dump(&mut s, 50, 12);
-    assert!(!screen.contains("사용량"), "좁은데 사이드바가 남아 있다\n{screen}");
+    assert!(!screen.contains("사용량"), "it is narrow but the sidebar is still there\n{screen}");
 }
 
 /// Even with the picker open, no line may exceed the screen width — even with wide characters mixed in.
@@ -1062,7 +1080,10 @@ fn the_picker_box_stays_inside_the_screen_with_wide_text_behind() {
 
     let screen = dump(&mut s, 70, 16);
     for line in screen.lines() {
-        assert!(zyris_code::markdown::display_width(line) <= 70, "폭을 넘었다: {line:?}\n{screen}");
+        assert!(
+            zyris_code::markdown::display_width(line) <= 70,
+            "it exceeded the width: {line:?}\n{screen}"
+        );
     }
 }
 
@@ -1082,9 +1103,9 @@ fn typed_answers_look_different_from_chosen_ones_in_history() {
         }),
     );
     let screen = dump(&mut s, 70, 12);
-    assert!(screen.contains("✎ 내가 쓴 답"), "직접 입력 표시가 없다\n{screen}");
-    assert!(!screen.contains("직접 입력: 내가 쓴 답"), "머리말이 그대로 남았다\n{screen}");
-    assert!(screen.contains("A안 (설명)"), "고른 것은 그대로여야 한다\n{screen}");
+    assert!(screen.contains("✎ 내가 쓴 답"), "no marker for a typed answer\n{screen}");
+    assert!(!screen.contains("직접 입력: 내가 쓴 답"), "the preamble is still shown\n{screen}");
+    assert!(screen.contains("A안 (설명)"), "the choice must stay as it was\n{screen}");
 }
 
 /// The active question must live only in the bottom panel. Drawn again in the conversation area, it would appear twice.
@@ -1094,7 +1115,7 @@ fn the_active_question_is_not_drawn_twice() {
     apply(&mut s, &Action::Frame(question_event(1, serde_json::Value::Null)));
     let screen = dump(&mut s, 70, 18);
     let count = screen.matches("어느 쪽으로 갈까요?").count();
-    assert_eq!(count, 1, "질문이 {count}번 그려졌다\n{screen}");
+    assert_eq!(count, 1, "the question was drawn {count} times\n{screen}");
 }
 
 /// Past the last question, the review screen appears; only there do submit / edit / not-answer show up.
@@ -1108,19 +1129,19 @@ fn the_review_screen_appears_after_the_last_question() {
 
     // The question screen must have no submit — it's too easy to send while unseen questions remain.
     let rows = s.asking.as_ref().unwrap().1.rows();
-    assert!(!rows.contains(&RowKind::Action(Act::Submit)), "질문 화면에 제출이 있다");
+    assert!(!rows.contains(&RowKind::Action(Act::Submit)), "submit appears on the question screen");
 
     // Nothing chosen → skip; something chosen → next.
-    assert!(rows.contains(&RowKind::Action(Act::Skip)), "안 골랐으면 건너뛰기여야 한다");
+    assert!(rows.contains(&RowKind::Action(Act::Skip)), "with nothing chosen it must be skip");
     apply(&mut s, &Action::AskConfirm); // select the first option
     let rows = s.asking.as_ref().unwrap().1.rows();
-    assert!(rows.contains(&RowKind::Action(Act::Next)), "고른 뒤에는 다음이어야 한다");
+    assert!(rows.contains(&RowKind::Action(Act::Next)), "after choosing it must be next");
 
     // next → review
     let last = rows.len() - 1;
     s.asking.as_mut().unwrap().1.cursor = last;
     apply(&mut s, &Action::AskConfirm);
-    assert!(s.asking.as_ref().unwrap().1.in_review(), "검토 화면이어야 한다");
+    assert!(s.asking.as_ref().unwrap().1.in_review(), "it must be the review screen");
 
     let screen = dump(&mut s, 70, 18);
     assert!(screen.contains("답한 내용"), "\n{screen}");
@@ -1144,7 +1165,7 @@ fn typed_free_text_stays_visible_in_the_list() {
     apply(&mut s, &Action::AskConfirm); // confirm
 
     let screen = dump(&mut s, 70, 18);
-    assert!(screen.contains("내가 쓴 답"), "적은 내용이 안 보인다\n{screen}");
+    assert!(screen.contains("내가 쓴 답"), "what was typed is not visible\n{screen}");
 }
 
 /// Entering the empty row tells you what the spot is for.
@@ -1158,7 +1179,7 @@ fn an_empty_free_text_row_shows_a_hint() {
     apply(&mut s, &Action::AskConfirm);
 
     let screen = dump(&mut s, 70, 18);
-    assert!(screen.contains("여기에 직접 적으세요"), "안내가 없다\n{screen}");
+    assert!(screen.contains("여기에 직접 적으세요"), "no hint\n{screen}");
 }
 
 /// You must be able to answer even after restarting — a question re-read from history must open too.
@@ -1169,7 +1190,7 @@ fn a_pending_question_from_history_opens_for_answering() {
     let mut s = State::new();
     // Same path as re-reading a session: replay the events as they were.
     apply(&mut s, &Action::Frame(question_event(7, serde_json::Value::Null)));
-    assert!(s.asking.is_some(), "되읽은 질문이 안 열렸다");
+    assert!(s.asking.is_some(), "the replayed question did not open");
 
     let screen = dump(&mut s, 70, 16);
     assert!(screen.contains("어느 쪽으로 갈까요?"), "\n{screen}");
@@ -1202,14 +1223,17 @@ fn the_usage_numbers_line_up_in_one_column() {
             let line = screen
                 .lines()
                 .find(|l| l.contains(key))
-                .unwrap_or_else(|| panic!("{key} 줄이 없다:\n{screen}"));
+                .unwrap_or_else(|| panic!("no {key} row:\n{screen}"));
             // After skipping the spaces after the name = the cell where the value starts. **It's a byte offset** —
             // slicing by character count would cut through the middle of a Hangul syllable and panic.
             let at = line.find(key).unwrap() + key.len();
             display_width(&line[..at]) + line[at..].chars().take_while(|c| *c == ' ').count()
         })
         .collect();
-    assert!(cols.windows(2).all(|w| w[0] == w[1]), "값의 왼쪽 끝이 안 맞는다: {cols:?}\n{screen}");
+    assert!(
+        cols.windows(2).all(|w| w[0] == w[1]),
+        "the values are not left-aligned: {cols:?}\n{screen}"
+    );
 }
 
 /// Context is **amount used / amount that fits**. A single number can't tell whether it's roomy or full.
@@ -1222,7 +1246,7 @@ fn the_context_shows_how_much_of_the_window_is_used() {
         ..Default::default()
     };
     let screen = dump(&mut s, 90, 16);
-    assert!(screen.contains("132.8k / 200k"), "쓴 양/최대가 아니다:\n{screen}");
+    assert!(screen.contains("132.8k / 200k"), "it is not used/limit:\n{screen}");
 }
 
 /// **For an unknown model, don't invent a limit.** Showing a guessed number makes it look true.
@@ -1236,7 +1260,7 @@ fn an_unknown_model_shows_no_limit() {
     };
     let screen = dump(&mut s, 90, 16);
     assert!(screen.contains("1k"), "\n{screen}");
-    assert!(!screen.contains("1k /"), "모르면서 최대를 붙였다:\n{screen}");
+    assert!(!screen.contains("1k /"), "it printed a maximum it does not know:\n{screen}");
 }
 
 /// **The bottom bar says when there are unsent messages.** If it doesn't announce what it's holding, the user believes it was sent.
@@ -1249,12 +1273,15 @@ fn the_bottom_bar_says_how_many_messages_are_waiting() {
     apply(&mut s, &Action::Submit("나중에 보낼 말".into()));
     let screen = dump(&mut s, 60, 12);
     let bottom = screen.lines().last().unwrap();
-    assert!(bottom.contains("대기 1개"), "대기 표시가 없다: {bottom:?}");
+    assert!(bottom.contains("대기 1개"), "the queued marker is missing: {bottom:?}");
 
     // When the queue empties, the indicator disappears too.
     s.queued.clear();
     let screen = dump(&mut s, 60, 12);
-    assert!(!screen.contains("대기"), "빈 대기열인데 표시가 남았다:\n{screen}");
+    assert!(
+        !screen.contains("대기"),
+        "the queue is empty but the marker is still shown:\n{screen}"
+    );
 }
 
 // ── diff of the tool that edited files ────────────────────────────────────────────────
@@ -1354,9 +1381,9 @@ fn expand_the_tool_row(state: &mut State) {
 fn a_file_edit_shows_how_many_lines_changed() {
     let mut s = state_with_edit_tool();
     let screen = dump(&mut s, 80, 24);
-    assert!(screen.contains("+12"), "추가 줄 수가 보여야 한다:\n{screen}");
-    assert!(screen.contains("−3"), "삭제 줄 수가 보여야 한다:\n{screen}");
-    assert!(screen.contains("src/app.rs"), "어느 파일인지 보여야 한다:\n{screen}");
+    assert!(screen.contains("+12"), "the added-line count must be shown:\n{screen}");
+    assert!(screen.contains("−3"), "the deleted-line count must be shown:\n{screen}");
+    assert!(screen.contains("src/app.rs"), "it must show which file:\n{screen}");
     assert!(
         !screen.contains("zyris__arch__code_edit__edit"),
         "와이어 이름이 그대로 나오면 한 줄을 다 먹는다:\n{screen}"
@@ -1369,14 +1396,14 @@ fn an_expanded_edit_paints_additions_green_and_deletions_red() {
     let mut s = state_with_edit_tool();
     expand_the_tool_row(&mut s);
     let (screen, colours) = dump_with_colours(&mut s, 80, 24);
-    assert!(screen.contains("+새 줄"), "더해진 줄이 안 보인다:\n{screen}");
-    assert!(screen.contains("-옛 줄"), "지워진 줄이 안 보인다:\n{screen}");
+    assert!(screen.contains("+새 줄"), "added lines are not visible:\n{screen}");
+    assert!(screen.contains("-옛 줄"), "removed lines are not visible:\n{screen}");
 
     let add = colour_of_line_containing(&screen, &colours, "+새 줄");
     let del = colour_of_line_containing(&screen, &colours, "-옛 줄");
-    assert_eq!(add, Some(zyris_code::theme::DIFF_ADD), "더해진 줄이 초록이 아니다:\n{screen}");
-    assert_eq!(del, Some(zyris_code::theme::DIFF_DEL), "지워진 줄이 빨강이 아니다:\n{screen}");
-    assert_ne!(add, del, "추가와 삭제가 같은 색이면 구분이 안 된다");
+    assert_eq!(add, Some(zyris_code::theme::DIFF_ADD), "added lines are not green:\n{screen}");
+    assert_eq!(del, Some(zyris_code::theme::DIFF_DEL), "removed lines are not red:\n{screen}");
+    assert_ne!(add, del, "additions and deletions in the same colour cannot be told apart");
 }
 
 /// **When there's a diff, show the diff instead of the raw JSON dump.** Both would make the screen twice as long,
@@ -1386,7 +1413,7 @@ fn an_expanded_edit_shows_the_diff_instead_of_the_raw_json() {
     let mut s = state_with_edit_tool();
     expand_the_tool_row(&mut s);
     let screen = dump(&mut s, 80, 24);
-    assert!(!screen.contains("인자"), "원본 JSON이 diff와 함께 나왔다:\n{screen}");
+    assert!(!screen.contains("인자"), "the raw JSON came out alongside the diff:\n{screen}");
 }
 
 // ── sidebar: where the tools run ─────────────────────────────────────────
@@ -1400,7 +1427,7 @@ fn the_sidebar_says_which_directory_the_tools_run_in() {
     let mut s = State::new();
     s.cwd = std::path::PathBuf::from("/srv/checkouts/some-repo");
     let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("some-repo"), "작업 디렉터리가 보여야 한다:\n{screen}");
+    assert!(screen.contains("some-repo"), "the working directory must be shown:\n{screen}");
 }
 
 /// If it weren't shown, ghost shells would run — shells the agent left open, unknown to the person.
@@ -1409,7 +1436,7 @@ fn open_shells_are_listed() {
     let mut s = State::new();
     s.shells = vec![zyris_code::app::Shell { id: "p1".into(), name: "zsh".into() }];
     let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("zsh"), "열린 셸이 보여야 한다:\n{screen}");
+    assert!(screen.contains("zsh"), "an open shell must be visible:\n{screen}");
 }
 
 /// An empty section must not take up space. The sidebar is narrow.
@@ -1417,7 +1444,10 @@ fn open_shells_are_listed() {
 fn no_shell_section_when_nothing_is_open() {
     let mut s = State::new();
     let screen = dump(&mut s, 100, 24);
-    assert!(!screen.contains("셸"), "열린 셸이 없으면 절 자체가 없어야 한다:\n{screen}");
+    assert!(
+        !screen.contains("셸"),
+        "with no open shell the section itself must be gone:\n{screen}"
+    );
 }
 
 /// A long path keeps only its last two segments. Beyond the sidebar width it would be truncated and unrecognizable.
@@ -1426,8 +1456,8 @@ fn a_long_working_directory_keeps_the_part_that_identifies_it() {
     let mut s = State::new();
     s.cwd = std::path::PathBuf::from("/home/ruma/very/deeply/nested/place/zyris-code");
     let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("place/zyris-code"), "끝 두 조각이 보여야 한다:\n{screen}");
-    assert!(!screen.contains("/home/ruma/very"), "앞쪽까지 나오면 넘친다:\n{screen}");
+    assert!(screen.contains("place/zyris-code"), "the last two pieces must be visible:\n{screen}");
+    assert!(!screen.contains("/home/ruma/very"), "reaching that far forward overflows:\n{screen}");
 }
 /// While a command runs, **what is running** must be shown. Since `exec` only reports once at completion,
 /// without this the person waits up to 55 seconds in the dark.
@@ -1438,8 +1468,11 @@ fn a_running_command_is_named_in_the_activity_line() {
     s.running = true;
     apply(&mut s, &Action::Frame(AppFrame::ExecStart { id: 1, command: "cargo build -j2".into() }));
     let screen = dump(&mut s, 80, 12);
-    assert!(screen.contains("cargo build -j2"), "무엇이 도는지 안 보인다:\n{screen}");
-    assert!(!screen.contains("작업 중…"), "구체적인 것이 있는데 뭉뚱그렸다:\n{screen}");
+    assert!(screen.contains("cargo build -j2"), "what is running is not visible:\n{screen}");
+    assert!(
+        !screen.contains("작업 중…"),
+        "it generalised even though a specific reason was known:\n{screen}"
+    );
 }
 
 /// It disappears when done. If it lingered, it would overlap the next one.
@@ -1452,8 +1485,11 @@ fn a_finished_command_leaves_the_activity_line() {
     apply(&mut s, &Action::Frame(AppFrame::ExecStart { id: 1, command: "cargo build".into() }));
     apply(&mut s, &Action::Frame(AppFrame::ExecDone { id: 1 }));
     let screen = dump(&mut s, 80, 12);
-    assert!(!screen.contains("cargo build"), "끝난 명령이 남아 있다:\n{screen}");
-    assert!(screen.contains("작업 중…"), "턴은 아직 도는데 아무 말이 없다:\n{screen}");
+    assert!(!screen.contains("cargo build"), "a finished command is still shown:\n{screen}");
+    assert!(
+        screen.contains("작업 중…"),
+        "the turn is still running but nothing is said:\n{screen}"
+    );
 }
 
 /// **Only clear the one that finished.** Clearing a running one because a different id finished would make the screen lie.
@@ -1465,7 +1501,7 @@ fn finishing_another_command_does_not_clear_the_running_one() {
     apply(&mut s, &Action::Frame(AppFrame::ExecStart { id: 2, command: "cargo test".into() }));
     apply(&mut s, &Action::Frame(AppFrame::ExecDone { id: 1 }));
     let screen = dump(&mut s, 80, 12);
-    assert!(screen.contains("cargo test"), "엉뚱한 번호에 지워졌다:\n{screen}");
+    assert!(screen.contains("cargo test"), "the wrong id was cleared:\n{screen}");
 }
 
 /// The elapsed time must show so you know it's still running. The test controls the clock.
@@ -1492,8 +1528,8 @@ fn asking_to_stop_shows_on_the_activity_line() {
     apply(&mut s, &Action::Frame(AppFrame::Status { running: true }));
     apply(&mut s, &Action::Cancel);
     let screen = dump(&mut s, 80, 12);
-    assert!(screen.contains("Stopping"), "멈추라고 한 것이 안 보인다:\n{screen}");
-    assert!(screen.contains("Ctrl+C quits"), "그다음 Ctrl+C가 무엇인지 말해야 한다:\n{screen}");
+    assert!(screen.contains("Stopping"), "the stop request is not shown:\n{screen}");
+    assert!(screen.contains("Ctrl+C quits"), "it must say what the next Ctrl+C does:\n{screen}");
 }
 
 // ── enrollment code window ──────────────────────────────────────────────────────────
@@ -1513,13 +1549,13 @@ fn the_enroll_window_shows_the_code_and_the_address() {
     let mut s = State::new();
     apply(&mut s, &Action::Frame(AppFrame::Enroll(enroll_view())));
     let screen = dump(&mut s, 80, 24);
-    assert!(screen.contains("WXQR-7KBD"), "코드가 안 보인다:\n{screen}");
+    assert!(screen.contains("WXQR-7KBD"), "the code is not visible:\n{screen}");
     assert!(
         screen.contains("attacca.example/settings/zyris/device"),
         "주소가 안 보인다:\n{screen}"
     );
-    assert!(screen.contains("Connect to Attacca"), "제목이 없다:\n{screen}");
-    assert!(screen.contains("Esc close"), "닫는 키 안내가 없다:\n{screen}");
+    assert!(screen.contains("Connect to Attacca"), "no title:\n{screen}");
+    assert!(screen.contains("Esc close"), "no hint for the closing key:\n{screen}");
 }
 
 /// When denied, the situation changes — closing silently would leave the person wondering what happened.
@@ -1529,7 +1565,7 @@ fn a_denied_enrollment_says_so_in_the_window() {
     apply(&mut s, &Action::Frame(AppFrame::Enroll(enroll_view())));
     apply(&mut s, &Action::Frame(AppFrame::EnrollPhase(zyris_code::app::EnrollPhase::Denied)));
     let screen = dump(&mut s, 80, 24);
-    assert!(screen.contains("declined"), "거부가 안 보인다:\n{screen}");
+    assert!(screen.contains("declined"), "the refusal is not shown:\n{screen}");
 }
 
 /// The enrollment window overlays the conversation — while reading the code, the background doesn't need to be visible.
@@ -1545,7 +1581,7 @@ fn the_enroll_window_overlays_the_conversation() {
     );
     apply(&mut s, &Action::Frame(AppFrame::Enroll(enroll_view())));
     let screen = dump(&mut s, 80, 24);
-    assert!(screen.contains("WXQR-7KBD"), "코드가 안 보인다:\n{screen}");
+    assert!(screen.contains("WXQR-7KBD"), "the code is not visible:\n{screen}");
 }
 
 // ── approval screen ──────────────────────────────────────────────────────────────
@@ -1571,7 +1607,7 @@ fn the_approval_screen_leads_with_the_path_that_leaves() {
     assert!(screen.contains("작업 디렉터리 밖"), "{screen}");
     assert!(screen.contains("/home/ruma/attacca/Cargo.toml"), "{screen}");
     assert!(screen.contains("code_edit.edit"), "{screen}");
-    assert!(screen.contains("y 허용"), "누를 키가 없다:\n{screen}");
+    assert!(screen.contains("y 허용"), "no key to press is offered:\n{screen}");
 }
 
 /// Even past the deadline, the **window stays**; only the situation changes.
@@ -1584,7 +1620,7 @@ fn an_expired_ask_stays_on_screen_and_says_so() {
     s.pending = Some(a);
     let screen = dump(&mut s, 90, 24);
     assert!(screen.contains("기다리다 돌아갔습니다"), "{screen}");
-    assert!(screen.contains("y 허용"), "답할 길이 사라지면 안 된다:\n{screen}");
+    assert!(screen.contains("y 허용"), "the way to answer must not disappear:\n{screen}");
 }
 
 /// It must say how many are waiting behind — you shouldn't think answering one is the end.
@@ -1607,7 +1643,7 @@ fn the_approval_screen_takes_the_place_of_the_input_box() {
 
     s.pending = Some(leaving_ask());
     let screen = dump(&mut s, 90, 24);
-    assert!(!screen.contains('안'), "입력란이 같이 떠 있다:\n{screen}");
+    assert!(!screen.contains('안'), "the input is still shown alongside:\n{screen}");
 }
 
 // ── list window ────────────────────────────────────────────────────────────────
@@ -1628,8 +1664,8 @@ fn a_long_list_shows_how_many_are_left() {
     s.lang = zyris_code::lang::Lang::Ko;
     s.picker = Some(long_session_list(40));
     let screen = dump(&mut s, 80, 16);
-    assert!(screen.contains("개 더"), "남은 개수가 없다:\n{screen}");
-    assert!(screen.contains('↓'), "아래로 남았다는 표시가 없다:\n{screen}");
+    assert!(screen.contains("개 더"), "the remaining count is missing:\n{screen}");
+    assert!(screen.contains('↓'), "no marker for what is left below:\n{screen}");
 }
 
 /// When everything fits, there's no marker. Saying "more" when nothing is cut would be a lie.
@@ -1638,7 +1674,7 @@ fn a_short_list_shows_no_overflow_mark() {
     let mut s = State::new();
     s.picker = Some(long_session_list(2));
     let screen = dump(&mut s, 80, 24);
-    assert!(!screen.contains("개 더"), "안 잘렸는데 표시가 있다:\n{screen}");
+    assert!(!screen.contains("개 더"), "nothing was cut but the marker is there:\n{screen}");
 }
 
 /// **"New" is ruled off from the list.** Sitting next to it, it would read as one of the sessions.
@@ -1648,8 +1684,8 @@ fn the_create_row_is_ruled_off_from_the_sessions() {
     s.picker = Some(long_session_list(3));
     let screen = dump(&mut s, 80, 24);
     let lines: Vec<&str> = screen.lines().collect();
-    let at = lines.iter().position(|l| l.contains("새 쓰레드")).expect("만들 줄이 없다");
-    assert!(lines[at + 1].contains('─'), "가름선이 없다:\n{screen}");
+    let at = lines.iter().position(|l| l.contains("새 쓰레드")).expect("no create row");
+    assert!(lines[at + 1].contains('─'), "no rule:\n{screen}");
 }
 
 /// The create row has a **different colour** — it's for creating, not selecting.
@@ -1664,8 +1700,12 @@ fn the_create_row_is_coloured_apart_from_the_list() {
     let top = screen.lines().position(|l| l.contains("새 쓰레드")).unwrap() as u16;
     let create = cell_fg(&mut s, 80, 24, LABEL_X, top);
     let session = cell_fg(&mut s, 80, 24, LABEL_X, top + 2);
-    assert_eq!(create, Some(zyris_code::theme::ACCENT), "만들 줄이 강조색이 아니다");
-    assert_ne!(create, session, "만들 줄과 세션이 같은 색이다:\n{screen}");
+    assert_eq!(
+        create,
+        Some(zyris_code::theme::ACCENT),
+        "the create row is not in the accent colour"
+    );
+    assert_ne!(create, session, "the create row and the sessions share a colour:\n{screen}");
 }
 
 /// The default mode has a colour too — grey would make the whole bottom bar read as background.

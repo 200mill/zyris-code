@@ -45,20 +45,20 @@ async fn main() -> ExitCode {
     let creds: Arc<dyn Credentials> = match zyris_code::enroll::source(&config, &bridge) {
         Ok((creds, _)) => creds,
         Err(e) => {
-            println!("자격을 만들지 못했다: {e}");
+            println!("could not build credentials: {e}");
             return ExitCode::FAILURE;
         }
     };
 
     // Two share one credential — the same shape as two windows reading the same file.
-    let first = dial("첫째", creds.clone());
+    let first = dial("first", creds.clone());
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let second = dial("둘째", creds.clone());
+    let second = dial("second", creds.clone());
 
     tokio::time::sleep(OVERLAP).await;
-    println!("\n두 연결이 겹쳐 있는 동안의 결과다. 위 두 줄의 node_id를 견줘 볼 것:");
-    println!("  다르면  → 서버가 연결마다 노드를 갈라 준다 (창마다 그냥 붙으면 된다)");
-    println!("  같으면  → 한 노드를 두고 싸운다 (나중 것이 도구 호출을 가져간다)");
+    println!("\nboth connections overlapped. Compare the node_id on the two lines above:");
+    println!("  different → the server splits nodes per connection (each window can connect)");
+    println!("  same      → they fight over one node (the later one takes the tool calls)");
     first.abort();
     second.abort();
     ExitCode::SUCCESS
@@ -72,7 +72,7 @@ fn dial(label: &'static str, creds: Arc<dyn Credentials>) -> tokio::task::JoinHa
                 println!("{label}: node_id={} conn_id={}", info.node_id, info.conn_id);
                 // Must stay connected for the overlap. If it drops, there's no way to see displacement.
                 conn.closed().await;
-                println!("{label}: 연결이 끊겼다");
+                println!("{label}: connection dropped");
             },
         );
         let _ = runner.try_run().await;

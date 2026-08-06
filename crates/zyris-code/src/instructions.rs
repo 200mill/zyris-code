@@ -179,8 +179,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         write(d.path(), "CLAUDE.md", &"가".repeat(ONE_LIMIT));
         let found = collect(d.path());
-        assert!(found[0].text.len() <= ONE_LIMIT + 64, "{}바이트", found[0].text.len());
-        assert!(found[0].text.contains("여기까지만"), "잘렸다는 말이 없다");
+        assert!(found[0].text.len() <= ONE_LIMIT + 64, "{} bytes", found[0].text.len());
+        assert!(found[0].text.contains("여기까지만"), "it doesn't say it was clipped");
     }
 
     /// Korean must not be cut in half — cutting by bytes is how that happens.

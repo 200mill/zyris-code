@@ -225,7 +225,7 @@ pub fn target_of(capability: &str, tool: &str, args: &Value) -> String {
         }
         // Things that continue an already-open PTY target that PTY.
         ("terminal", _) => args.get("pty").and_then(Value::as_str).unwrap_or_default().to_string(),
-        // 배경에 거는 것도 명령의 첫 낱말이다 — 화면에 `cargo`라고 뜨는 편이 낫다.
+        // Backgrounding it also goes by the command's first word — `cargo` reads better on screen.
         ("wait", "start") => {
             let first = s("command").split_whitespace().next().unwrap_or_default().to_string();
             if first.is_empty() {
@@ -234,7 +234,7 @@ pub fn target_of(capability: &str, tool: &str, args: &Value) -> String {
                 first
             }
         }
-        // **되묻기인지가 계획 모드 판정을 가른다**(`only_reads`).
+        // **Whether it is a probe splits the plan-mode decision** (`only_reads`).
         ("wait", "until") => {
             if args.get("command").and_then(Value::as_str).is_some_and(|c| !c.is_empty()) {
                 PROBE_TARGET.to_string()
@@ -273,11 +273,11 @@ mod tests {
         let grants = Grants::default();
         for read in ["status", "list"] {
             let seen = decide(Mode::Plan, &grants, &call("work", read, ""));
-            assert_eq!(seen, Decision::Run, "계획 모드에서도 들여다보는 것은 된다: {read}");
+            assert_eq!(seen, Decision::Run, "looking is allowed in plan mode too: {read}");
         }
         for write in ["start", "say", "stop", "resume"] {
             let seen = decide(Mode::Plan, &grants, &call("work", write, ""));
-            assert!(matches!(seen, Decision::Refuse(_)), "계획 모드에서 통과했다: {write}");
+            assert!(matches!(seen, Decision::Refuse(_)), "it passed in plan mode: {write}");
         }
     }
 
@@ -346,7 +346,7 @@ mod tests {
         ];
         for mode in [Mode::Job, Mode::Work, Mode::Job] {
             for c in &calls {
-                assert_eq!(decide(mode, &grants, c), Decision::Run, "{mode:?}가 막았다: {c:?}");
+                assert_eq!(decide(mode, &grants, c), Decision::Run, "{mode:?} blocked it: {c:?}");
             }
         }
         // The comparison spot — plan mode blocks the same call.
@@ -364,7 +364,7 @@ mod tests {
         for mode in Mode::ALL {
             let seen = decide(mode, &Grants::default(), &outside);
             // Plan mode already refuses (writes) or asks (reads) before that. Just not passing is enough.
-            assert_ne!(seen, Decision::Run, "{mode:?}가 밖으로 그냥 나갔다");
+            assert_ne!(seen, Decision::Run, "{mode:?} just walked outside");
         }
     }
 
@@ -396,7 +396,7 @@ mod tests {
         let g = Grants::default();
         for path in ["/home/ruma/attacca/Cargo.toml", "../attacca/x.rs", "/etc/passwd"] {
             let c = out("code_edit", "edit", path);
-            assert!(c.outside.is_some(), "{path}가 밖으로 안 잡혔다");
+            assert!(c.outside.is_some(), "{path} was not caught as leaving");
             assert_eq!(decide(Mode::Job, &g, &c), Decision::Ask, "{path}");
         }
     }
@@ -455,7 +455,7 @@ mod tests {
     fn planning_refuses_before_it_would_ask() {
         let c = out("code_edit", "edit", "/home/ruma/attacca/x.rs");
         let Decision::Refuse(why) = decide(Mode::Plan, &Grants::default(), &c) else {
-            panic!("계획 모드에서 통과했다");
+            panic!("it passed in plan mode");
         };
         assert!(why.contains("계획"), "{why}");
     }

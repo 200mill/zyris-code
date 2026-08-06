@@ -328,13 +328,13 @@ impl Timeline {
         let mine = |s: &Said| Item::System { seq: s.seq, text: s.text.clone() };
         // What was said when no events existed stands at the very front.
         while said.peek().is_some_and(|s| s.after == 0) {
-            out.push(mine(said.next().expect("방금 봤다")));
+            out.push(mine(said.next().expect("just looked at it")));
         }
         let mut pending: Vec<&Said> = Vec::new();
         for item in items {
             // The sayings that go after this item — those whose after equals this item's seq.
             while said.peek().is_some_and(|s| s.after == item.seq()) {
-                pending.push(said.next().expect("방금 봤다"));
+                pending.push(said.next().expect("just looked at it"));
             }
             out.push(item);
             if !pending.is_empty() {
@@ -501,7 +501,7 @@ mod tests {
         t.say("둘");
         let seqs: Vec<i64> = t.items().iter().map(|i| i.seq()).collect();
         let unique: std::collections::HashSet<i64> = seqs.iter().copied().collect();
-        assert_eq!(seqs.len(), unique.len(), "seq가 겹친다: {seqs:?}");
+        assert_eq!(seqs.len(), unique.len(), "seq values collide: {seqs:?}");
         assert!(seqs.iter().filter(|s| **s < 0).count() == 2, "{seqs:?}");
     }
 
@@ -534,10 +534,10 @@ mod tests {
         t.upsert(e(10, EntryKind::WorkStart("스크롤 계산 위치를 찾는 중".into())));
 
         let items = t.items();
-        assert_eq!(items.len(), 1, "같은 seq는 하나로 남아야 한다");
+        assert_eq!(items.len(), 1, "the same seq must stay a single entry");
         match &items[0] {
             Item::Work { title, .. } => assert_eq!(title, "스크롤 계산 위치를 찾는 중"),
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -553,12 +553,12 @@ mod tests {
         t.upsert(e(1, EntryKind::Thinking("무엇부터 볼까".into())));
 
         let items = t.items().to_vec();
-        assert_eq!(items.len(), 1, "카드가 하나 생겨야 한다: {items:?}");
+        assert_eq!(items.len(), 1, "exactly one card must appear: {items:?}");
         match &items[0] {
             Item::Work { parts, .. } => {
                 assert_eq!(parts, &vec![Part::Think("무엇부터 볼까".into())])
             }
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -579,7 +579,7 @@ mod tests {
         ));
         match &t.items()[0] {
             Item::Work { parts, .. } => assert_eq!(parts.len(), 1, "{parts:?}"),
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -601,12 +601,12 @@ mod tests {
             },
         ));
         let Item::Work { seq, parts, .. } = &t.items()[0] else {
-            panic!("암시적 카드여야 한다");
+            panic!("it must be an implicit card");
         };
         let Part::Step(first) = &parts[0] else {
-            panic!("첫 부분은 도구여야 한다");
+            panic!("the first part must be a tool");
         };
-        assert_ne!(*seq, first.seq, "카드 접힘 키가 첫 도구와 겹친다");
+        assert_ne!(*seq, first.seq, "the card fold key collides with the first tool");
     }
 
     /// **The streaming answer stands where the turn started.** Appended at the end, it would be pushed
@@ -628,12 +628,14 @@ mod tests {
             },
         ));
         let items = t.items().to_vec();
-        let agent_at = items
-            .iter()
-            .position(|i| matches!(i, Item::Agent { text, .. } if text == "전부 통과"));
+        let agent_at =
+            items.iter().position(|i| matches!(i, Item::Agent { text, .. } if text == "전부 통과"));
         let work_at = items.iter().position(|i| matches!(i, Item::Work { .. }));
         assert!(agent_at.is_some() && work_at.is_some(), "{items:?}");
-        assert!(agent_at.unwrap() < work_at.unwrap(), "텍스트가 도구 아래로 밀렸다: {items:?}");
+        assert!(
+            agent_at.unwrap() < work_at.unwrap(),
+            "the text was pushed below the tool: {items:?}"
+        );
     }
 
     /// **A late `work_summary` takes over the card it belongs to.** Events are reordered by seq,
@@ -646,13 +648,13 @@ mod tests {
         t.upsert(e(1, EntryKind::WorkStart("리팩터링".into())));
 
         let items = t.items().to_vec();
-        assert_eq!(items.len(), 1, "카드가 둘로 갈라졌다: {items:?}");
+        assert_eq!(items.len(), 1, "the card was split in two: {items:?}");
         match &items[0] {
             Item::Work { title, parts, .. } => {
                 assert_eq!(title, "리팩터링");
                 assert_eq!(parts, &vec![Part::Think("먼저 구조를 보자".into())]);
             }
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -698,9 +700,9 @@ mod tests {
                     ],
                     "첫 카드는 생각 다음 도구"
                 );
-                assert_eq!(second.len(), 1, "둘째 카드는 read 하나");
+                assert_eq!(second.len(), 1, "the second card holds one read");
             }
-            other => panic!("작업 카드 둘이어야 한다: {other:?}"),
+            other => panic!("there must be two work cards: {other:?}"),
         }
     }
 
@@ -735,7 +737,7 @@ mod tests {
             },
         ));
 
-        let Item::Work { parts, .. } = &t.items()[0] else { panic!("작업 카드여야 한다") };
+        let Item::Work { parts, .. } = &t.items()[0] else { panic!("it must be a work card") };
         assert_eq!(
             parts,
             &vec![
@@ -755,7 +757,7 @@ mod tests {
         t.upsert(e(2, EntryKind::Thinking("첫 생각".into())));
         t.upsert(e(3, EntryKind::Thinking("이어지는 생각".into())));
 
-        let Item::Work { parts, .. } = &t.items()[0] else { panic!("작업 카드여야 한다") };
+        let Item::Work { parts, .. } = &t.items()[0] else { panic!("it must be a work card") };
         assert_eq!(parts, &vec![Part::Think("첫 생각\n이어지는 생각".into())]);
     }
 
@@ -778,7 +780,7 @@ mod tests {
         ));
         t.push_delta(ZDeltaKind::Reasoning, "결과를 읽어 보니");
 
-        let Item::Work { parts, .. } = &t.items()[0] else { panic!("작업 카드여야 한다") };
+        let Item::Work { parts, .. } = &t.items()[0] else { panic!("it must be a work card") };
         assert_eq!(parts.len(), 3, "{parts:?}");
         assert_eq!(parts[2], Part::Think("결과를 읽어 보니".into()));
     }
@@ -792,7 +794,7 @@ mod tests {
 
         match t.items().last().unwrap() {
             Item::Agent { text, .. } => assert_eq!(text, "답변이 흘러온다"),
-            other => panic!("답변이어야 한다: {other:?}"),
+            other => panic!("it must be an answer: {other:?}"),
         }
     }
 
@@ -804,7 +806,7 @@ mod tests {
         t.upsert(e(7, EntryKind::Agent("답변이 흘러온다".into())));
 
         let agents = t.items().iter().filter(|i| matches!(i, Item::Agent { .. })).count();
-        assert_eq!(agents, 1, "델타와 durable이 겹쳐 두 벌이 되면 안 된다");
+        assert_eq!(agents, 1, "a delta and its durable event must not become two entries");
     }
 
     /// Reasoning deltas go into the open work card.
@@ -818,7 +820,7 @@ mod tests {
             Item::Work { parts, .. } => {
                 assert_eq!(parts, &vec![Part::Think("무엇부터 볼까".into())])
             }
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -834,15 +836,15 @@ mod tests {
         t.items();
         t.items();
         t.items();
-        assert_eq!(t.rebuilds(), 1, "안 바뀌었으면 한 번만 만들어야 한다");
+        assert_eq!(t.rebuilds(), 1, "unchanged, it must be built only once");
 
         t.push_delta(ZDeltaKind::Assistant, "답");
         t.items();
-        assert_eq!(t.rebuilds(), 2, "델타가 오면 다시 만들어야 한다");
+        assert_eq!(t.rebuilds(), 2, "a delta must rebuild it");
 
         t.upsert(e(2, EntryKind::Agent("답".into())));
         t.items();
-        assert_eq!(t.rebuilds(), 3, "이벤트가 오면 다시 만들어야 한다");
+        assert_eq!(t.rebuilds(), 3, "an event must rebuild it");
     }
 
     /// When a new run starts, the previous run's reasoning deltas must not carry over.
@@ -855,7 +857,7 @@ mod tests {
 
         match &t.items()[1] {
             Item::Work { parts, .. } => assert!(parts.is_empty(), "{parts:?}"),
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -886,7 +888,7 @@ mod tests {
         t.upsert(tool_at(5, "exec", "git push"));
 
         let items = t.items().to_vec();
-        assert_eq!(items.len(), 1, "카드가 쪼개지면 안 된다: {items:?}");
+        assert_eq!(items.len(), 1, "the card must not be split: {items:?}");
         match &items[0] {
             Item::Work { parts, .. } => assert_eq!(
                 parts,
@@ -898,7 +900,7 @@ mod tests {
                 ],
                 "말한 순서 그대로 카드 안에 있어야 한다"
             ),
-            other => panic!("작업 카드여야 한다: {other:?}"),
+            other => panic!("it must be a work card: {other:?}"),
         }
     }
 
@@ -910,7 +912,7 @@ mod tests {
         t.push_delta(ZDeltaKind::Assistant, "전부 통과. 이제 커밋합니다");
         t.upsert(tool_at(2, "exec", "git commit"));
         let Item::Work { parts, .. } = &t.items()[0] else {
-            panic!("작업 카드여야 한다");
+            panic!("it must be a work card");
         };
         assert_eq!(
             parts,
@@ -932,7 +934,7 @@ mod tests {
         t.upsert(tool_at(2, "exec", "git commit"));
         t.push_delta(ZDeltaKind::Assistant, "커밋하고 푸시하는 중");
         let Item::Work { parts, .. } = &t.items()[0] else {
-            panic!("작업 카드여야 한다");
+            panic!("it must be a work card");
         };
         assert_eq!(
             parts,
@@ -956,12 +958,13 @@ mod tests {
 
         let items = t.items().to_vec();
         let work = items.iter().filter(|i| matches!(i, Item::Work { .. })).count();
-        assert_eq!(work, 1, "끼어든 뒤에 새 카드가 생기면 안 된다: {items:?}");
+        assert_eq!(work, 1, "no new card may appear after the interruption: {items:?}");
         let user_at = items.iter().position(|i| matches!(i, Item::User { .. })).unwrap();
-        let agent_at =
-            items.iter().position(|i| matches!(i, Item::Agent { text, .. } if text == "네 알겠습니다"))
-                .expect("독립 답변이 없다");
-        assert!(user_at < agent_at, "답변이 사용자 말 뒤에 있어야 한다: {items:?}");
+        let agent_at = items
+            .iter()
+            .position(|i| matches!(i, Item::Agent { text, .. } if text == "네 알겠습니다"))
+            .expect("no standalone answer");
+        assert!(user_at < agent_at, "the answer must come after the user message: {items:?}");
     }
 
     /// **Snippets don't duplicate across rebuilds** — placement starts over from scratch each time,
@@ -974,14 +977,11 @@ mod tests {
         let _ = t.items();
         t.upsert(tool_at(2, "grep", "rows"));
         let Item::Work { parts, .. } = &t.items()[0] else {
-            panic!("작업 카드여야 한다");
+            panic!("it must be a work card");
         };
         assert_eq!(
             parts,
-            &vec![
-                Part::Text("생각".into()),
-                Part::Step(step_at(2, "grep", "rows")),
-            ],
+            &vec![Part::Text("생각".into()), Part::Step(step_at(2, "grep", "rows")),],
             "토막이 두 번 들어갔다: {parts:?}"
         );
     }

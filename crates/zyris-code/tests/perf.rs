@@ -202,7 +202,7 @@ fn wire_terminal(wire: Wire) -> Terminal<CrosstermBackend<Wire>> {
         CrosstermBackend::new(wire),
         TerminalOptions { viewport: Viewport::Fixed(Rect::new(0, 0, W, H)) },
     )
-    .expect("메모리 백엔드")
+    .expect("in-memory backend")
 }
 
 /// Draws once and returns the number of bytes that went on the wire in between.

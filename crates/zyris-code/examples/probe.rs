@@ -35,7 +35,7 @@ async fn probe(conn: &Connection) {
     let api = match conn.wait_capability::<AttaccaApiClient>(WAIT).await {
         Ok(api) => api,
         Err(e) => {
-            println!("attacca_api 없음: {e}");
+            println!("no attacca_api: {e}");
             return;
         }
     };
@@ -43,34 +43,34 @@ async fn probe(conn: &Connection) {
     let agents = match api.list_agents().await {
         Ok(a) => a,
         Err(e) => {
-            println!("list_agents 실패: {e}");
+            println!("list_agents failed: {e}");
             return;
         }
     };
 
-    println!("\n=== 에이전트 {}개 ===", agents.len());
+    println!("\n=== {} agents ===", agents.len());
     for a in &agents {
         // The 13th hex character of the UUID is the version: the first character of the third group in 8-4-4-4-12.
         let version = a.id.split('-').nth(2).and_then(|g| g.chars().next()).unwrap_or('?');
         let kind = match version {
-            '4' => "DB 행",
-            '5' => "git 합성",
+            '4' => "DB row",
+            '5' => "git synth",
             _ => "?",
         };
         println!("  {:38}  v{}  {:9}  {}", a.id, version, kind, a.name);
     }
 
     let Some(target) = std::env::args().nth(1) else {
-        println!("\n(전송 대상 이름을 인자로 주면 한 턴 보내 본다)");
+        println!("\n(pass a target name as an argument to try sending one turn)");
         return;
     };
 
     let Some(agent) = agents.iter().find(|a| a.name == target) else {
-        println!("\n'{target}'이라는 에이전트가 없다");
+        println!("\nno agent named '{target}'");
         return;
     };
 
-    println!("\n=== '{}' 로 전송 시도 ===", agent.name);
+    println!("\n=== trying to send to '{}' ===", agent.name);
     let session = match api
         .create_session_with(ZNewSession {
             agent_id: agent.id.clone(),
@@ -91,7 +91,7 @@ async fn probe(conn: &Connection) {
     };
 
     match api.send_message(session.id.clone(), "2 더하기 3은?".into(), vec![]).await {
-        Ok(()) => println!("  send_message ✓  전송됐다"),
+        Ok(()) => println!("  send_message ✓  sent"),
         Err(e) => println!("  send_message ✗  {e}"),
     }
 }

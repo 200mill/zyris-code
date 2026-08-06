@@ -184,7 +184,7 @@ mod tests {
     fn a_note_is_dropped_rather_than_squeezed_to_nothing() {
         // A width where the name fits exactly and no room is left for the note.
         let (label, note) = split(14, "가나다라마", Some("설명"));
-        assert_eq!(label, "가나다라마", "이름이 깎였다");
+        assert_eq!(label, "가나다라마", "the name was truncated");
         assert!(note.is_none(), "{note:?}");
     }
 
@@ -192,8 +192,8 @@ mod tests {
     #[test]
     fn a_very_long_name_is_still_cut_to_fit() {
         let (label, _) = split(20, &"가".repeat(40), None);
-        assert!(display_width(&label) <= 18, "{}칸: {label}", display_width(&label));
-        assert!(label.ends_with('…'), "잘렸다는 표시가 없다: {label}");
+        assert!(display_width(&label) <= 18, "{} columns: {label}", display_width(&label));
+        assert!(label.ends_with('…'), "no marker saying it was cut: {label}");
     }
 
     /// When both fit, both show.

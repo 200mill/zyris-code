@@ -119,7 +119,7 @@ pub fn parse(text: &str) -> Option<Command> {
             },
         },
         "changes" | "changed" | "diff" => Command::Changes,
-        // 보는 것과 멈추는 것만이다. 여는 길은 에이전트의 `wait.start` 하나로 둔다.
+        // Looking and stopping only. Starting one stays the agent's `wait.start` alone.
         "jobs" | "job" => match arg.split_once(' ') {
             None if arg.is_empty() || arg == "list" => Command::Jobs(None),
             Some(("stop" | "kill", id)) if !id.trim().is_empty() => {
@@ -220,7 +220,10 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
     match lang {
         Lang::Ko => vec![
             ("Shift+Tab", "모드 바꾸기 (기본 → 계획 → work → job)"),
-            ("Shift+Enter · Alt+Enter", "줄바꿈 (Shift+Enter는 키티 키보드 프로토콜 지원 터미널에서만)"),
+            (
+                "Shift+Enter · Alt+Enter",
+                "줄바꿈 (Shift+Enter는 키티 키보드 프로토콜 지원 터미널에서만)",
+            ),
             ("←", "프로젝트·쓰레드 목록 (입력란이 비었을 때)"),
             ("↑ ↓", "보낸 말 되살리기"),
             ("Ctrl+O", "작업 카드 접기·펴기"),
@@ -233,7 +236,10 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
         ],
         Lang::En => vec![
             ("Shift+Tab", "Switch mode (normal → plan → work → job)"),
-            ("Shift+Enter · Alt+Enter", "Newline (Shift+Enter needs a kitty-keyboard-protocol terminal)"),
+            (
+                "Shift+Enter · Alt+Enter",
+                "Newline (Shift+Enter needs a kitty-keyboard-protocol terminal)",
+            ),
             ("←", "Project and thread list (when the input box is empty)"),
             ("↑ ↓", "Bring back something you sent"),
             ("Ctrl+O", "Fold or unfold a work card"),
@@ -337,7 +343,7 @@ mod tests {
     #[test]
     fn an_incomplete_plugin_command_says_what_is_missing() {
         let Some(Command::Plugin(Plugin::Unknown(why))) = parse("/plugin add") else {
-            panic!("모르는 것으로 안 떨어진다");
+            panic!("it does not fall through as unknown");
         };
         assert!(why.contains("받아 올 곳"), "{why}");
     }
@@ -376,8 +382,8 @@ mod tests {
     fn the_catalogue_covers_every_command_the_parser_takes() {
         for (name, _) in catalogue(crate::lang::Lang::Ko) {
             let got = parse(name);
-            assert!(got.is_some(), "{name}을 파서가 모른다");
-            assert!(!matches!(got, Some(Command::Unknown(_))), "{name}이 모르는 것으로 떨어진다");
+            assert!(got.is_some(), "the parser does not know {name}");
+            assert!(!matches!(got, Some(Command::Unknown(_))), "{name} falls through as unknown");
         }
     }
 
@@ -390,7 +396,7 @@ mod tests {
         for (name, _) in
             catalogue(crate::lang::Lang::Ko).iter().chain(catalogue(crate::lang::Lang::En).iter())
         {
-            assert_ne!(*name, "/project", "목록에 /project가 남아 있다");
+            assert_ne!(*name, "/project", "/project is still in the list");
         }
     }
 
@@ -399,7 +405,7 @@ mod tests {
     fn the_help_text_lists_everything_in_the_catalogue() {
         let help = help_text(crate::lang::Lang::Ko);
         for (name, _) in catalogue(crate::lang::Lang::Ko) {
-            assert!(help.contains(name), "{name}이 도움말에 없다");
+            assert!(help.contains(name), "{name} is missing from the help");
         }
     }
 
@@ -408,7 +414,7 @@ mod tests {
     fn the_help_text_also_lists_the_keys() {
         let help = help_text(crate::lang::Lang::Ko);
         for (key, _) in keys(crate::lang::Lang::Ko) {
-            assert!(help.contains(key), "{key}가 도움말에 없다");
+            assert!(help.contains(key), "{key} is missing from the help");
         }
     }
 

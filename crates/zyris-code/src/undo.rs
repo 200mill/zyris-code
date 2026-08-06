@@ -71,7 +71,7 @@ impl Undo {
     /// isn't recorded, and `/undo` reverts the one before it.
     pub fn snapshot(&self, path: &Path) {
         if let Err(e) = self.try_snapshot(path) {
-            tracing::warn!(path = %path.display(), "되돌림 기록을 남기지 못했다: {e}");
+            tracing::warn!(path = %path.display(), "could not write the undo record: {e}");
         }
     }
 
@@ -295,7 +295,7 @@ mod tests {
         write(&file, "새로 만든 것\n");
 
         undo.revert_last().unwrap();
-        assert!(!file.exists(), "만든 파일이 남았다");
+        assert!(!file.exists(), "the created file was left behind");
     }
 
     /// Pressing repeatedly keeps walking back.
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "둘\n");
         undo.revert_last().unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "하나\n");
-        assert!(undo.is_empty(), "다 되돌렸으면 비어야 한다");
+        assert!(undo.is_empty(), "once everything is undone it must be empty");
     }
 
     /// **A file edited many times is still one row.** What's wanted isn't "edited five times" but
@@ -417,7 +417,11 @@ mod tests {
             .unwrap()
             .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
             .collect();
-        assert_eq!(left, vec!["a.rs".to_string()], "작업 디렉터리에 뭔가 생겼다: {left:?}");
+        assert_eq!(
+            left,
+            vec!["a.rs".to_string()],
+            "something was created in the working directory: {left:?}"
+        );
     }
 
     /// If two working directories' histories mixed, the wrong file would come back.
@@ -429,7 +433,7 @@ mod tests {
         write(&file, "before\n");
 
         Undo::for_dir(work.path()).snapshot(&file);
-        assert!(Undo::for_dir(other.path()).is_empty(), "남의 기록이 보인다");
+        assert!(Undo::for_dir(other.path()).is_empty(), "history from another run is visible");
     }
 
     /// The name must be human-readable — opening the cache you must know which repo it is.
@@ -444,7 +448,7 @@ mod tests {
     fn a_very_long_path_still_makes_a_usable_name() {
         let long = format!("/{}", "가나다라마바사".repeat(60));
         let name = slug(Path::new(&long));
-        assert!(name.chars().count() <= NAME_LIMIT, "{}칸", name.chars().count());
+        assert!(name.chars().count() <= NAME_LIMIT, "{} columns", name.chars().count());
         assert!(!name.is_empty());
     }
 }

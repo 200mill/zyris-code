@@ -129,18 +129,21 @@ mod tests {
         let mut m = Mode::default();
         for _ in 0..Mode::ALL.len() - 1 {
             m = m.next();
-            assert!(!seen.contains(&m), "{m:?}를 두 번 지난다 — 한 바퀴가 모드 수보다 짧다");
+            assert!(
+                !seen.contains(&m),
+                "{m:?} is visited twice — one lap is shorter than the number of modes"
+            );
             seen.push(m);
         }
-        assert_eq!(m.next(), Mode::default(), "한 바퀴를 돌면 기본으로 온다");
-        assert_eq!(seen.len(), Mode::ALL.len(), "순환이 모든 모드를 지나야 한다");
+        assert_eq!(m.next(), Mode::default(), "one full lap returns to normal");
+        assert_eq!(seen.len(), Mode::ALL.len(), "the cycle must pass through every mode");
     }
 
     #[test]
     fn every_mode_has_a_label_and_a_colour() {
         for m in Mode::ALL {
             for lang in [crate::lang::Lang::Ko, crate::lang::Lang::En] {
-                assert!(!m.label(lang).is_empty(), "{m:?}의 이름이 비어 있다");
+                assert!(!m.label(lang).is_empty(), "{m:?} has an empty name");
             }
             let _ = m.color();
         }
@@ -151,7 +154,7 @@ mod tests {
     fn no_two_modes_share_a_colour() {
         for (i, a) in Mode::ALL.iter().enumerate() {
             for b in &Mode::ALL[i + 1..] {
-                assert_ne!(a.color(), b.color(), "{a:?}와 {b:?}가 같은 색이다");
+                assert_ne!(a.color(), b.color(), "{a:?} and {b:?} share a colour");
             }
         }
     }

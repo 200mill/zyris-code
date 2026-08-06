@@ -101,7 +101,7 @@ mod tests {
     fn an_empty_name_is_refused_on_the_spot() {
         let mut f = form();
         assert!(f.submit(crate::lang::Lang::Ko).is_none());
-        assert!(f.error.is_some(), "왜 안 되는지 말해 줘야 한다");
+        assert!(f.error.is_some(), "it must say why it cannot");
     }
 
     #[test]

@@ -345,10 +345,10 @@ mod tests {
 
         let (dir, edit, path) = scratch("before\n");
         let undo = edit.undo();
-        assert!(undo.is_empty(), "아직 아무것도 안 고쳤다");
+        assert!(undo.is_empty(), "nothing has been changed yet");
 
         edit.edit(path, "before".into(), "after".into(), None, None).await.unwrap();
-        assert!(!undo.is_empty(), "고쳤는데 되돌릴 것이 없다");
+        assert!(!undo.is_empty(), "it was changed but there is nothing to undo");
 
         undo.revert_last().unwrap();
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "before\n");
@@ -366,7 +366,7 @@ mod tests {
         assert!(dir.path().join("새로.txt").exists());
 
         undo.revert_last().unwrap();
-        assert!(!dir.path().join("새로.txt").exists(), "만든 파일이 남았다");
+        assert!(!dir.path().join("새로.txt").exists(), "the created file is still there");
     }
 
     #[tokio::test]
@@ -382,7 +382,7 @@ mod tests {
     async fn two_matches_fail_and_say_how_many() {
         let (_d, edit, p) = scratch("x\nx\n");
         let e = edit.edit(p, "x".into(), "y".into(), None, None).await.unwrap_err();
-        assert!(e.message.contains('2'), "몇 번 나왔는지 말해야 한다: {}", e.message);
+        assert!(e.message.contains('2'), "it must say how many times it appeared: {}", e.message);
     }
 
     /// When it's not found, it must also say what to do.
@@ -390,7 +390,7 @@ mod tests {
     async fn no_match_fails_and_says_what_to_do() {
         let (_d, edit, p) = scratch("x\n");
         let e = edit.edit(p, "없다".into(), "y".into(), None, None).await.unwrap_err();
-        assert!(e.message.contains("read"), "다시 읽으라고 말해야 한다: {}", e.message);
+        assert!(e.message.contains("read"), "it must say to read again: {}", e.message);
     }
 
     #[tokio::test]

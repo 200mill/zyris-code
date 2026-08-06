@@ -1,7 +1,7 @@
-//! 앱 상태와 키 처리.
+//! App state and key handling.
 //!
-//! `on_key`와 `apply`는 순수하다 — 이 성질 덕분에 키 바인딩 전체가 표처럼 테스트된다.
-//! I/O는 `run()`(Task 10) 한 곳뿐이다.
+//! `on_key` and `apply` are pure — that property is what lets the whole key binding
+//! surface be tested like a table. I/O lives in exactly one place, `run()` (Task 10).
 
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,7 @@ use crate::timeline::Timeline;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
-    /// `entry`가 `None`이면 렌더하지 않는 이벤트다. 그래도 커서는 전진한다.
+    /// An `entry` of `None` is an event we do not render. The cursor still advances.
     Event {
         cursor: i64,
         entry: Option<Entry>,
@@ -29,7 +29,7 @@ pub enum Frame {
     Status {
         running: bool,
     },
-    /// 에이전트가 셸을 열었다. **안 알리면 유령 셸이 돈다.**
+    /// The agent opened a shell. **Not saying so leaves a ghost shell running.**
     ShellOpened {
         id: String,
         name: String,
@@ -37,13 +37,14 @@ pub enum Frame {
     ShellClosed {
         id: String,
     },
-    /// 도구가 **작업 디렉터리 밖으로 나가려 한다.** 답이 갈 때까지 그 호출은 막혀 있다.
+    /// A tool is **trying to leave the working directory.** That call is blocked until
+    /// an answer goes back.
     Ask(ToolAsk),
-    /// attacca가 그 호출을 포기했다. 창은 남기고 "이미 지났다"고만 표시한다 —
-    /// 창을 치워 버리면 사람이 무엇을 놓쳤는지 모른다.
+    /// attacca gave up on that call. We keep the window and only mark it "already past" —
+    /// clearing the window away leaves the user with no idea what they missed.
     Expired(u64),
-    /// 명령이 돌기 시작했다. **`exec`은 완료될 때 한 번만 결과를 준다** — 그동안
-    /// 아무 말도 안 하면 사람은 최대 55초를 눈뜬장님으로 기다린다.
+    /// A command started running. **`exec` only reports once, on completion** — saying
+    /// nothing in the meantime leaves the user waiting blind for up to 55 seconds.
     ExecStart {
         id: u64,
         command: String,
@@ -51,67 +52,71 @@ pub enum Frame {
     ExecDone {
         id: u64,
     },
-    /// 배경 작업이 걸렸다. **안 보이면 사람은 모른 채 앱을 끄고, 그때 빌드가 죽는다** —
-    /// `/grants`에서 배운 것과 같다: 보이지 않는 것은 없는 것이나 마찬가지로 위험하다.
+    /// A background job started. **If it is invisible the user quits the app unaware and
+    /// the build dies with it** — same lesson as `/grants`: what cannot be seen is as
+    /// dangerous as what is not there.
     JobStart {
         id: String,
         label: String,
     },
-    /// 끝났다. `ok`는 종료 코드가 0이었는가다.
+    /// It finished. `ok` is whether the exit code was 0.
     JobEnded {
         id: String,
         ok: bool,
         secs: u64,
     },
-    /// **배경 폴링의 결과.** 사용량·제목은 네트워크가 필요한데, 그걸 화면 루프가
-    /// 기다리면 죽은 연결 위에서 루프가 갇힌다 — 그래서 폴링은 루프 밖 태스크가
-    /// 하고 결과만 프레임으로 들여보낸다. 세션 id로 태그해 갈아탄 뒤의 낡은
-    /// 결과는 버린다(`frame_is_current`).
+    /// **The result of background polling.** Usage and title need the network, and having
+    /// the draw loop wait on that traps the loop on a dead connection — so polling runs in
+    /// a task outside the loop and only the result comes back in as a frame. It carries the
+    /// session id as a tag so stale results from before a switch get dropped
+    /// (`frame_is_current`).
     Poll {
         usage: Option<crate::sidebar::Usage>,
         title: Option<String>,
     },
-    /// **소켓이 끊겼다.** zyris `Runner`가 알아서 다시 붙지만, 그동안 화면은 아무 일도
-    /// 없는 것처럼 보인다 — 조용한 실패가 제일 나쁘다. 사유를 그대로 들고 온다.
+    /// **The socket dropped.** The zyris `Runner` reconnects on its own, but meanwhile the
+    /// screen looks like nothing happened — silent failure is the worst kind. Carries the
+    /// reason verbatim.
     Disconnected(String),
-    /// 화면 밖에서 생긴 일을 사람에게 한 번 알린다(MCP 서버가 안 떴다, 인증이 끊겨
-    /// 재등록이 시작됐다 같은 것).
-    /// `STATUS_WINDOW` 뒤에 저절로 사라진다.
+    /// Tells the user once about something that happened off-screen (an MCP server that did
+    /// not come up, authentication dropping and re-enrollment starting, and the like).
+    /// Fades on its own after `STATUS_WINDOW`.
     Notice(String),
-    /// 등록 코드가 발급됐다. **이 순간부터 화면이 코드 표시를 소유한다** —
-    /// 상류의 stdout 상자는 조용해진다(`enroll::ScreenEnroll`).
+    /// An enrollment code was issued. **From this moment the screen owns showing the code** —
+    /// the upstream stdout box goes quiet (`enroll::ScreenEnroll`).
     Enroll(EnrollView),
-    /// 코드가 만료됐거나(`Lapsed`) 브라우저에서 거부됐다(`Denied`). 창은 그대로 두고
-    /// 사정만 바꿔 말한다.
+    /// The code lapsed (`Lapsed`) or was denied in the browser (`Denied`). The window stays;
+    /// only what it says changes.
     EnrollPhase(EnrollPhase),
-    /// 승인돼서 자격이 저장됐다. 창을 닫는다.
+    /// Approved, and the credential was stored. Close the window.
     EnrollDone,
 }
 
-/// 등록 코드 창에 그릴 것.
+/// What to draw in the enrollment code window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnrollView {
     pub code: String,
     pub uri: String,
-    /// 코드가 만료되는 시각. 그리기 쪽이 남은 시간을 이것으로 잰다.
+    /// When the code lapses. The drawing side measures the time left from this.
     pub expires_at: std::time::Instant,
     pub phase: EnrollPhase,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrollPhase {
-    /// 승인을 기다리는 중.
+    /// Waiting for approval.
     Waiting,
-    /// 코드가 만료됐다. 새 코드를 요청하는 중이고, 오면 `Frame::Enroll`이 다시 온다.
+    /// The code lapsed. A new one is being requested, and `Frame::Enroll` comes again
+    /// when it arrives.
     Lapsed,
-    /// 브라우저에서 거부했다.
+    /// Denied in the browser.
     Denied,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     Insert(char),
-    /// 붙여넣기 한 덩어리. 줄바꿈이 섞여도 그대로 넣는다.
+    /// One paste, as a single chunk. Newlines inside go in verbatim.
     Paste(String),
     Backspace,
     Delete,
@@ -123,30 +128,30 @@ pub enum Action {
     Submit(String),
     Wheel(i32),
     ToggleFold,
-    /// 마우스를 누른 자리. 화면 좌표다.
+    /// Where the mouse was pressed. Screen coordinates.
     Press(u16, u16),
-    /// 누른 채 옮긴 자리.
+    /// Where it moved to while held.
     DragTo(u16, u16),
-    /// 뗀 순간. 움직이지 않았으면 클릭으로 친다.
+    /// The moment it was released. If it never moved, count it as a click.
     Release,
     ClearSelection,
-    /// 화면을 통째로 다시 그린다. 상태를 하나도 바꾸지 않는다 — I/O 자리만 처리한다.
+    /// Redraw the whole screen. Changes no state at all — only the I/O side handles it.
     Repaint,
-    /// 질문 화면에서의 조작.
+    /// Operating the question screen.
     AskUp,
     AskDown,
     AskToggle,
     AskConfirm,
     AskCancel,
-    /// 목록 열기/조작.
+    /// Opening/operating the list.
     OpenPicker,
     PickUp,
     PickDown,
-    /// 지금 줄을 고른다. 무엇이 되는지는 I/O 자리가 처리한다.
+    /// Choose the current row. What that becomes is the I/O side's job.
     PickConfirm,
-    /// 뒤로. 세션 단계면 프로젝트 목록으로, 프로젝트 단계면 닫는다.
+    /// Back. From the session level to the project list; at the project level, close.
     PickBack,
-    /// 새 프로젝트 양식. 다음 칸 / 앞 칸 / 만들기 / 닫기.
+    /// The new-project form. Next field / previous field / create / close.
     FormNext,
     FormPrev,
     FormConfirm,
@@ -156,20 +161,20 @@ pub enum Action {
     Approve,
     Deny,
     AlwaysAllow,
-    /// 친 것을 통째로 지운다.
+    /// Wipe everything typed.
     ClearInput,
-    /// 보낸 말을 한 칸 거슬러 올라가 되살린다.
+    /// Walk one step back through what was sent and bring it back.
     RecallOlder,
-    /// 되살리기에서 한 칸 내려온다. 맨 아래로 오면 입력란이 비워진다.
+    /// Walk one step forward out of the recall. Past the bottom the input clears.
     RecallNewer,
-    /// 승인 창의 답. **기다리는 시간에 제한이 없다** — 다른 일을 하다 늦게 와서
-    /// 확인할 수도 있으니 창이 저절로 사라지면 안 된다.
-    /// Ctrl+C 1회. 종료를 예고만 하고 실제 종료는 두 번째 입력이 한다.
+    /// The answer to an approval window. **There is no limit on how long it waits** —
+    /// the user may come back to it minutes later, so the window must not vanish on its own.
+    /// One Ctrl+C. It only arms the quit; the second press is what actually quits.
     ArmQuit,
     Cancel,
     Quit,
-    /// 등록 코드 창을 닫는다. **Esc로만 닫힌다** — 다른 키가 창을 치우면
-    /// 코드를 보지도 못한 채 승인 단계를 지나친다.
+    /// Close the enrollment code window. **Esc is the only key that closes it** — if any
+    /// other key clears it away, the approval step goes by without the code ever being seen.
     EnrollClose,
     Frame(Frame),
 }
@@ -181,136 +186,149 @@ pub struct State {
     pub scroll: Scroll,
     pub running: bool,
     pub connected: bool,
-    /// 알릴 것과 알린 시각. **시간이 지나면 저절로 사라진다.**
+    /// What to say and when it was said. **It fades on its own once time passes.**
     ///
-    /// 지나간 사정("Zyris로는 아직 만들 수 없습니다")을 계속 붙들고 있으면 그 자리가
-    /// 지금 무슨 일인지 말해 주지 못한다. 읽을 만큼만 두고 비운다.
+    /// Holding on to a past circumstance ("Zyris로는 아직 만들 수 없습니다") means that
+    /// spot can no longer say what is happening now. Keep it long enough to read, then clear.
     status: Option<(String, Instant)>,
-    /// 권한 모드. 아직 서버로 보내지 않는다 — 표시와 전환만 한다.
+    /// Permission mode. Not sent to the server yet — only shown and cycled.
     pub mode: Mode,
-    /// 하단 바에 보여줄 지금 붙은 에이전트 이름.
+    /// Name of the currently attached agent, for the bottom bar.
     pub agent: String,
-    /// Ctrl+C를 한 번 누른 시각. 이 안에 또 누르면 종료다.
+    /// When Ctrl+C was pressed once. Pressing again within this window quits.
     pub quit_armed_at: Option<Instant>,
-    /// `/quit`가 세운다. I/O 자리가 보고 루프를 빠져나간다.
+    /// Set by `/quit`. The I/O side sees it and breaks out of the loop.
     ///
-    /// `apply`는 순수하므로 여기서 끝낼 수 없다 — `submit_now`·`flush_queue`와 같은 수법이다.
+    /// `apply` is pure, so it cannot quit here — same trick as `submit_now`/`flush_queue`.
     pub quitting: bool,
-    /// 이번 턴을 멈춰 달라고 이미 말했는가.
+    /// Have we already asked for this turn to stop?
     ///
-    /// **이게 없으면 서버가 굳었을 때 창을 닫을 길이 없다.** Ctrl+C는 도는 중이면 취소로
-    /// 가는데, 취소가 먹히지 않아 `running`이 계속 참이면 몇 번을 눌러도 취소만 다시
-    /// 나간다. 한 번 말했으면 다음 Ctrl+C는 종료 쪽으로 넘긴다.
+    /// **Without this there is no way to close the window when the server hangs.** Ctrl+C
+    /// goes to cancel while a turn runs, and if the cancel does not take so `running` stays
+    /// true, every press just sends the same request again. Once asked, the next Ctrl+C is
+    /// handed over to quitting.
     pub stopping: bool,
-    /// 대화 영역에서 고른 텍스트. **놓는 순간 시스템 클립보드로 나간다.**
+    /// Text selected in the transcript area. **It goes to the system clipboard on release.**
     pub selection: Option<String>,
-    /// 이 세션에서 보낸 말. ↑로 되살린다. 최신이 뒤다.
+    /// What was sent in this session. ↑ brings it back. Newest is last.
     pub sent: Vec<String>,
-    /// 턴이 도는 동안 친 말. **아직 서버에 안 갔다.** 턴이 끝나면 순서대로 보낸다.
+    /// Typed while a turn was running. **It has not gone to the server yet.** Sent in order
+    /// once the turn ends.
     ///
-    /// 일하는 중에 보내면 에이전트가 하던 일을 놓칠 수 있고, 무엇보다 **보내고 나면 고칠
-    /// 수 없다.** 여기 들고 있으면 ↑로 도로 꺼내 고칠 수 있다.
+    /// Sending mid-work can make the agent lose track of what it was doing, and above all
+    /// **once sent it cannot be edited.** Held here, ↑ pulls it back out to fix.
     pub queued: Vec<String>,
-    /// 대기열을 지금 비워야 하는가. I/O 자리가 보고 가져간다.
+    /// Should the queue be flushed now? The I/O side sees it and takes it.
     pub flush_queue: bool,
-    /// 지금 되살려 놓은 자리(`sent`의 인덱스). 글자를 고치면 풀린다.
+    /// Where the recall currently sits (index into `sent`). Editing the text releases it.
     recall: Option<usize>,
-    /// 재연결 시 `turn_events(after:)`에 넘길 위치.
+    /// The position to hand to `turn_events(after:)` on reconnect.
     pub last_cursor: Option<i64>,
-    /// 마지막으로 그린 대화 영역의 줄 수와 높이.
+    /// Line count and height of the transcript area as last drawn.
     ///
-    /// `apply`는 순수해야 하므로 뷰포트 크기를 스스로 알 수 없다. 위젯이 매 프레임
-    /// 여기에 적어 두고 휠 처리가 그 값을 읽는다. 0이면 아직 한 번도 그리지 않은 것이라
-    /// 휠이 아무 일도 하지 않는다 — 첫 프레임 전에는 스크롤할 내용도 없다.
+    /// `apply` has to stay pure, so it cannot know the viewport size by itself. The widget
+    /// writes it here every frame and wheel handling reads that value. 0 means nothing has
+    /// been drawn yet, so the wheel does nothing — before the first frame there is nothing
+    /// to scroll either.
     pub view_total: usize,
     pub view_height: usize,
-    /// 대화 영역의 왼쪽 위 화면 좌표. 마우스 좌표를 행/열로 옮길 때 쓴다.
+    /// Top-left screen coordinate of the transcript area. Used to map mouse coordinates to
+    /// row/column.
     pub view_origin: (u16, u16),
-    /// 지금 화면 맨 위에 보이는 줄의 인덱스.
+    /// Index of the line currently at the top of the screen.
     pub view_top: usize,
-    /// 만들어 둔 대화 줄. **바뀐 항목만 다시 그린다.**
+    /// The transcript lines we built. **Only changed items are drawn again.**
     ///
-    /// 예전에는 프레임마다 전부 다시 만들었는데 대화가 길어질수록 선형으로 무거워져
-    /// 프레임 예산을 넘겼다 — 그래서 글자가 겹쳐 찍히고 랙이 걸렸다.
+    /// This used to be rebuilt in full every frame, which got linearly heavier as the
+    /// conversation grew and blew the frame budget — that is what made glyphs overprint
+    /// each other and the app lag.
     pub rows_cache: crate::rows::Cache,
-    /// 행 인덱스 → 그 행을 누르면 접히고 펴지는 카드의 seq.
+    /// Row index → seq of the card that pressing that row folds and unfolds.
     pub view_cards: std::collections::HashMap<usize, i64>,
-    /// 고른 범위. **마우스를 떼도 남는다** — 떼자마자 사라지면 Ctrl+C를 누를 틈이 없다.
-    /// 스크롤해도 내용 좌표라 따라간다.
+    /// The selected range. **It survives releasing the mouse** — if it vanished on release
+    /// there would be no moment to press Ctrl+C. It follows scrolling because it is in
+    /// content coordinates.
     pub drag: Option<crate::selection::Drag>,
-    /// 지금 버튼을 누르고 있는가. 누르는 중에만 범위가 자란다.
+    /// Is the button held down right now? The range only grows while it is.
     pub dragging: bool,
-    /// 지금 답하고 있는 질문 (seq와 상태).
+    /// The question being answered right now (its seq and state).
     ///
-    /// 질문이 오면 저절로 여기 들어온다 — 답을 기다리느라 턴이 막혀 있으므로 사람이
-    /// 따로 열 필요가 없다.
+    /// A question lands here on its own when it arrives — the turn is blocked waiting for
+    /// the answer, so the user should not have to open it separately.
     pub asking: Option<(i64, crate::question::Answering)>,
-    /// 질문 화면이 차지한 자리. 클릭을 줄로 옮길 때 쓴다.
+    /// The area the question screen occupies. Used to map a click to a row.
     pub ask_area: Option<ratatui::layout::Rect>,
-    /// 질문 제출로 채워진 답을 곧바로 보내야 하는가. I/O 자리가 보고 비운다.
+    /// Should the answer filled in by submitting the question be sent right away? The I/O
+    /// side sees it and clears it.
     pub submit_now: bool,
-    /// 열려 있는 프로젝트/세션 목록.
+    /// The open project/session list.
     pub picker: Option<crate::picker::Picker>,
-    /// 새 프로젝트 양식. ← 목록에서 "＋ 새 프로젝트"를 고르면 열린다. **목록은 그대로
-    /// 아래에 있으므로** Esc로 닫으면 다시 그 자리로 돌아온다.
+    /// The new-project form. Opens when "＋ 새 프로젝트" is chosen from the ← list.
+    /// **The list stays underneath**, so closing with Esc returns right to that spot.
     pub new_project: Option<crate::newproject::Form>,
-    /// 양식이 Enter를 받으면 여기에 담는다 — (이름, 설명). 만들기는 I/O 자리가 한다.
+    /// Filled when the form takes Enter — (name, description). The I/O side does the
+    /// creating.
     pub project_out: Option<(String, String)>,
-    /// 오른쪽 사이드바 내용.
+    /// Contents of the right sidebar.
     pub sidebar: crate::sidebar::Sidebar,
-    /// 사이드바를 보여줄까. 기본은 켜짐.
+    /// Show the sidebar? On by default.
     pub sidebar_on: bool,
-    /// 터미널 창 제목으로 쓸 것. 세션 제목이 생기면 바뀐다.
+    /// What to use as the terminal window title. Changes once the session gets a title.
     pub title: String,
-    /// 그린 프레임 수. 깜박이는 표시가 이걸로 위상을 정한다.
+    /// Frames drawn. Blinking indicators take their phase from this.
     ///
-    /// 시계가 아니라 프레임 수인 이유는 **테스트가 시간을 기다리지 않아도 되기**
-    /// 때문이다. 그리는 쪽이 순수해진다.
+    /// It is a frame count rather than a clock so that **tests do not have to wait on
+    /// time.** It keeps the drawing side pure.
     pub tick: u64,
-    /// 도구가 상대경로를 푸는 기준. 화면이 이것을 보여줘야 도구 줄의 `src/app.rs`가
-    /// 어느 리포의 것인지 알 수 있다.
+    /// What the tools resolve relative paths against. The screen has to show it, or there is
+    /// no telling which repo the `src/app.rs` on a tool line belongs to.
     pub cwd: std::path::PathBuf,
-    /// 지금 열려 있는 PTY. **안 보이면 유령 셸이 돈다** — 에이전트가 열어 둔 셸을
-    /// 사람이 모른 채로 남는다.
+    /// PTYs currently open. **If they are invisible a ghost shell runs** — a shell the agent
+    /// opened stays there without the user knowing.
     pub shells: Vec<Shell>,
-    /// 지금 배경에서 도는 작업. 끝나면 빠진다 — 사람이 알고 싶은 것은 **지금 도는
-    /// 것**이고, 끝난 것의 출력은 에이전트가 `wait.logs`로 읽는다.
+    /// Jobs running in the background right now. They drop out when they end — what the user
+    /// wants to know is **what is running now**, and the agent reads finished output with
+    /// `wait.logs`.
     pub jobs: Vec<JobRow>,
-    /// 사람이 친 슬래시 명령. `run()`이 집어 가 실행한다 — `submit_now`와 같은 수법이다.
+    /// A slash command the user typed. `run()` picks it up and runs it — same trick as
+    /// `submit_now`.
     pub command_out: Option<String>,
-    /// 지금 답을 기다리는 물음. **한 번에 하나만 띄운다** — 둘이 겹치면 무엇에
-    /// 답하는지 알 수 없다.
+    /// The question awaiting an answer. **Only one is up at a time** — with two overlapping
+    /// there is no telling which one is being answered.
     pub pending: Option<ToolAsk>,
-    /// 등록 코드 창. **재등록이 시작되면 저절로 여기 들어온다.**
+    /// The enrollment code window. **It lands here on its own when re-enrollment starts.**
     ///
-    /// `None`이 평소다. 자격이 revoke되거나 리프레시가 영영 실패하면 상류가
-    /// `EnrollmentUi::show`를 부르고 그것이 이 자리를 채운다(`enroll::ScreenEnroll`).
-    /// Esc로 닫으면 `None`으로 돌아간다 — 등록 자체는 배경에서 계속 돌고,
-    /// 승인되면 `EnrollDone`이 닫는다.
+    /// `None` is the normal state. If the credential is revoked or refresh fails for good,
+    /// upstream calls `EnrollmentUi::show` and that fills this slot (`enroll::ScreenEnroll`).
+    /// Closing with Esc puts it back to `None` — enrollment itself keeps running in the
+    /// background, and `EnrollDone` closes it once approved.
     pub enroll: Option<EnrollView>,
-    /// 뒤에서 기다리는 물음들. 앞의 것에 답하면 하나가 올라온다.
+    /// Questions waiting behind. Answering the front one brings the next up.
     pub ask_queue: std::collections::VecDeque<ToolAsk>,
-    /// `run()`이 집어 간다. `apply`는 순수하므로 직접 보내지 못한다.
+    /// `run()` picks it up. `apply` is pure, so it cannot send it directly.
     pub verdict_out: Option<(u64, Verdict)>,
-    /// 이번 세션에서 열어 둔 바깥 디렉터리. **디스크에 남기지 않는다.**
+    /// Outside directories opened for this session. **Nothing is left on disk.**
     pub grants: crate::tools::gate::Grants,
-    /// 지금 도는 명령 — (번호, 명령, 시작한 때). 활동 줄이 이것을 보여준다.
+    /// The command running right now — (id, command, when it started). The activity line
+    /// shows this.
     pub running_exec: Option<(u64, String, Instant)>,
-    /// 자가치유 틱이 세운다. 다음 draw가 **모든 칸을 강제로 다시 내보낸다** —
-    /// `AlwaysUpdate` 플래그로 diff를 우회해 덮어쓴다. 지우지 않으므로 깜빡이지 않는다.
+    /// Set by the self-healing tick. The next draw **forces every cell out again** —
+    /// the `AlwaysUpdate` flag bypasses the diff and overwrites. It does not clear, so it
+    /// does not flicker.
     pub force_update: bool,
-    /// 화면 말. `/lang`이 바꾸고 `lang::current()`와 함께 움직인다.
+    /// The screen language. `/lang` changes it and it moves together with `lang::current()`.
     pub lang: crate::lang::Lang,
 }
 
-/// 사람에게 물을 도구 호출 하나. **작업 디렉터리 밖으로 나갈 때만 생긴다.**
+/// One tool call to ask the user about. **It only happens when leaving the working
+/// directory.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolAsk {
-    /// 이 물음의 번호. 답을 그 호출로 되돌려 보낼 때 쓴다.
+    /// The id of this question. Used to route the answer back to that call.
     pub id: u64,
     pub call: crate::tools::gate::Call,
     pub summary: String,
-    /// attacca가 이미 그 호출을 포기했는가. 답해도 와이어로 나가지 않는다.
+    /// Has attacca already given up on that call? Then answering does not go out on the wire.
     pub expired: bool,
 }
 
@@ -318,25 +336,26 @@ pub struct ToolAsk {
 pub enum Verdict {
     Allow,
     Deny,
-    /// 이번만이 아니라 **그 디렉터리 전체**를 이 세션 동안 연다.
+    /// Opens **the whole directory** for this session, not just this one call.
     AllowAlways,
 }
 
-/// 배경에서 도는 작업 한 줄.
+/// One row for a job running in the background.
 #[derive(Debug, Clone)]
 pub struct JobRow {
     pub id: String,
     pub label: String,
-    /// 시각은 프레임에 싣지 않고 **받는 자리에서 찍는다** — `running_exec`과 같은 식이다.
+    /// The time is not carried in the frame but **stamped where it is received** — same way
+    /// as `running_exec`.
     pub since: Instant,
 }
 
-/// 에이전트가 열어 둔 셸 하나.
+/// One shell the agent left open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shell {
-    /// `terminal.open`이 돌려준 PTY 식별자. 닫을 때 이것으로 찾는다.
+    /// The PTY identifier `terminal.open` returned. Used to find it when closing.
     pub id: String,
-    /// 사람이 읽는 이름. 보통 셸 실행 파일 이름이다.
+    /// The human-readable name. Usually the shell executable's name.
     pub name: String,
 }
 
@@ -379,7 +398,8 @@ impl Default for State {
             sidebar_on: true,
             title: "Zyris Code".into(),
             tick: 0,
-            // 도구가 쓰는 것과 **같은 자리**여야 한다. 정의는 `tools::working_dir` 하나다.
+            // Must be **the same place** the tools use. `tools::working_dir` is the one
+            // definition.
             cwd: crate::tools::working_dir(),
             shells: Vec::new(),
             jobs: Vec::new(),
@@ -396,23 +416,23 @@ impl Default for State {
     }
 }
 
-/// Ctrl+C를 한 번 누른 뒤 이 안에 또 누르면 종료다.
+/// After one Ctrl+C, pressing again within this window quits.
 pub const QUIT_WINDOW: Duration = Duration::from_millis(1500);
 
-/// 붙여넣기 폭주 판정 간격. bracketed paste를 지원하지 않는 터미널은 붙여넣기를
-/// 키가 수 ms 간격으로 연달아 오는 것으로 흘려보낸다 — 사람이 칠 수 없는 속도다.
+/// The gap that marks a paste burst. Terminals without bracketed paste let a paste through
+/// as keys arriving a few ms apart — a speed no human can type at.
 const PASTE_BURST: Duration = Duration::from_millis(25);
 
-/// 알림이 화면에 남아 있는 시간. 한 문장을 읽기에 넉넉하다.
+/// How long a notice stays on screen. Plenty to read one sentence.
 pub const STATUS_WINDOW: Duration = Duration::from_secs(6);
 
-/// 끄면서 "턴을 멈춰라"에 답을 기다리는 시간.
+/// How long we wait, while quitting, for an answer to "stop the turn".
 ///
-/// 한 번의 왕복이면 되는 일이라 짧게 잡는다. **넘겨도 창은 닫는다** — 끄려는 사람을
-/// 붙잡아 두는 것이 남은 턴 하나보다 나쁘다.
+/// One round trip is all it takes, so keep it short. **The window closes even past it** —
+/// holding on to someone who wants out is worse than one leftover turn.
 pub const STOP_WAIT: Duration = Duration::from_secs(3);
-/// 종료 신호 뒤 이만큼 지나도 앱이 안 끝나면 화면을 되돌리고 강제로 끝낸다.
-/// 루프가 갇혀 신호를 못 받은 경우의 안전망이다.
+/// If the app has not ended this long after a shutdown signal, restore the screen and force
+/// the exit. A safety net for the case where the loop is stuck and never sees the signal.
 const SHUTDOWN_FORCE: Duration = Duration::from_secs(5);
 
 impl State {
@@ -420,17 +440,17 @@ impl State {
         Self::default()
     }
 
-    /// 알릴 것을 세운다. 이 순간부터 `STATUS_WINDOW` 동안만 보인다.
+    /// Set what to say. Visible only for `STATUS_WINDOW` from this moment.
     pub fn set_status(&mut self, message: impl Into<String>) {
         self.status = Some((message.into(), Instant::now()));
     }
 
-    /// 지금 보여 줄 알림. 시간이 지났으면 `None`이다.
+    /// The notice to show right now. `None` once the time has passed.
     pub fn status(&self) -> Option<&str> {
         self.status_at(Instant::now())
     }
 
-    /// 시계를 넘겨받는 판. 테스트가 시간을 흉내 낼 수 있게 갈라 놨다.
+    /// The variant that takes the clock. Split out so tests can fake time.
     pub fn status_at(&self, now: Instant) -> Option<&str> {
         self.status
             .as_ref()
@@ -438,33 +458,34 @@ impl State {
             .map(|(s, _)| s.as_str())
     }
 
-    /// 보낸 말로 기억한다. 같은 말을 연달아 보내면 한 번만 남긴다 — 되살릴 때 같은 줄을
-    /// 두 번 지나면 되살리기가 고장 난 것처럼 보인다.
+    /// Remember it as something sent. The same message twice in a row is kept once —
+    /// walking past the same line twice makes recall look broken.
     pub fn remember_sent(&mut self, text: &str) {
         if self.sent.last().map(String::as_str) != Some(text) {
             self.sent.push(text.to_string());
         }
     }
 
-    /// 지금 보낸 말을 되살려 놓은 상태인가. ↑↓의 갈래가 이걸 본다.
+    /// Are we sitting on a recalled message right now? The ↑↓ arms look at this.
     pub fn recalling(&self) -> bool {
         self.recall.is_some()
     }
 
-    /// 종료가 예고된 상태인가. 시간이 지나면 저절로 풀린다.
+    /// Is a quit armed? It releases on its own once time passes.
     pub fn quit_pending(&self) -> bool {
         self.quit_pending_at(Instant::now())
     }
 
-    /// 시계를 넘겨받는 판. 테스트가 시간을 흉내 낼 수 있게 갈라 놨다.
+    /// The variant that takes the clock. Split out so tests can fake time.
     pub fn quit_pending_at(&self, now: Instant) -> bool {
         self.quit_armed_at.is_some_and(|t| now.duration_since(t) < QUIT_WINDOW)
     }
 
-    /// 지금 글자가 들어갈 입력란.
+    /// The input a character goes into right now.
     ///
-    /// 질문의 자유 입력을 치는 중이면 그쪽이고, 아니면 아래 입력란이다. 이 갈래가 없으면
-    /// 질문에 직접 답을 쓰는 동안 글자가 엉뚱하게 아래 입력란으로 들어간다.
+    /// While typing a question's free-text answer it is that one; otherwise the input at the
+    /// bottom. Without this arm, characters typed as a direct answer land in the bottom
+    /// input instead.
     pub fn editor(&mut self) -> &mut Input {
         match &mut self.asking {
             Some((_, a)) if a.typing => &mut a.input,
@@ -472,9 +493,11 @@ impl State {
         }
     }
 
-    /// 화면 좌표를 대화 내용의 (행, 열)로 옮긴다. 대화 영역 밖이면 `None`.
+    /// Maps a screen coordinate to (row, column) in the transcript content. `None` outside
+    /// the transcript area.
     ///
-    /// 스크롤한 만큼 더해야 한다 — 화면 첫 줄이 내용의 첫 줄이 아니다.
+    /// The scroll offset has to be added — the first line on screen is not the first line of
+    /// the content.
     pub fn content_at(&self, x: u16, y: u16) -> Option<(usize, usize)> {
         let (ox, oy) = self.view_origin;
         if x < ox || y < oy {
@@ -489,10 +512,10 @@ impl State {
 }
 
 pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
-    // **Windows는 키를 누를 때와 뗄 때를 각각 KeyEvent로 보낸다.** kind를 걸러내지
-    // 않으면 한 번 누른 키가 두 번 입력된다 — `/exit`를 치면 `//eexxitit`이 되는 그
-    // 버그다(ratatui issue #347). macOS/Linux에는 release 이벤트가 없어 이 증상이
-    // Windows에서만 나타난다. 길게 누르는 Repeat는 그대로 둔다 — 그건 중복이 아니다.
+    // **Windows sends a KeyEvent for both press and release.** Without filtering on kind,
+    // one press types twice — the bug where `/exit` comes out as `//eexxitit` (ratatui
+    // issue #347). macOS/Linux have no release event, so this only shows up on Windows.
+    // Repeat from holding a key stays — that is not a duplicate.
     if key.kind == KeyEventKind::Release {
         return vec![];
     }
@@ -500,9 +523,10 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // **등록 코드 창이 제일 위다.** 코드를 보는 중에 다른 키가 엉뚱한 일을 하면
-    // 안 된다 — Esc로만 닫고, Ctrl+C(끄기)만 통과한다. 등록 자체는 배경에서
-    // 계속 돌므로 Esc로 닫아도 등록이 끊기지는 않는다.
+    // **The enrollment code window is topmost.** No other key may do something unexpected
+    // while the code is up — Esc closes it, and only Ctrl+C (quit) passes through.
+    // Enrollment itself keeps running in the background, so closing with Esc does not
+    // interrupt it.
     if state.enroll.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('c'))) {
         return match key.code {
             KeyCode::Esc => vec![Action::EnrollClose],
@@ -510,18 +534,20 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
         };
     }
 
-    // 질문이 열려 있으면 키가 그쪽으로 간다. 답을 기다리느라 턴이 막혀 있으므로
-    // 지금 사람이 할 일은 그것 하나다. 종료만은 언제나 통한다.
+    // With a question open, keys go there. The turn is blocked waiting for the answer, so
+    // that is the one thing to do right now. Only quitting always works.
     if let Some((_, a)) = &state.asking {
         if !(ctrl && matches!(key.code, KeyCode::Char('c'))) {
             return ask_key(a, key, ctrl);
         }
     }
 
-    // **승인 창이 제일 위다.** 도구 하나가 우리 답을 기다리며 멈춰 있고, 이 갈래가
-    // 아래에 있으면 `a`가 글자로 입력란에 새어 들어간다. 종료만은 언제나 통한다.
+    // **The approval window is topmost.** A tool is stopped waiting on our answer, and with
+    // this arm any lower `a` would leak into the input as a character. Only quitting always
+    // works.
     //
-    // Enter는 일부러 뺐다 — 메시지를 치다 무심코 누른 Enter가 파일을 바꾸면 안 된다.
+    // Enter is left out on purpose — an Enter pressed absent-mindedly while typing a message
+    // must not change a file.
     if state.pending.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('c'))) {
         return match key.code {
             KeyCode::Char('y') => vec![Action::Approve],
@@ -531,8 +557,8 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
         };
     }
 
-    // **새 프로젝트 양식이 목록 위에 있다.** 목록은 그대로 아래에 열려 있으므로 Esc로
-    // 닫으면 다시 그 자리로 돌아온다. 글자는 양식의 활성 칸으로 간다.
+    // **The new-project form sits on top of the list.** The list stays open underneath, so
+    // closing with Esc returns right to that spot. Characters go to the form's active field.
     if state.new_project.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('c'))) {
         return match key.code {
             KeyCode::Enter => vec![Action::FormConfirm],
@@ -551,8 +577,9 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
     }
 
     if state.picker.is_some() && !(ctrl && matches!(key.code, KeyCode::Char('c'))) {
-        // **명령 목록은 치면서 고르는 것이다.** 글자가 이동키(k·j)로 먹히면
-        // `/skills`를 칠 수 없다 — 여기서는 글자가 그대로 입력이고 목록이 좁혀진다.
+        // **The command list is chosen by typing.** If characters were taken as movement
+        // keys (k/j), `/skills` could not be typed — here a character is plain input and the
+        // list narrows.
         let typing =
             matches!(state.picker.as_ref().map(|p| &p.level), Some(crate::picker::Level::Commands));
         return match key.code {
@@ -560,32 +587,35 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
             KeyCode::Down => vec![Action::PickDown],
             KeyCode::Char('k') if !typing => vec![Action::PickUp],
             KeyCode::Char('j') if !typing => vec![Action::PickDown],
-            // **다 친 명령은 Enter 한 번에 돌아야 한다.** 목록이 떠 있다고 Enter가
-            // "고르기"로만 먹히면, `/rules`를 끝까지 치고 눌렀는데 입력란에 같은 글이
-            // 다시 써질 뿐 아무 일도 안 일어난다 — 실제로 그렇게 걸렸다.
+            // **A fully typed command must run on the first Enter.** If Enter only ever
+            // meant "pick" because the list is up, typing `/rules` to the end and pressing
+            // it would just rewrite the same text into the input and do nothing — this
+            // actually happened.
             KeyCode::Enter if typing && typed_a_whole_command(state) => {
                 vec![Action::Submit(state.input.text.trim().to_string())]
             }
             KeyCode::Enter => vec![Action::PickConfirm],
             KeyCode::Char(c) if typing && !ctrl => vec![Action::Insert(c)],
             KeyCode::Backspace if typing => vec![Action::Backspace],
-            // ← 는 뒤로가기다. 프로젝트 단계에서는 뒤가 없으니 닫는다.
-            // 명령 목록에서는 ←가 커서 이동이라 Esc만 닫는다.
+            // ← is back. At the project level there is nothing behind, so it closes.
+            // In the command list ← moves the cursor, so only Esc closes.
             KeyCode::Left if !typing => vec![Action::PickBack],
             KeyCode::Esc => vec![Action::PickBack],
             KeyCode::Left if typing => vec![Action::Left],
             KeyCode::Right if typing => vec![Action::Right],
-            // → 는 아무 일도 하지 않는다. 확정은 Enter 하나뿐이다.
+            // → does nothing. Enter is the only way to confirm.
             _ => vec![],
         };
     }
 
     match key.code {
-        // **Ctrl+C는 멈추거나 끝내는 키다.** 복사는 여기 없다 — 세 가지 뜻이 겹쳐 있으면
-        // 급할 때 무엇이 일어날지 알 수 없다. 고른 글은 놓는 순간 클립보드로 나간다.
+        // **Ctrl+C is the key that stops or quits.** Copy is not here — with three meanings
+        // overlapping there is no telling what happens when it matters. Selected text goes
+        // to the clipboard on release.
         KeyCode::Char('c') if ctrl => {
-            // **한 번은 취소, 그다음부터는 종료다.** 취소가 먹히지 않아 `running`이 계속
-            // 참으로 남는 자리가 있다 — 서버가 굳었을 때다. 그때도 창은 닫을 수 있어야 한다.
+            // **Once it cancels, after that it quits.** There is a case where the cancel
+            // does not take and `running` stays true — when the server hangs. The window
+            // must still be closable then.
             if state.running && !state.stopping {
                 vec![Action::Cancel]
             } else if state.quit_pending() {
@@ -594,46 +624,50 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
                 vec![Action::ArmQuit]
             }
         }
-        // Ctrl+L은 셸·vim·less에서 모두 "화면을 다시 그려라"다. 화면이 깨졌을 때 사람이
-        // 반사적으로 누르는 키라, 다른 뜻을 주지 않는다.
+        // Ctrl+L means "redraw the screen" in shells, vim and less alike. It is the key
+        // people press reflexively when the screen breaks, so it gets no other meaning.
         KeyCode::Char('l') if ctrl => vec![Action::Repaint],
         KeyCode::Char('b') if ctrl => vec![Action::ToggleSidebar],
         KeyCode::Char('o') if ctrl => vec![Action::ToggleFold],
         KeyCode::BackTab => vec![Action::CycleMode],
         KeyCode::Char('w') if ctrl => vec![Action::DeleteWord],
-        // **친 것을 통째로 지운다.** `Ctrl+U`가 정본이다 — readline·bash·zsh가 다 그렇고,
-        // 터미널이 그냥 0x15 한 바이트로 보내므로 **어디서나 도착한다.**
+        // **Wipe everything typed.** `Ctrl+U` is the canonical one — readline, bash and zsh
+        // all do it, and the terminal just sends one 0x15 byte, so **it arrives everywhere.**
         //
-        // `Ctrl+Backspace`도 같이 받는다. 다만 이쪽은 터미널이 알려 줄 때만 온다 —
-        // 많은 터미널이 그냥 Backspace와 같은 바이트를 보내 구분이 안 된다. 덤이다.
+        // `Ctrl+Backspace` is taken too. That one only comes when the terminal reports it —
+        // many terminals send the same byte as plain Backspace, leaving no way to tell them
+        // apart. It is a bonus.
         KeyCode::Char('u') if ctrl => vec![Action::ClearInput],
         KeyCode::Backspace if ctrl => vec![Action::ClearInput],
-        // readline 관행. 화살표가 없는 자리에서도 움직일 수 있어야 한다.
+        // readline convention. Moving has to work where there are no arrow keys.
         KeyCode::Char('a') if ctrl => vec![Action::Home],
         KeyCode::Char('e') if ctrl => vec![Action::End],
-        // 선택 중이면 Esc가 선택을 푼다. 실행 중 취소보다 앞이다 — 눈앞의 것이 먼저다.
+        // With a selection up, Esc clears it. This comes before cancelling a running turn —
+        // what is in front of you comes first.
         KeyCode::Esc if state.selection.is_some() => vec![Action::ClearSelection],
         KeyCode::Esc if state.running => vec![Action::Cancel],
-        // **Shift+Enter·Alt+Enter는 줄바꿈이다.** 키티 키보드 프로토콜을 켜면
-        // (아래 `run()`의 `PushKeyboardEnhancementFlags`) Shift+Enter가 Enter+SHIFT로
-        // 따로 도착한다. Alt+Enter(ESC+\r)는 프로토콜 없는 터미널의 구원책이다 —
-        // 전송 arm보다 앞에 있어야 한다.
+        // **Shift+Enter and Alt+Enter are newlines.** With the kitty keyboard protocol on
+        // (`PushKeyboardEnhancementFlags` in `run()` below) Shift+Enter arrives separately as
+        // Enter+SHIFT. Alt+Enter (ESC+\r) is the fallback for terminals without the
+        // protocol — it has to come before the submit arm.
         KeyCode::Enter if alt || shift => vec![Action::Insert('\n')],
         KeyCode::Enter if !state.input.text.is_empty() => {
             vec![Action::Submit(state.input.text.clone())]
         }
         KeyCode::Backspace => vec![Action::Backspace],
         KeyCode::Delete => vec![Action::Delete],
-        // **↑는 보낸 말을 되살린다.** 입력란이 비었을 때 시작하고, 한 번 들어가면 계속
-        // 거슬러 올라간다 — 두 번째 ↑에서 멈추면 되살리기가 쓸모없다.
+        // **↑ brings back what was sent.** It starts when the input is empty, and once
+        // inside it keeps walking further back — stopping at the second ↑ makes recall
+        // useless.
         KeyCode::Up if state.input.text.is_empty() || state.recalling() => {
             vec![Action::RecallOlder]
         }
         KeyCode::Down if state.recalling() => vec![Action::RecallNewer],
-        // **이 갈래가 아래 Left보다 앞에 있어야 한다.** match 는 위에서부터 고르므로
-        // 순서가 뒤바뀌면 목록이 영영 안 열린다.
+        // **This arm has to come before the Left below.** match picks from the top, so with
+        // the order reversed the list would never open.
         //
-        // 입력란이 비어 있을 때만 연다. 글자가 있으면 커서 이동이 먼저다.
+        // It only opens when the input is empty. With text there, moving the cursor comes
+        // first.
         KeyCode::Left if state.input.text.is_empty() => vec![Action::OpenPicker],
         KeyCode::Left => vec![Action::Left],
         KeyCode::Right => vec![Action::Right],
@@ -644,7 +678,7 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
     }
 }
 
-/// 질문 화면의 키. 자유 입력 중에는 글자가 입력으로 간다.
+/// Keys for the question screen. While typing free text, characters go to the input.
 fn ask_key(a: &crate::question::Answering, key: KeyEvent, ctrl: bool) -> Vec<Action> {
     if a.typing {
         return match key.code {
@@ -660,7 +694,8 @@ fn ask_key(a: &crate::question::Answering, key: KeyEvent, ctrl: bool) -> Vec<Act
     match key.code {
         KeyCode::Up => vec![Action::AskUp],
         KeyCode::Down => vec![Action::AskDown],
-        // Enter 하나로 고르고 실행한다. 조작 줄(이전/다음/제출) 위면 그 일을 한다.
+        // Enter alone both chooses and acts. On an action row (back/next/submit) it does
+        // that instead.
         KeyCode::Enter | KeyCode::Char(' ') => vec![Action::AskConfirm],
         KeyCode::Esc => vec![Action::AskCancel],
         _ => vec![],
@@ -668,8 +703,8 @@ fn ask_key(a: &crate::question::Answering, key: KeyEvent, ctrl: bool) -> Vec<Act
 }
 
 pub fn apply(state: &mut State, action: &Action) {
-    // 글자를 고치는 순간 되살리기에서 빠져나온다. 안 그러면 고쳐 놓은 것을 ↓ 한 번에
-    // 잃는다 — 되살린 말을 고쳐 보내는 것이 이 기능의 목적인데 그걸 막는 셈이 된다.
+    // Editing a character leaves the recall right away. Otherwise one ↓ loses the edit —
+    // and editing a recalled message before sending it is the whole point of the feature.
     if matches!(
         action,
         Action::Insert(_)
@@ -681,30 +716,32 @@ pub fn apply(state: &mut State, action: &Action) {
         state.recall = None;
     }
 
-    // **새 프로젝트 양식이 열려 있으면 글자 키는 양식의 활성 칸으로 간다.** 아래
-    // 입력란에 새어 들어가면 안 된다 — 양식은 다른 자리다. 만들기는 여기서 서버를
-    // 부르지 않고 `project_out`에만 담는다 — I/O가 실제로 만든다.
+    // **With the new-project form open, character keys go to the form's active field.**
+    // They must not leak into the input below — the form is a different place. Creating does
+    // not call the server here; it only fills `project_out` — the I/O side actually creates.
     if state.new_project.is_some() {
         match action {
             Action::Insert(c) => {
-                state.new_project.as_mut().expect("방금 확인했다").active().insert(*c)
+                state.new_project.as_mut().expect("just checked it").active().insert(*c)
             }
             Action::Paste(text) => {
-                state.new_project.as_mut().expect("방금 확인했다").active().insert_str(text)
+                state.new_project.as_mut().expect("just checked it").active().insert_str(text)
             }
             Action::Backspace => {
-                state.new_project.as_mut().expect("방금 확인했다").active().backspace()
+                state.new_project.as_mut().expect("just checked it").active().backspace()
             }
-            Action::Delete => state.new_project.as_mut().expect("방금 확인했다").active().delete(),
+            Action::Delete => {
+                state.new_project.as_mut().expect("just checked it").active().delete()
+            }
             Action::DeleteWord => {
-                state.new_project.as_mut().expect("방금 확인했다").active().delete_word()
+                state.new_project.as_mut().expect("just checked it").active().delete_word()
             }
-            Action::Left => state.new_project.as_mut().expect("방금 확인했다").active().left(),
-            Action::Right => state.new_project.as_mut().expect("방금 확인했다").active().right(),
-            Action::Home => state.new_project.as_mut().expect("방금 확인했다").active().home(),
-            Action::End => state.new_project.as_mut().expect("방금 확인했다").active().end(),
-            Action::FormNext => state.new_project.as_mut().expect("방금 확인했다").next(),
-            Action::FormPrev => state.new_project.as_mut().expect("방금 확인했다").prev(),
+            Action::Left => state.new_project.as_mut().expect("just checked it").active().left(),
+            Action::Right => state.new_project.as_mut().expect("just checked it").active().right(),
+            Action::Home => state.new_project.as_mut().expect("just checked it").active().home(),
+            Action::End => state.new_project.as_mut().expect("just checked it").active().end(),
+            Action::FormNext => state.new_project.as_mut().expect("just checked it").next(),
+            Action::FormPrev => state.new_project.as_mut().expect("just checked it").prev(),
             Action::FormConfirm => {
                 let done = state.new_project.as_mut().and_then(|form| form.submit(state.lang));
                 if let Some((name, description)) = done {
@@ -722,8 +759,8 @@ pub fn apply(state: &mut State, action: &Action) {
             follow_the_slash(state);
         }
         Action::Paste(text) => {
-            // 줄바꿈이 섞여도 그대로 넣는다. 슬래시 명령 목록은 열지 않는다 —
-            // 붙여넣기로 모드가 바뀌면 안 된다. 되살리기 해제는 위 matches!가 한다.
+            // Newlines inside go in verbatim. The slash command list does not open — a
+            // paste must not change the mode. The matches! above releases the recall.
             state.editor().insert_str(text);
         }
         Action::Backspace => {
@@ -739,18 +776,19 @@ pub fn apply(state: &mut State, action: &Action) {
         Action::Submit(text) => {
             state.input.take();
             state.recall = None;
-            // 보냈으면 목록은 제 할 일을 다했다. 안 닫으면 화면을 계속 가린다.
+            // Once sent, the list has done its job. Left open it keeps covering the screen.
             state.picker = None;
-            // **슬래시 명령은 서버로 가지 않는다.** 오타 하나가 크레딧을 쓰면 안 되고,
-            // 일하는 중이라고 대기열에 담을 이유도 없다 — 모드를 바꾸거나 목록을 보는
-            // 일은 턴이 끝나기를 기다릴 것이 아니다.
+            // **Slash commands never reach the server.** One typo must not spend credits,
+            // and there is no reason to queue them just because a turn is running —
+            // changing the mode or looking at a list is not something to wait a turn for.
             if crate::command::is_command(text) {
                 state.remember_sent(text);
                 state.command_out = Some(text.clone());
                 return;
             }
-            // **일하는 중이면 보내지 않고 들고 있는다.** 보낸 기록에도 아직 안 넣는다 —
-            // 진짜 나간 뒤에 넣어야 "보낸 말"이 거짓말이 되지 않는다.
+            // **While work is running, hold it instead of sending.** It does not go into
+            // the sent history yet either — only adding it after it really goes out keeps
+            // "what was sent" from being a lie.
             if state.running {
                 state.queued.push(text.clone());
                 return;
@@ -762,8 +800,9 @@ pub fn apply(state: &mut State, action: &Action) {
             state.scroll.wheel(*notches, total, height);
         }
         Action::ToggleFold => {
-            // **마지막 작업 카드를 접고 편다** — work_summary가 없어 암시적으로
-            // 생긴 카드(추론 없는 툴 전용 턴)도 대상이다. 추론 줄 클릭과 같은 동작.
+            // **Folds and unfolds the last work card** — including a card that arose
+            // implicitly with no work_summary (a tool-only turn with no reasoning). Same
+            // behaviour as clicking the reasoning line.
             let last = state
                 .timeline
                 .items()
@@ -777,7 +816,7 @@ pub fn apply(state: &mut State, action: &Action) {
             }
         }
         Action::Press(x, y) => {
-            // 질문 화면 위를 누르면 그 줄을 고른다.
+            // Pressing on the question screen picks that row.
             if let (Some(area), Some((_, a))) = (state.ask_area, state.asking.as_ref()) {
                 if *y >= area.y && *y < area.y + area.height {
                     if let Some(i) = crate::widgets::ask_row_at(a, area, *y) {
@@ -789,7 +828,7 @@ pub fn apply(state: &mut State, action: &Action) {
                     return;
                 }
             }
-            // 새로 누르면 앞 선택은 버린다.
+            // A new press discards the previous selection.
             state.selection = None;
             state.drag = state.content_at(*x, *y).map(crate::selection::Drag::new);
             state.dragging = state.drag.is_some();
@@ -798,15 +837,16 @@ pub fn apply(state: &mut State, action: &Action) {
             if !state.dragging {
                 return;
             }
-            // 빌림이 겹치지 않게 좌표를 먼저 구한다.
+            // Take the coordinate first so the borrows do not overlap.
             let at = state.content_at(*x, *y);
             if let (Some(drag), Some(at)) = (state.drag.as_mut(), at) {
                 drag.to = at;
             }
             if let Some(drag) = state.drag {
                 if !drag.is_click() {
-                    // 평문은 **여기서만** 만든다. 프레임마다 만들면 대화 길이에
-                    // 비례해 무거워진다 — 드래그는 사람 손 속도라 그때 만들면 된다.
+                    // Plain text is built **only here.** Building it every frame gets
+                    // heavier in proportion to the conversation — a drag runs at hand
+                    // speed, so building it then is enough.
                     let rows = state.rows_cache.plain();
                     let text = crate::selection::extract(&rows, &drag);
                     state.selection = (!text.is_empty()).then_some(text);
@@ -815,11 +855,12 @@ pub fn apply(state: &mut State, action: &Action) {
         }
         Action::Release => {
             state.dragging = false;
-            // **범위는 남긴다.** 어디까지 골랐는지 눈으로 확인할 수 있어야 한다.
-            // 클립보드로 내보내는 것은 I/O라 여기서 하지 않는다 — `run`이 한다.
+            // **The range stays.** It has to be possible to see how far the selection went.
+            // Exporting to the clipboard is I/O and does not happen here — `run` does it.
             let Some(drag) = state.drag else { return };
             if drag.is_click() {
-                // 움직이지 않았으면 클릭이다 — 그 줄이 작업 카드 머리면 접고 편다.
+                // No movement means a click — if that row is a work card header, fold or
+                // unfold it.
                 state.drag = None;
                 if let Some(&seq) = state.view_cards.get(&drag.from.0) {
                     let fold = state.folds.entry(seq).or_default();
@@ -849,7 +890,7 @@ pub fn apply(state: &mut State, action: &Action) {
                 return;
             };
             if a.typing {
-                // 타자를 끝내는 것이 먼저다.
+                // Finishing the typing comes first.
                 a.confirm();
                 return;
             }
@@ -858,14 +899,15 @@ pub fn apply(state: &mut State, action: &Action) {
                 Some(RowKind::Action(Act::Back)) => a.back(),
                 Some(RowKind::Action(Act::Next)) | Some(RowKind::Action(Act::Skip)) => a.advance(),
                 Some(RowKind::Action(Act::Edit)) => a.to_edit(),
-                // 답하지 않겠다고 알린다. 조용히 닫으면 상대는 계속 기다린다.
+                // Say we will not answer. Closing quietly leaves the other side waiting.
                 Some(RowKind::Action(Act::Reject)) => {
                     state.asking = None;
                     state.input = Input::new();
                     state.input.insert_str(state.lang.question_refused());
                     state.submit_now = true;
                 }
-                // 제출은 곧바로다. 답을 입력란에 실어 두면 I/O가 그대로 보낸다.
+                // Submitting is immediate. Put the answer in the input and the I/O side
+                // sends it as-is.
                 Some(RowKind::Action(Act::Submit)) => {
                     if let Some((_, a)) = state.asking.take() {
                         state.input = Input::new();
@@ -882,7 +924,8 @@ pub fn apply(state: &mut State, action: &Action) {
             }
         }
         Action::AskCancel => {
-            // 타자 중이면 타자만 그만둔다. 아니면 질문을 접는다 — 답은 그냥 메시지로도 된다.
+            // While typing, only stop the typing. Otherwise put the question away — an
+            // answer can just be a plain message too.
             let typing = state.asking.as_ref().is_some_and(|(_, a)| a.typing);
             if typing {
                 if let Some((_, a)) = &mut state.asking {
@@ -897,10 +940,11 @@ pub fn apply(state: &mut State, action: &Action) {
             state.selection = None;
             state.drag = None;
         }
-        // 다시 그리기는 화면만의 일이다. 상태가 바뀌지 않으므로 여기서는 할 일이 없다.
+        // Repainting is the screen's business alone. No state changes, so there is nothing
+        // to do here.
         Action::Repaint => {}
-        // 목록을 채우는 것은 I/O 자리다. **여기서 건드리면 안 된다** — `apply`는 I/O 처리
-        // 뒤에 돌므로, 여기서 자리를 잡으면 방금 받아온 목록을 도로 덮어쓴다.
+        // Filling the list is the I/O side's job. **Do not touch it here** — `apply` runs
+        // after the I/O handling, so setting anything here overwrites the list just fetched.
         Action::OpenPicker => {}
         Action::PickUp => {
             if let Some(p) = &mut state.picker {
@@ -912,11 +956,13 @@ pub fn apply(state: &mut State, action: &Action) {
                 p.down();
             }
         }
-        // 고른 결과의 처리(목록 이동·세션 전환·생성)는 I/O 자리가 한다.
+        // Acting on the choice (moving in the list, switching sessions, creating) is the
+        // I/O side's job.
         Action::PickConfirm => {}
-        // **여기서 picker를 건드리면 안 된다.** `apply`는 I/O 처리 뒤에 도는데, I/O가
-        // 세션→프로젝트로 되돌려 놓은 것을 여기서 다시 보면 "프로젝트 단계니 닫자"가
-        // 되어 뒤로가기가 그냥 닫기로 변한다. 실제로 그렇게 걸렸다.
+        // **Do not touch the picker here.** `apply` runs after the I/O handling, so looking
+        // again at what I/O just moved back from sessions to projects turns this into "we
+        // are at the project level, close it" — and back becomes plain close. This actually
+        // happened.
         Action::PickBack => {}
         Action::ToggleSidebar => state.sidebar_on = !state.sidebar_on,
         Action::CycleMode => state.mode = state.mode.next(),
@@ -924,13 +970,14 @@ pub fn apply(state: &mut State, action: &Action) {
             state.editor().take();
             state.recall = None;
         }
-        // 되살리기. **대기 중인 말이 먼저다** — 그것이 아직 고칠 수 있는 유일한 말이다.
+        // Recall. **A queued message comes first** — it is the only one still editable.
         Action::RecallOlder => {
             if let Some(text) = state.queued.pop() {
                 state.input.text = text;
                 state.input.end();
-                // 꺼낸 순간 대기열에서 빠졌다. 더 거슬러 올라가면 지금 고치는 것을 잃으므로
-                // 여기서 멈춘다 — `recall`을 세우지 않는 것이 그 뜻이다.
+                // Pulling it out took it off the queue. Walking further back would lose
+                // what is being edited, so stop here — that is what not setting `recall`
+                // means.
                 state.recall = None;
                 return;
             }
@@ -954,7 +1001,8 @@ pub fn apply(state: &mut State, action: &Action) {
                     state.input.text = text.clone();
                     state.input.end();
                 }
-                // 맨 아래를 지나면 되살리기가 끝난다. 치던 자리로 돌아오는 셈이다.
+                // Past the bottom the recall ends. It amounts to coming back to where the
+                // typing was.
                 None => {
                     state.recall = None;
                     state.input.take();
@@ -968,29 +1016,30 @@ pub fn apply(state: &mut State, action: &Action) {
                 Action::AlwaysAllow => Verdict::AllowAlways,
                 _ => Verdict::Deny,
             };
-            // **디렉터리째로 연다.** 남의 리포를 한 번 허락하고 그 안의 파일 하나하나를
-            // 다시 묻는 것은 쓸 수 없다.
+            // **Open the whole directory.** Allowing someone else's repo once and then
+            // asking again for every single file inside it is unusable.
             if let (Verdict::AllowAlways, Some(path)) = (verdict, &ask.call.outside) {
                 state.grants.allow_under(path);
             }
-            // **이미 포기한 호출에는 답을 보내지 않는다.** 보내면 에이전트가 모르는
-            // 채로 파일이 바뀐다. 허용만 기록되고 다음 호출에서 그것이 쓰인다.
+            // **Do not answer a call that was already given up on.** Answering changes a
+            // file without the agent knowing. Only the grant is recorded, and the next call
+            // uses it.
             if !ask.expired {
                 state.verdict_out = Some((ask.id, verdict));
             }
             state.pending = state.ask_queue.pop_front();
         }
         Action::ArmQuit => state.quit_armed_at = Some(Instant::now()),
-        // 보내는 것은 I/O 자리가 한다. 여기서는 "말했다"만 적어 둔다 — 활동 줄이 그걸
-        // 보여주고, 다음 Ctrl+C가 종료로 넘어갈지도 이걸로 정해진다.
+        // Sending is the I/O side's job. Here we only note that we asked — the activity
+        // line shows it, and whether the next Ctrl+C goes to quitting is decided by it too.
         Action::Cancel => state.stopping = true,
         Action::Quit => {}
-        // **등록 자체는 여기서 끊지 않는다.** 창만 닫고, 배경의 상류 폴링은 계속
-        // 돌아간다 — 승인되면 `EnrollDone`이 다시 닫고, 만료되면 새 코드와 함께
-        // 창이 도로 온다.
+        // **Enrollment itself is not cut off here.** Only the window closes; the upstream
+        // polling keeps running in the background — `EnrollDone` closes it again once
+        // approved, and on lapse the window comes back with a new code.
         Action::EnrollClose => state.enroll = None,
-        // **양식이 닫혀 있으면 여기까지 오는 Form* 은 없다** — 열려 있으면 위의 가드가
-        // 가로챈다. 그래도 나열해야 exhaustive 하다.
+        // **With the form closed no Form* reaches this far** — while open, the guard above
+        // intercepts them. They still have to be listed to be exhaustive.
         Action::FormNext | Action::FormPrev | Action::FormConfirm | Action::FormCancel => {}
         Action::Frame(frame) => apply_frame(state, frame),
     }
@@ -999,14 +1048,16 @@ pub fn apply(state: &mut State, action: &Action) {
 fn apply_frame(state: &mut State, frame: &Frame) {
     match frame {
         Frame::Event { cursor, entry } => {
-            // 렌더하지 않는 이벤트여도 커서는 전진한다 — 재개 위치를 놓치면 안 된다.
+            // The cursor advances even for an event we do not render — the resume position
+            // must not be lost.
             state.last_cursor = Some(*cursor);
             let Some(entry) = entry else { return };
             if let EntryKind::WorkStart(_) = entry.kind {
                 state.folds.entry(entry.seq).or_default();
             }
-            // 답을 기다리는 질문이 오면 곧바로 답하기 모드로 들어간다. 턴이 막혀 있으므로
-            // 사람이 따로 열 이유가 없다. 이미 답이 간 질문은 다시 열지 않는다.
+            // A question awaiting an answer puts us straight into answering mode. The turn
+            // is blocked, so there is no reason to make the user open it. A question that
+            // was already answered does not reopen.
             if let EntryKind::Question { steps, answered } = &entry.kind {
                 if *answered {
                     if state.asking.as_ref().is_some_and(|(q, _)| *q == entry.seq) {
@@ -1017,44 +1068,50 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                         Some((entry.seq, crate::question::Answering::new(steps.clone())));
                 }
             }
-            // 태스크는 todo_* 도구 호출에서만 알 수 있다 — todo_change 이벤트에는 본문이 없다.
+            // Tasks are only knowable from the todo_* tool calls — a todo_change event
+            // carries no body.
             if let EntryKind::Tool { name, todo: Some((args, result)), .. } = &entry.kind {
                 state.sidebar.apply_tool(name, args, result.as_ref());
             }
             state.timeline.upsert(entry.clone());
         }
-        // **카드는 저절로 접히거나 펴지지 않는다.**
+        // **A card never folds or unfolds by itself.**
         //
-        // 예전에는 추론이 흐르는 동안 펴 두고 답이 시작되면 접었다. 그런데 그러면
-        // 읽고 있던 화면이 스스로 움직이고, "늦게 온 추론이 도로 펴면 안 된다" 같은
-        // 예외가 계속 붙는다. 접힘은 사람이 정하는 것 하나로 뒀다 — Ctrl+O다.
+        // This used to keep it open while reasoning streamed and fold it once the answer
+        // started. But then the screen being read moves on its own, and exceptions like
+        // "late reasoning must not reopen it" keep piling on. Folding is left as the one
+        // thing the user decides — Ctrl+O.
         Frame::Delta { kind, text } => state.timeline.push_delta(*kind, text),
         Frame::Status { running } => {
-            // **턴이 끝나는 순간이 대기열을 비울 때다.** 보내는 것은 I/O라 여기서 못 한다 —
-            // 깃발만 세우고 `run`이 집어 간다. `submit_now`와 같은 수법이다.
+            // **The end of a turn is when the queue gets flushed.** Sending is I/O and
+            // cannot happen here — only raise the flag and `run` picks it up. Same trick as
+            // `submit_now`.
             if state.running && !*running && !state.queued.is_empty() {
                 state.flush_queue = true;
             }
-            // 멈춰 달라던 부탁은 이번 턴까지다. **바뀔 때만 푼다** — 도는 동안 같은
-            // 상태가 여러 번 오는데 그때마다 풀면 Ctrl+C가 영영 취소만 되풀이한다.
+            // The request to stop lasts only for that turn. **Release it only on a change** —
+            // the same state arrives many times while running, and releasing every time
+            // would make Ctrl+C repeat the cancel forever.
             if state.running != *running {
                 state.stopping = false;
             }
             state.running = *running;
         }
         Frame::ShellOpened { id, name } => {
-            // 같은 PTY가 두 번 오면 목록이 두 벌이 된다.
+            // The same PTY arriving twice would put two copies in the list.
             if !state.shells.iter().any(|s| s.id == *id) {
                 state.shells.push(Shell { id: id.clone(), name: name.clone() });
             }
         }
         Frame::ShellClosed { id } => state.shells.retain(|s| s.id != *id),
-        // **한 번에 하나만 띄운다.** 둘이 겹치면 무엇에 답하는지 알 수 없다.
+        // **Only one is up at a time.** With two overlapping there is no telling which one
+        // is being answered.
         Frame::Ask(ask) => match state.pending {
             None => state.pending = Some(ask.clone()),
             Some(_) => state.ask_queue.push_back(ask.clone()),
         },
-        // 창은 치우지 않고 표시만 바꾼다. 치워 버리면 사람이 무엇을 놓쳤는지 모른다.
+        // The window is not cleared away, only what it shows changes. Clearing it leaves the
+        // user with no idea what they missed.
         Frame::Expired(id) => {
             if let Some(p) = state.pending.as_mut().filter(|p| p.id == *id) {
                 p.expired = true;
@@ -1063,7 +1120,8 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                 waiting.expired = true;
             }
         }
-        // 배경 폴링 결과. 값이 없으면 서버가 답하지 않은 것이다 — 조용히 지나친다.
+        // The background polling result. No value means the server did not answer — pass
+        // over it quietly.
         Frame::Poll { usage, title } => {
             if let Some(u) = usage {
                 if u != &state.sidebar.usage {
@@ -1076,24 +1134,27 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                 }
             }
         }
-        // **끊긴 것은 화면이 말한다.** 활동 줄이 "연결 중…"으로 바뀌고, 사유는 알림으로
-        // 한 번 지나간다. 다시 붙는 것은 Runner가 하고, 붙으면 `api_rx`가 알려 준다.
+        // **The screen says when it dropped.** The activity line turns to "connecting…" and
+        // the reason goes by once as a notice. Reconnecting is the Runner's job, and
+        // `api_rx` tells us once it is back.
         Frame::Disconnected(why) => {
             state.connected = false;
             state.set_status(state.lang.disconnected(why));
         }
-        // 시각은 프레임에 싣지 않고 받는 자리에서 찍는다 — `status_at`과 같은 식이다.
+        // The time is not carried in the frame but stamped where it is received — same way
+        // as `status_at`.
         Frame::ExecStart { id, command } => {
             state.running_exec = Some((*id, command.clone(), Instant::now()));
         }
-        // **끝난 것만 지운다.** 겹쳐 돌 때 뒤엣것이 앞엣것을 지우면 화면이 거짓말을 한다.
+        // **Only clear the one that finished.** With overlapping runs, a later one clearing
+        // an earlier one makes the screen lie.
         Frame::ExecDone { id } => {
             if state.running_exec.as_ref().is_some_and(|(at, _, _)| at == id) {
                 state.running_exec = None;
             }
         }
         Frame::JobStart { id, label } => {
-            // 같은 id가 두 번 오면 줄이 두 벌이 된다.
+            // The same id arriving twice would put two rows in the list.
             if !state.jobs.iter().any(|j| j.id == *id) {
                 state.jobs.push(JobRow {
                     id: id.clone(),
@@ -1102,38 +1163,41 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                 });
             }
         }
-        // 끝난 것은 목록에서 빠지고 **한 번 말하고 사라진다.** 성공도 말한다 —
-        // 끝난 줄 모르면 사람은 계속 기다린다.
+        // A finished job leaves the list and **is announced once, then gone.** Success is
+        // announced too — not knowing it finished leaves the user waiting.
         Frame::JobEnded { id, ok, secs } => {
             state.jobs.retain(|j| j.id != *id);
             state.set_status(state.lang.job_ended(id, *ok, *secs));
         }
-        // 등록 코드 창. 재등록이 시작되면 저절로 뜬다. 만료 뒤 새 코드가 오면
-        // 내용만 갈아 끼운다 — 창은 사람이 Esc로 닫지 않는 한 유지된다.
+        // The enrollment code window. It comes up on its own when re-enrollment starts. When
+        // a new code arrives after a lapse only the contents are swapped — the window stays
+        // unless the user closes it with Esc.
         Frame::Enroll(view) => state.enroll = Some(view.clone()),
         Frame::EnrollPhase(phase) => {
             if let Some(view) = &mut state.enroll {
                 view.phase = *phase;
             }
         }
-        // 승인돼서 자격이 저장됐다. 창을 닫는다.
+        // Approved, and the credential was stored. Close the window.
         Frame::EnrollDone => state.enroll = None,
         Frame::Notice(text) => state.set_status(text.clone()),
     }
 }
 
-/// 친 것이 이미 온전한 명령 이름인가. 그렇다면 목록에서 또 고를 이유가 없다.
+/// Is what was typed already a whole command name? If so there is no reason to pick from
+/// the list again.
 fn typed_a_whole_command(state: &State) -> bool {
     let typed = state.input.text.trim();
     state.picker.as_ref().is_some_and(|p| p.rows.iter().any(|r| r.label == typed))
 }
 
-/// 입력란이 `/`로 시작하면 명령 목록을 띄우고, 치는 대로 좁힌다.
+/// When the input starts with `/`, put up the command list and narrow it as typing goes on.
 ///
-/// **목록이 안 뜨면 아무도 안 쓴다.** 무슨 명령이 있는지 알 방법이 없으면 슬래시 명령은
-/// 만든 사람만 쓰는 기능이 된다.
+/// **If the list does not come up nobody uses it.** With no way to know what commands exist,
+/// slash commands become a feature only their author uses.
 ///
-/// 질문이나 승인이 열려 있으면 손대지 않는다 — 그 자리는 이미 다른 것이 쓰고 있다.
+/// With a question or an approval open, leave it alone — something else already owns that
+/// spot.
 fn follow_the_slash(state: &mut State) {
     if state.asking.is_some() || state.pending.is_some() {
         return;
@@ -1146,20 +1210,21 @@ fn follow_the_slash(state: &mut State) {
         (true, _) => {
             let mut p = crate::picker::Picker::commands(state.lang);
             p.narrow(&typed, state.lang);
-            // 좁혀서 남는 것이 없으면 목록을 닫는다 — 빈 창은 고장으로 보이고,
-            // `/home/...`처럼 명령이 아닌 것을 칠 때 화면을 가리기만 한다.
+            // If narrowing leaves nothing, close the list — an empty window looks broken,
+            // and it only covers the screen while typing a non-command like `/home/...`.
             state.picker = (!p.rows.is_empty()).then_some(p);
         }
-        // 지웠거나 인자를 치기 시작했다. 목록은 제 할 일을 다했다.
+        // Either erased or an argument started. The list has done its job.
         (false, true) => state.picker = None,
         (false, false) => {}
     }
 }
 
-/// 슬래시 명령 중 **상태만 만지면 되는 것**을 실행한다.
+/// Runs the slash commands **that only need to touch state**.
 ///
-/// 서버나 디스크가 필요한 것(`/agent`·`/mcp`·`/plugin`·`/undo` …)은 여기서 손대지 않고
-/// 그대로 돌려준다 — I/O 자리가 받아 마저 한다. 이 함수가 순수해야 테스트가 붙는다.
+/// The ones that need the server or the disk (`/agent`, `/mcp`, `/plugin`, `/undo`, …) are
+/// left untouched and handed back — the I/O side takes them and finishes. This function has
+/// to stay pure for tests to attach to it.
 pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Command> {
     use crate::command::Command;
     let cmd = crate::command::parse(text)?;
@@ -1174,10 +1239,11 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
             let said = state.lang.mode_changed(mode.label(state.lang));
             state.timeline.say(said);
         }
-        // **바꾸는 즉시 화면 말이 바뀐다.** 알림은 **바꾼 뒤의 말로** 낸다 — 영어로 바꿨는데
-        // 확인 문구만 한국어로 오면 바뀐 건지 알 수 없다.
-        // **인자 없이 치면 고르는 창을 연다.** 두 개뿐이라 목록이 곧 답이다 —
-        // `/lang en`을 외우게 하는 것보다 눈으로 고르는 편이 빠르다.
+        // **The screen language changes the moment it is set.** The confirmation is said
+        // **in the new language** — switching to English and getting a Korean confirmation
+        // leaves no way to tell it changed.
+        // **Typed with no argument it opens a list to pick from.** There are only two, so
+        // the list is the answer — picking by eye beats memorizing `/lang en`.
         Command::Lang(None) => {
             state.picker = Some(crate::picker::Picker::languages(state.lang));
         }
@@ -1190,10 +1256,11 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
             state.timeline.say(said);
         }
         Command::Cwd => {
-            // **노드 이름도 같이 말한다.** 호스트 이름이 같은 머신이 둘이면(`arch`가
-            // 흔하다) 서버의 노드 목록에서 둘을 가릴 방법이 이것뿐이다.
-            // **줄 앞에 공백을 넣지 않는다.** 마크다운은 네 칸 들여쓴 줄을 코드 블록으로
-            // 읽는다 — 문자열을 보기 좋게 접어 쓰면 화면에서는 상자가 되어 나온다.
+            // **Say the node name too.** With two machines sharing a hostname (`arch` is
+            // common) this is the only way to tell them apart in the server's node list.
+            // **No leading spaces on a line.** Markdown reads a four-space-indented line as
+            // a code block — folding the string for readability turns it into a box on
+            // screen.
             state.timeline.say(state.lang.cwd_text(
                 &state.cwd,
                 &crate::conn::node_name(),
@@ -1203,7 +1270,8 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
         }
         Command::Clear => {
             state.timeline.clear();
-            // **서버의 기록은 그대로다.** 지웠다고 세션이 없어진 줄 알면 안 된다.
+            // **The server's record is untouched.** Clearing must not read as the session
+            // being gone.
             state.timeline.say(state.lang.clear_done());
         }
         Command::Grants => state.timeline.say(state.lang.grants_text(&state.grants)),
@@ -1214,27 +1282,28 @@ pub fn run_command(state: &mut State, text: &str) -> Option<crate::command::Comm
         Command::Jobs(Some(_)) => {}
         Command::GrantsClose => {
             let closed = state.grants.close_all();
-            // **게이트에도 알려야 한다.** 여기서 지우고 마는 것은 화면만 닫는 것이다 —
-            // 그 일은 I/O 자리가 `bridge.sync`로 한다(`finish_command`).
+            // **The gate has to be told too.** Clearing only here closes it on screen
+            // alone — the I/O side does that part with `bridge.sync` (`finish_command`).
             state.timeline.say(match closed {
                 0 => state.lang.grants_none_closed().to_string(),
                 n => state.lang.grants_closed(n),
             });
         }
-        // 화면을 끄는 것은 I/O다. 깃발만 세운다.
+        // Shutting the screen down is I/O. Only raise the flag.
         Command::Quit => state.quitting = true,
-        // 모르는 것을 조용히 넘기면 다음에 또 틀린다. 무엇이 있는지 같이 알려 준다.
+        // Letting an unknown one pass quietly means getting it wrong again next time. Say
+        // what does exist alongside.
         Command::Unknown(what) => {
             state
                 .timeline
                 .say(state.lang.unknown_command(what, &crate::command::help_text(state.lang)));
         }
-        // 여기서 못 하는 것들. I/O 자리가 받는다.
+        // The ones that cannot be done here. The I/O side takes them.
         Command::Mcp
         | Command::Skills
         | Command::Rules
         | Command::Agent(_)
-        // 서버가 필요하다 — `finish_command`가 마저 한다.
+        // Needs the server — `finish_command` finishes it.
         | Command::Plugin(_)
         | Command::Changes
         | Command::Undo => {}
@@ -1257,9 +1326,8 @@ fn jobs_text(jobs: &[JobRow], lang: crate::lang::Lang) -> String {
     out
 }
 
-
 // ---------------------------------------------------------------------------
-// 여기부터가 유일한 I/O 자리다. 위쪽은 전부 순수하다.
+// From here on is the one and only I/O place. Everything above is pure.
 // ---------------------------------------------------------------------------
 
 use std::io;
@@ -1270,19 +1338,21 @@ use crossterm::event::{Event as TermEvent, EventStream, MouseButton, MouseEventK
 use crossterm::execute;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
-// 트레이트가 스코프에 있어야 메서드를 부를 수 있다.
+// The trait has to be in scope to call its methods.
 use zyris_attacca::{AttaccaApi, AttaccaApiClient};
 
 use crate::conn::{frame_from, Session};
 use crate::widgets;
 
-/// 화면을 그리는 최소 간격. 델타가 글자 단위로 쏟아져도 프레임 단위로 합쳐 그린다.
+/// Minimum interval between draws. Even with deltas pouring in character by character, they
+/// are merged and drawn per frame.
 ///
-/// **ssh 같은 느린 링크에서는 이 값이 곧 화면 깨짐이다.** 16ms(60fps)로 그리면 답변이
-/// 빠르게 흐를 때 링크가 프레임을 다 못 실어 나르고, 덜 도착한 화면 위에 다음 프레임이
-/// 겹쳐 찢어진다. 사람 눈에는 20fps면 충분히 부드러우므로 여유를 링크에 준다.
+/// **On a slow link like ssh this value is exactly what breaks the screen.** Drawing at 16ms
+/// (60fps) means the link cannot carry every frame while an answer streams fast, and the next
+/// frame overprints a half-arrived screen and tears it. 20fps is smooth enough for the eye,
+/// so give the slack to the link.
 ///
-/// `ZYRIS_CODE_FPS`로 바꾼다 — 로컬 터미널에서 더 부드럽게 보고 싶으면 올리면 된다.
+/// `ZYRIS_CODE_FPS` changes it — raise it for a smoother look on a local terminal.
 fn frame_interval() -> Duration {
     let fps: u64 = std::env::var("ZYRIS_CODE_FPS")
         .ok()
@@ -1292,71 +1362,78 @@ fn frame_interval() -> Duration {
     Duration::from_millis(1000 / fps)
 }
 
-/// 턴이 도는 동안 다시 그리는 최소 간격.
+/// Minimum interval between redraws while a turn is running.
 ///
-/// 재 보니 한 프레임에 선로로 나가는 바이트는 **무엇이 바뀌었느냐에 따라 천 배** 차이가
-/// 난다(`tests/perf.rs::measure_bytes_on_the_wire`).
+/// Measured, the bytes one frame puts on the wire differ **by a factor of a thousand
+/// depending on what changed** (`tests/perf.rs::measure_bytes_on_the_wire`).
 ///
-/// | 무엇 | 나가는 양 |
+/// | What | Bytes out |
 /// |---|---|
-/// | 아무 변화 없음 | 32 B |
-/// | 글자 하나 침 | 64 B |
-/// | 스트리밍 한 조각 | 3.4 KB |
-/// | 통째로 다시 그리기 | 21 KB |
+/// | Nothing changed | 32 B |
+/// | One character typed | 64 B |
+/// | One streaming chunk | 3.4 KB |
+/// | Full redraw | 21 KB |
 ///
-/// 그래서 **전부를 느리게 하지 않는다.** 키 입력은 누른 자리에서 바로 그리고(64 B),
-/// 답이 흘러 들어오는 동안만 이 간격으로 묶는다. 사람 손보다 스트리밍이 훨씬 빠르므로
-/// 여기서 묶는 것이 눈에 띄지 않으면서 양은 절반이 된다.
+/// So **we do not slow everything down.** Key input draws right where it was pressed
+/// (64 B), and only the inflow of an answer is batched at this interval. Streaming is far
+/// faster than a human hand, so batching here halves the volume without being noticed.
 const STREAM_MIN_GAP: Duration = Duration::from_millis(100);
 
-/// 사용량과 제목을 다시 물어보는 간격. 매 프레임 물으면 서버를 두들기게 된다.
+/// How often usage and title are asked for again. Asking every frame would hammer the server.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
-/// 앱 루프 감시. 루프가 이 간격으로 진행도를 올리고, 마지막 진행 뒤 이만큼
-/// 지나도 안 올라오면 화면을 되돌리고 프로세스를 끝낸다 — 루프가 블로킹에
-/// 갇혀 시그널조차 못 받는 "제어 불능"을 구조적으로 없앤다.
+/// App loop watchdog. The loop bumps a progress counter at this interval, and if nothing
+/// comes up this long after the last progress the screen is restored and the process ends —
+/// structurally removing the "uncontrollable" state where the loop is stuck on a block and
+/// cannot even receive a signal.
 const LOOP_WATCHDOG_INTERVAL: Duration = Duration::from_secs(10);
 const LOOP_WATCHDOG_STALL: Duration = Duration::from_secs(60);
 
-/// 화면을 통째로 다시 그려 **스스로 고치는** 간격(밀리초). 0이면 끄고, 기본은 2초다.
+/// How often (in milliseconds) the screen is redrawn whole to **heal itself**. 0 turns it
+/// off; the default is 2 seconds.
 ///
-/// ratatui는 **전각 글자 뒤 칸에 아무것도 쓰지 않는다.** 재 보면 선로에 이렇게 나간다
-/// (`tests/perf.rs::measure_what_goes_out_behind_a_wide_character`):
+/// ratatui **writes nothing into the cell behind a wide character.** Measured, this is what
+/// goes on the wire (`tests/perf.rs::measure_what_goes_out_behind_a_wide_character`):
 ///
 /// ```text
 /// ESC[1;1H한  ESC[1;3H글  ESC[1;5H……
-///          └ 2번 칸으로 건너뛴다. 1번 칸에는 끝내 아무것도 안 나간다.
+///          └ It skips to column 2. Column 1 never gets anything at all.
 /// ```
 ///
-/// 터미널이 전각 글자를 **두 칸에 걸쳐 칠해 준다**는 믿음 위에 선 최적화다. 그 믿음을
-/// 지키지 않는 터미널 — 두 칸을 잡아 두고 글자는 한 칸에만 그리는 종류 — 에서는 뒤 칸에
-/// 있던 옛 글자가 그대로 비쳐 보인다. SSH 화면에 글자 부스러기가 남는 구조적 이유다.
-/// 게다가 그 칸은 우리 버퍼상 "안 바뀐 칸"이라 **영영 다시 그려지지 않는다.**
+/// It is an optimization resting on the belief that the terminal **paints a wide character
+/// across two cells.** On a terminal that does not honour that belief — the kind that
+/// reserves two cells but draws the glyph in only one — the old character in the trailing
+/// cell shows through. That is the structural reason for the leftover glyph crumbs on an SSH
+/// screen. Worse, that cell counts as "unchanged" in our buffer, so **it is never drawn
+/// again.**
 ///
-/// 이 모델 안에서 고칠 방법은 **지우고 처음부터 다시 그리는 것**뿐이다. 그래서 가끔 한다.
-/// 사람이 Ctrl+L을 몰라도 몇 초 뒤 제자리로 온다. 화면에 아무 변화가 없었다면 새로 깨질
-/// 일도 없으니 건너뛴다. 한 번에 21KB이니 자주 해도 부담은 크지 않다 — 부스러기가 거슬리면
-/// `ZYRIS_CODE_HEAL_MS=300`처럼 줄이고, 깜박여 보이면 늘린다.
+/// Within this model the only fix is **to clear and draw from scratch.** So we do it now and
+/// then. Even someone who does not know Ctrl+L gets a clean screen a few seconds later. If
+/// nothing on screen changed there is nothing new to break, so it is skipped. At 21KB a time
+/// it is not a burden even done often — if the crumbs bother you lower it
+/// (`ZYRIS_CODE_HEAL_MS=300`), and if it looks like flicker raise it.
 fn heal_interval() -> Option<Duration> {
-    // **기본은 2초다.** 터미널이 자기 배경을 쓰게 두는 정책이면(`theme::page_bg`),
-    // ratatui diff가 전각 글자 뒤 trailing 칸을 지워 주는 보호(`previous.bg != Reset`)가
-    // 발동하지 않는다 — 그래서 그 칸은 우리 버퍼상 "안 바뀐 칸"으로 남아 영영 안
-    // 지워진다. 주기적으로 화면 전체를 **덮어써서**(`force_update`) 그 잔상을 치운다.
+    // **The default is 2 seconds.** With a policy that lets the terminal use its own
+    // background (`theme::page_bg`), the ratatui diff's protection that erases the trailing
+    // cell behind a wide character (`previous.bg != Reset`) never fires — so that cell stays
+    // "unchanged" in our buffer and is never erased. Periodically **overwriting** the whole
+    // screen (`force_update`) clears that residue.
     //
-    // 예전에는 2초마다 **지우고** 다시 그렸는데, 그게 느린 SSH 링크에서 주기적인
-    // 깜빡임으로 보였다. `AlwaysUpdate`는 지우지 않고 같은 내용을 다시 내보내므로
-    // 깜빡이지 않는다 — 터미널이 "같은 칸을 덮어쓰는" 것을 잔상 제거로 쓴다.
-    // 깜박여 보이면 `ZYRIS_CODE_HEAL_MS=4000`처럼 늘리고, 꺼 두고 싶으면 0을 준다.
+    // This used to **clear** and redraw every 2 seconds, which looked like periodic flicker
+    // on a slow SSH link. `AlwaysUpdate` does not clear; it just puts the same contents out
+    // again, so it does not flicker — it uses the terminal "overwriting the same cell" as
+    // the residue removal. If it looks like flicker raise it
+    // (`ZYRIS_CODE_HEAL_MS=4000`), and to turn it off give 0.
     let ms: u64 = std::env::var("ZYRIS_CODE_HEAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|ms| *ms <= 3_600_000)
         .unwrap_or(2000);
-    // 너무 짧게 잡으면 지우기와 다시 그리기 사이가 벌어져 깜박여 보인다.
+    // Set too short, the gap between clearing and redrawing widens and looks like flicker.
     (ms > 0).then(|| Duration::from_millis(ms.max(50)))
 }
 
-/// 터미널 창 제목을 바꾸는 시퀀스.
+/// The sequence that changes the terminal window title.
 fn set_terminal_title(title: &str) {
     use std::io::Write;
     let mut out = io::stdout();
@@ -1364,31 +1441,34 @@ fn set_terminal_title(title: &str) {
     let _ = out.flush();
 }
 
-/// OSC 안에 넣어도 안전한 제목.
+/// A title that is safe to put inside an OSC.
 ///
-/// 제목은 서버가 지어 준다 — 즉 **우리가 쓰지 않은 글자**다. 제어문자가 하나라도 섞이면
-/// 시퀀스가 거기서 끊겨 나머지가 화면에 글자로 쏟아진다. 길이도 자른다.
+/// The title is written by the server — that is, **text we did not write.** One control
+/// character mixed in cuts the sequence short there and dumps the rest onto the screen as
+/// literal text. The length is cut too.
 fn title_for_osc(title: &str) -> String {
     title.chars().filter(|c| !c.is_control()).take(120).collect()
 }
 
-/// 키티 키보드 프로토콜 지원 여부를 묻는 응답 대기 시간.
+/// How long we wait for the answer to the kitty keyboard protocol support question.
 ///
-/// 모르는 터미널은 질문에 답하지 않으므로, 이 시간만큼 조용하면 지원이 없는 것이다.
-/// 느린 SSH 링크에서 응답이 이보다 늦게 오면 남은 바이트는 crossterm이 조용히 건너뛴다
-/// (공개 `Event`에 키보드 플래그 variant가 없다) — 앱이 망가지지 않는다.
+/// A terminal that does not know the question never answers it, so silence for this long
+/// means no support. If the answer arrives later than this on a slow SSH link, crossterm
+/// quietly skips the leftover bytes (the public `Event` has no keyboard-flags variant) —
+/// the app does not break.
 const KITTY_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 
-/// 터미널이 키티 키보드 프로토콜을 지원하는지 **시작할 때** 묻는다.
+/// Asks **at startup** whether the terminal supports the kitty keyboard protocol.
 ///
-/// Shift+Enter는 프로토콜을 켠 터미널에서만 Enter와 구별되어 온다(CSI-u). 지원하지
-/// 않는 터미널은 Shift+Enter를 Enter와 똑같은 `\r` 한 바이트로 보내므로, 앱이 받은
-/// 바이트만으로는 갈라 놓을 방법이 없다. `CSI ? u`를 보내고 `CSI ? <flags> u` 응답이
-/// 오면 지원 터미널이다 — 이 질문에 답할 수 있는 터미널은 프로토콜을 아는 터미널뿐이다.
+/// Shift+Enter only arrives distinguishable from Enter (CSI-u) on a terminal with the
+/// protocol on. A terminal without it sends Shift+Enter as the very same single `\r` byte
+/// as Enter, so there is no way to tell them apart from the bytes the app receives. Send
+/// `CSI ? u`, and a `CSI ? <flags> u` answer means a supporting terminal — only a terminal
+/// that knows the protocol can answer that question.
 ///
-/// **crossterm을 거치지 않고 stdin을 직접 읽는다.** 이 시점에는 아직 이벤트 원이
-/// 열리지 않았으므로(`EventStream`은 `run_inner`에서 생긴다) 경쟁자가 없다. 응답이
-/// 늦게라도 도착하면 crossterm이 조용히 건너뛰므로 안전하다.
+/// **This reads stdin directly rather than going through crossterm.** At this point the
+/// event source is not open yet (`EventStream` is created in `run_inner`), so there is no
+/// competitor. If the answer arrives late, crossterm quietly skips it, so it is safe.
 fn probe_kitty_keyboard() -> bool {
     #[cfg(unix)]
     {
@@ -1407,7 +1487,7 @@ fn probe_kitty_keyboard() -> bool {
         while Instant::now() < deadline && resp.len() < 32 {
             let left = deadline.saturating_duration_since(Instant::now());
             let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-            // 0 = 시간 초과, <0 = 오류. 어느 쪽이든 "지원 터미널이 아니다"다.
+            // 0 = timed out, <0 = error. Either way it means "not a supporting terminal".
             if unsafe { libc::poll(&mut pfd, 1, left.as_millis() as libc::c_int) } <= 0 {
                 break;
             }
@@ -1415,7 +1495,7 @@ fn probe_kitty_keyboard() -> bool {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
                     resp.push(byte[0]);
-                    // 응답은 `u`로 끝난다. 끊어 읽더라도 마지막 바이트로 판정한다.
+                    // The answer ends with `u`. Even read in pieces, the last byte decides.
                     if resp.ends_with(b"u") {
                         break;
                     }
@@ -1426,36 +1506,38 @@ fn probe_kitty_keyboard() -> bool {
     }
     #[cfg(not(unix))]
     {
-        // Windows 콘솔은 입력 레코드에 modifier를 그대로 실어 보내므로, 프로토콜 없이도
-        // Shift+Enter가 Enter+SHIFT로 온다 — 지원으로 본다. (질문을 보내면 응답이
-        // 입력으로 새어 들어올 수 있어 보내지 않는다.)
+        // The Windows console carries modifiers in the input record as-is, so Shift+Enter
+        // arrives as Enter+SHIFT even without the protocol — count it as supported. (We do
+        // not send the question, since the answer could leak in as input.)
         true
     }
 }
 
-/// `CSI ? u`에 대한 응답이 지원 터미널의 것인가. 응답 형식은 `CSI ? <flags> u`다.
+/// Is the answer to `CSI ? u` one from a supporting terminal? The answer format is
+/// `CSI ? <flags> u`.
 ///
-/// flags 값까지는 보지 않는다 — 우리가 방금 flag 1을 밀어 넣었고, 응답은 그 현재
-/// 상태를 되돌려 주므로, 형식만 맞으면 받아들여도 오탐이 없다. 형식 판정에 어긋나도
-/// "응답이 왔다는 것" 자체가 지원의 증거다. (모르는 터미널은 답하지 않는다.)
+/// The flags value itself is not examined — we just pushed flag 1 in, and the answer returns
+/// that current state, so accepting on format alone yields no false positives. Even off the
+/// format check, "an answer came at all" is itself evidence of support. (A terminal that
+/// does not know it never answers.)
 fn kitty_probe_ok(resp: &[u8]) -> bool {
-    // 앞에 사람이 친 글자가 섞여 있어도 찾는다 — 시작하자마자 치는 경우는 드물지 않다.
+    // It is found even with characters the user typed mixed in front — typing right at
+    // startup is not rare.
     let i = resp.windows(3).position(|w| w == b"\x1b[?");
     i.is_some_and(|i| {
         let tail = &resp[i + 3..];
         !tail.is_empty()
             && tail.ends_with(b"u")
-            && tail[..tail.len() - 1]
-                .iter()
-                .all(|b| b.is_ascii_digit() || *b == b';' || *b == b':')
+            && tail[..tail.len() - 1].iter().all(|b| b.is_ascii_digit() || *b == b';' || *b == b':')
     })
 }
 
-/// 유일한 I/O 자리.
+/// The one and only I/O place.
 ///
-/// `ratatui::init()`이 raw 모드와 대체 화면을 함께 잡는다 — 직접 또 잡지 않는다.
-/// 마우스 캡처만 따로 켠다. 어떻게 끝나든 되돌리지 않으면 셸이 망가진 채 남으므로,
-/// 본체를 별도 함수로 두고 결과와 무관하게 복구한다.
+/// `ratatui::init()` takes raw mode and the alternate screen together — do not take them
+/// again by hand. Only mouse capture is turned on separately. However it ends, not restoring
+/// leaves the shell broken, so the body lives in its own function and recovery happens
+/// regardless of the result.
 pub async fn run(
     api_rx: ApiRx,
     bridge: crate::tools::bridge::Bridge,
@@ -1465,38 +1547,39 @@ pub async fn run(
     execute!(
         io::stdout(),
         crossterm::event::EnableMouseCapture,
-        // 다른 창에 갔다 오면 터미널이 화면을 되살려 주지 않는 경우가 있다. 포커스가
-        // 돌아온 것을 알아야 통째로 다시 그릴 수 있다.
+        // Coming back from another window, the terminal sometimes does not restore the
+        // screen for us. We have to know focus came back to redraw the whole thing.
         crossterm::event::EnableFocusChange,
-        // **붙여넣기를 한 덩어리로 받는다.** 꺼져 있으면 터미널이 붙여넣기를 치는
-        // 것처럼 흘려보내고, 내용의 줄바꿈이 Enter로 해석되어 여러 줄 프롬프트의
-        // 첫 줄이 그대로 전송돼 버린다. 켜면 ESC[200~…ESC[201~로 감싸져
-        // `Event::Paste` 한 건으로 온다.
+        // **Receive a paste as one chunk.** With it off, the terminal lets a paste through
+        // as if it were typed, the newlines in the content get read as Enter, and the first
+        // line of a multi-line prompt gets sent as-is. With it on, the paste is wrapped in
+        // ESC[200~…ESC[201~ and arrives as one `Event::Paste`.
         crossterm::event::EnableBracketedPaste,
-        // **Shift+Enter를 Enter와 구분할 수 있게 한다.** 키티 키보드 프로토콜을
-        // 켜면 수정된 키가 CSI-u 시퀀스로 따로 온다. 모르는 터미널은 그냥
-        // 무시하므로 켜 두는 것으로 아무 해가 없다.
+        // **Makes Shift+Enter distinguishable from Enter.** With the kitty keyboard protocol
+        // on, modified keys arrive separately as CSI-u sequences. A terminal that does not
+        // know it simply ignores this, so turning it on does no harm.
         crossterm::event::PushKeyboardEnhancementFlags(
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
         ),
-        // **줄 넘김을 끈다.** 우리가 센 글자 폭과 터미널이 그리는 폭이 한 칸이라도
-        // 어긋나면(`●`·`·`·`─` 같은 글자는 터미널 설정에 따라 두 칸이 된다) 줄 끝이
-        // 넘쳐 **아랫줄로 흘러내리고**, 그 아래가 통째로 밀린다. 꺼 두면 넘친 글자는
-        // 그 줄에서 잘릴 뿐이라 피해가 한 줄에 머문다.
+        // **Turn off line wrapping.** If the width we counted and the width the terminal
+        // draws differ by even one cell (glyphs like `●`, `·`, `─` become two cells
+        // depending on terminal settings) the end of the line overflows and **spills onto
+        // the line below**, pushing everything under it down. With it off, the overflowing
+        // glyph is merely cut at that line, keeping the damage to one line.
         crossterm::terminal::DisableLineWrap,
     )?;
 
-    // **Shift+Enter가 줄바꿈으로 먹히는 터미널인지 지금 알아 둔다.** 지원하지 않는
-    // 터미널에서는 시작부터 Alt+Enter를 안내한다 — 아니면 사람은 줄바꿈을 몰라서
-    // 메시지를 그냥 보내 버리게 된다.
+    // **Find out now whether this terminal takes Shift+Enter as a newline.** On a terminal
+    // without support we point at Alt+Enter from the start — otherwise the user does not
+    // know how to make a newline and just fires the message off.
     let kitty = probe_kitty_keyboard();
 
     let for_exit = bridge.clone();
     let result = run_inner(&mut terminal, api_rx, bridge, die, kitty).await;
 
-    // **고아를 남기지 않는다.** 앱이 끝나면 배경 작업도 끝난다 — 살려 두면 이 머신에서
-    // cargo가 RAM을 먹은 채 남는다. `/quit`도 Ctrl+C도 같은 `break 'app`으로 모이므로
-    // 나가는 길은 여기 하나다.
+    // **Leave no orphans.** When the app ends, background jobs end with it — left alive, a
+    // cargo on this machine keeps eating RAM. `/quit` and Ctrl+C both funnel into the same
+    // `break 'app`, so the way out is this one place.
     if let Some(jobs) = for_exit.jobs() {
         jobs.stop_all();
     }
@@ -1507,28 +1590,32 @@ pub async fn run(
         crossterm::event::DisableFocusChange,
         crossterm::event::DisableBracketedPaste,
         crossterm::event::PopKeyboardEnhancementFlags,
-        // 줄 넘김은 셸이 쓰는 것이다. 안 되돌리면 셸에서 긴 명령이 잘려 보인다.
+        // Line wrapping is something the shell uses. Not restoring it makes long commands
+        // look cut off in the shell.
         crossterm::terminal::EnableLineWrap,
     );
     ratatui::restore();
     result
 }
 
-/// 지금 살아 있는 연결의 손잡이를 나르는 통로.
+/// The channel carrying the handle to the currently live connection.
 ///
-/// 연결이 끊겼다 붙으면 손잡이가 바뀐다. 앱은 매번 여기서 **최신 것을 집어** 쓴다 —
-/// 처음 것을 붙들고 있으면 재연결 뒤 모든 호출이 죽은 연결로 나간다.
+/// When the connection drops and comes back, the handle changes. The app **takes the latest
+/// one** from here every time — holding on to the first means every call after a reconnect
+/// goes out on a dead connection.
 pub type ApiRx = tokio::sync::watch::Receiver<Option<Arc<AttaccaApiClient>>>;
 
-/// 화면 통로에 실리는 것. `Some(세션 id)`는 그 세션의 턴 스트림에서 온 프레임이고,
-/// `None`은 화면 밖(도구·다리)에서 온 것이다.
+/// What rides the screen channel. `Some(session id)` is a frame from that session's turn
+/// stream; `None` is something from off-screen (tools, the bridge).
 ///
-/// **낡은 세션의 프레임은 받는 쪽이 버린다.** 일을 걸어 두고 다른 세션으로 갈아타면
-/// 앞 세션의 턴은 서버에서 계속 돌고 그 스트림도 계속 프레임을 보낸다 — 태그가 없으면
-/// 지금 보는 세션의 타임라인에 앞 세션의 메시지가 섞인다. 실제로 그렇게 섞였다.
+/// **Frames from a stale session are dropped by the receiver.** Leave work running and
+/// switch to another session, and the previous session's turn keeps running on the server
+/// with its stream still sending frames — without the tag, the previous session's messages
+/// mix into the timeline of the session being viewed. That actually happened.
 pub type AppMsg = (Option<String>, Action);
 
-/// 화면이 지금 보고 있는 세션의 프레임인가. `None`(화면 밖에서 온 것)은 항상 통과한다.
+/// Is this a frame from the session the screen is currently viewing? `None` (from
+/// off-screen) always passes.
 fn frame_is_current(sid: &Option<String>, current: Option<&str>) -> bool {
     match sid {
         None => true,
@@ -1536,19 +1623,22 @@ fn frame_is_current(sid: &Option<String>, current: Option<&str>) -> bool {
     }
 }
 
-/// 지금 손잡이. 아직 안 붙었으면 `None`.
+/// The current handle. `None` if not attached yet.
 fn api_of(rx: &ApiRx) -> Option<Arc<AttaccaApiClient>> {
     rx.borrow().clone()
 }
 
-/// 화면을 지우고 **다음 프레임을 통째로** 다시 그리게 한다.
+/// Clears the screen and makes **the next frame draw in full.**
 ///
-/// **`Terminal::clear()`를 쓰지 않는다.** 그쪽은 지우기 전에 커서가 어디 있는지 터미널에
-/// 물어보고(DSR `ESC[6n`) 답을 **동기로 기다린다**. 답하지 않는 터미널에서는 거기서 멈추고,
-/// 답하더라도 그 바이트를 우리 키 입력 스트림에서 훔쳐 간다. 원격 터미널은 답이 늦거나
-/// 아예 없을 수 있는 자리다 — pty 스모크 테스트가 정확히 그 상황이고, 실제로 앱이 멈췄다.
+/// **We do not use `Terminal::clear()`.** That one asks the terminal where the cursor is
+/// (DSR `ESC[6n`) before clearing and **waits synchronously** for the answer. On a terminal
+/// that does not answer it stops right there, and even when it does answer it steals those
+/// bytes from our key input stream. A remote terminal is exactly the place where the answer
+/// can be late or absent — the pty smoke test is precisely that situation, and the app
+/// really did hang.
 ///
-/// `resize`는 같은 일(지우기 + 다음 프레임 전면 다시 그리기)을 아무것도 묻지 않고 한다.
+/// `resize` does the same thing (clear + full redraw on the next frame) without asking
+/// anything.
 fn repaint(terminal: &mut ratatui::DefaultTerminal) {
     use ratatui::backend::Backend;
 
@@ -1566,12 +1656,13 @@ async fn run_inner(
 ) -> anyhow::Result<()> {
     let mut state = State::new();
 
-    // **화면을 먼저 붙인다.** 등록 코드 창이 첫 연결 전에도 도달해야 한다 —
-    // `enroll::ScreenEnroll`은 `Frame::Enroll`을 여기로 보낸다.
+    // **Attach the screen first.** The enrollment code window has to reach it even before
+    // the first connection — `enroll::ScreenEnroll` sends `Frame::Enroll` here.
     let (tx, mut rx) = mpsc::unbounded_channel::<AppMsg>();
 
-    // **여기서부터 도구가 화면에 물어볼 수 있다.** 이 전에 오는 호출은 물을 곳이 없어
-    // 거부된다 — 조용히 통과시키면 승인 없이 파일이 바뀐다.
+    // **From here on the tools can ask the screen.** Calls arriving before this are refused
+    // because there is nowhere to ask — letting them through quietly changes files without
+    // approval.
     bridge.attach(tx.clone());
     bridge.sync(state.mode, &state.grants);
 
@@ -1580,8 +1671,9 @@ async fn run_inner(
     let mut last_size: Option<(u16, u16)> = None;
     let mut dirty = true;
 
-    // **첫 손잡이가 올 때까지 화면을 그리며 기다린다.** 이 동안이 첫 등록이다 —
-    // "연결 중…" 위에 등록 코드 창이 뜬다. 손잡이는 `on_connect`가 보낸다.
+    // **Wait for the first handle while drawing the screen.** This stretch is the first
+    // enrollment — the enrollment code window comes up over "connecting…". `on_connect`
+    // sends the handle.
     let api = loop {
         if let Some(api) = api_of(&api_rx) {
             break api;
@@ -1591,15 +1683,16 @@ async fn run_inner(
         }
         tokio::select! {
             result = api_rx.changed() => {
-                // 보내는 쪽이 사라졌다 — 러너가 끝났다. `die`가 아닌 길로도
-                // 멈춰야 조용히 닫힌다.
+                // The sender is gone — the runner ended. Stopping on a path other than
+                // `die` too is what makes it close quietly.
                 if result.is_err() {
                     anyhow::bail!(crate::lang::current().connection_lost());
                 }
             }
             _ = die.changed() => {}
             Some((sid, action)) = rx.recv() => {
-                // 화면이 아직 없다(첫 등록). 이때 오는 스트림 프레임은 낡은 것이다.
+                // There is no session yet (first enrollment). A stream frame arriving now
+                // is a stale one.
                 if !frame_is_current(&sid, None) {
                     continue;
                 }
@@ -1628,14 +1721,15 @@ async fn run_inner(
                     _ => {}
                 }
                 if quit {
-                    // 아직 세션도 턴도 없다 — 그냥 닫는다.
+                    // There is no session and no turn yet — just close.
                     return Ok(());
                 }
                 dirty = true;
             }
             _ = ticker.tick() => {
                 state.tick = state.tick.wrapping_add(1);
-                // 등록 코드 창이 떠 있으면 남은 시간이 흐르므로 계속 그린다.
+                // With the enrollment code window up, the time left is ticking down, so
+                // keep drawing.
                 if state.enroll.is_some() {
                     dirty = true;
                 }
@@ -1649,12 +1743,13 @@ async fn run_inner(
 
     let mut api = api;
     state.connected = true;
-    // **"연결 중…"이 화면에 얼어붙지 않게 한다.** 붙은 것을 반드시 다시 그린다 —
-    // wait 루프가 마지막에 그린 프레임은 아직 연결 전이고, `dirty`가 그대로 꺼져
-    // 있으면 아무 키나 누르기 전까지 "연결 중…"이 남는다(실제로 그렇게 남았다).
-    // "연결됨"을 잠깐 보여 준 뒤 6초 후 `쉬는 중`으로 내려간다. Shift+Enter를 못
-    // 받는 터미널에서는 연결 안내 대신 대안을 알린다 — 조용히 보내 버리면 사람은 왜
-    // 줄바꿈이 안 되는지 모른 채 메시지를 날린다.
+    // **Keep "connecting…" from freezing on the screen.** Always redraw once attached —
+    // the last frame the wait loop drew is still pre-connection, and with `dirty` left off
+    // "connecting…" stays until some key is pressed (it really did stay).
+    // "connected" shows briefly, then drops to `idle` after 6 seconds. On a terminal that
+    // cannot receive Shift+Enter we announce the alternative instead of the connection
+    // notice — letting it go quietly leaves the user firing off a message with no idea why
+    // a newline does not work.
     dirty = true;
     state.set_status(if kitty {
         state.lang.connected()
@@ -1662,21 +1757,24 @@ async fn run_inner(
         state.lang.kitty_shift_enter_hint()
     });
 
-    // 승인한 사람이 요청보다 적게 줬을 수 있다. **그러면 목록이 조용히 빈 채로 돌아온다** —
-    // 오류가 아니라 빈 결과라, 사람은 자기 계정에 에이전트가 없는 줄 안다.
+    // The person approving may have given less than was requested. **Then lists come back
+    // quietly empty** — not an error but an empty result, so the user thinks their account
+    // has no agents.
     //
-    // 승인 때 정해진 권한은 나중에 넓어지지 않는다. 토큰을 아무리 갱신해도 그대로다.
-    // 그래서 여기서 말할 것은 "부족합니다"가 아니라 **무엇을 해야 하는가**다.
-    // **죽은 연결 위에서 영원히 기다리지 않는다.** `me()`가 마감을 넘기면
-    // 서버가 죽은 것으로 보고 자격 검사를 건너뛴다 — 화면은 계속 떠야 한다.
+    // The scopes fixed at approval never widen later. No amount of token refreshing changes
+    // them. So what to say here is not "these are missing" but **what to do about it.**
+    // **Do not wait forever on a dead connection.** If `me()` passes the deadline we treat
+    // the server as dead and skip the credential check — the screen has to come up anyway.
     if let Ok(me) = crate::conn::within(&api, api.me()).await {
-        // 부르는 것 전부를 본다. 예전에는 셋만 봐서, `agents:read`나 `projects:read`가
-        // 빠졌을 때 목록만 비고 아무 말도 없었다.
+        // Look at everything we request. This used to look at only three, so when
+        // `agents:read` or `projects:read` was missing the list was just empty and nothing
+        // was said.
         let missing = crate::conn::missing_scopes(&me.scopes);
         if !missing.is_empty() {
-            // **한 번은 다시 묻는다.** 상류에 `renew_when_scopes_missing`이 없으므로 우리가
-            // 한다: 자격을 버려 두면 다음에 켤 때 화면 없이 깨끗하게 등록 코드가 뜬다.
-            // 사람이 토큰을 직접 준 자리에는 버릴 자격이 없어 말로만 알린다.
+            // **Ask again once.** Upstream has no `renew_when_scopes_missing`, so we do it:
+            // discarding the credential means the next launch shows a clean enrollment code
+            // with no screen in the way. Where the user supplied the token by hand there is
+            // no credential to discard, so we only say so.
             let reauth = bridge.reauth();
             let tried = reauth.as_ref().is_none_or(|r| r.spent());
             let asked_again = crate::conn::needs_reenrollment(&me.scopes, tried)
@@ -1702,15 +1800,16 @@ async fn run_inner(
             String::new()
         }
     };
-    // 스킬 목록은 `tools::announce`가 정해 다리에 얹어 뒀다.
+    // The skill list was decided by `tools::announce` and put on the bridge.
     let mut session = Session::new(bridge.preamble());
-    // 모드가 **바뀌었는지**를 보려고 들고 있는 직전 값. `state.mode`만 보면 모드에 머무는
-    // 내내 참이라, work·job 예약이 말할 때마다 되살아난다.
+    // The previous value, held to see whether the mode **changed**. Looking at `state.mode`
+    // alone is true for as long as we stay in the mode, which revives the work/job staging
+    // on every message.
     let mut last_mode = state.mode;
 
-    // 답을 기다리는 질문이 남아 있으면 그 세션으로 들어간다. 끄기 전에 답하지 않았다면
-    // 서버는 아직 기다리고 있고, 사람이 손으로 찾아 들어가야 한다면 답할 길이 없는 것과
-    // 같다.
+    // If a question is still awaiting an answer, go into that session. If it was not
+    // answered before quitting, the server is still waiting, and having to hunt for it by
+    // hand is as good as having no way to answer.
     if let Some(id) = crate::conn::session_awaiting_answer(&api).await {
         if let Err(e) = switch(&api, &mut state, &mut session, id, None, &tx).await {
             state.set_status(e.to_string());
@@ -1719,27 +1818,31 @@ async fn run_inner(
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(frame_interval());
     let mut poll = tokio::time::interval(POLL_INTERVAL);
-    // 마지막 키 이벤트 시각 — bracketed paste 없는 터미널의 붙여넣기 폭주를
-    // 감지하는 기준이다.
+    // When the last key event happened — the basis for detecting a paste burst on a
+    // terminal without bracketed paste.
     let mut last_key_at: Option<Instant> = None;
-    // 끄면 영영 안 오는 타이머로 둔다. `select!`의 가지를 늘리지 않으려는 것이다.
+    // When off, leave it as a timer that never fires. The point is not to add another
+    // `select!` arm.
     let mut heal = tokio::time::interval(heal_interval().unwrap_or(Duration::from_secs(86400)));
     let healing = heal_interval().is_some();
-    // 마지막 자가 치유 뒤로 화면을 건드린 적이 있는가. 안 그렸으면 새로 깨질 일도 없다.
+    // Has the screen been touched since the last self-heal? Not having drawn means nothing
+    // new can have broken.
     let mut drew_since_heal = false;
     let mut last_draw = Instant::now();
     set_terminal_title(&state.title);
     let mut shown_title = state.title.clone();
-    // 종료 예고는 시간이 지나면 저절로 풀린다. 그런데 아무 입력이 없으면 다시 그릴 일이
-    // 없어서 안내 글자가 화면에 남는다 — 풀린 프레임을 잡아 한 번 더 그린다.
+    // An armed quit releases on its own once time passes. But with no input there is nothing
+    // to redraw, so the notice text stays on screen — catch the frame where it releases and
+    // draw once more.
     let mut last_quit_pending = false;
     let mut last_had_status = false;
     let mut shutdown = shutdown_signals();
-    // **루프가 멈추면 아무도 모른다.** 죽은 연결 위의 await는 마감으로 풀리지만,
-    // 그 밖의 블로킹(막힌 터미널 쓰기 등)은 남을 수 있다. 그러면 키도 시그널도
-    // 루프가 살아 있어야 닿는데 루프가 죽어 있으니 아무것도 안 먹는다. 진행도를
-    // 별도 태스크가 지켜보고, 멈춘 지 오래면 화면을 되돌리고 프로세스를 끝낸다 —
-    // "끌 수 없는" 상태가 구조적으로 생기지 않게.
+    // **If the loop stalls, nobody finds out.** An await on a dead connection is released by
+    // its deadline, but other blocking (a stuck terminal write, say) can remain. Then keys
+    // and signals alike need a live loop to reach anything, and with the loop dead nothing
+    // works at all. A separate task watches the progress counter and, if it has been stalled
+    // a long time, restores the screen and ends the process — so an "unkillable" state
+    // cannot arise structurally.
     let progress = Arc::new(AtomicU64::new(0));
     let watchdog_progress = Arc::clone(&progress);
     let watchdog = tokio::spawn(async move {
@@ -1749,7 +1852,7 @@ async fn run_inner(
             tokio::time::sleep(LOOP_WATCHDOG_STALL).await;
             if watchdog_progress.load(Ordering::Relaxed) == seen {
                 tracing::error!(
-                    "앱 루프가 {}초 동안 멈췄다 — 화면을 되돌리고 끝낸다",
+                    "the app loop stalled for {}s — restoring the screen and ending",
                     LOOP_WATCHDOG_STALL.as_secs()
                 );
                 ratatui::restore();
@@ -1764,12 +1867,12 @@ async fn run_inner(
             Some(Ok(ev)) = keys.next() => {
                 let actions = match ev {
                     TermEvent::Key(k) => {
-                        // **붙여넣기 폭주를 줄바꿈으로 살린다.** bracketed paste를
-                        // 지원하지 않는 터미널(Termius 모바일 등)은 붙여넣기를 키가
-                        // 빠르게 연달아 오는 것으로 흘려보낸다. 사람이 칠 수 없는
-                        // 간격(< PASTE_BURST)으로 키가 오면 그 사이의 Enter는 전송이
-                        // 아니라 줄바꿈이다 — 안 그러면 여러 줄 프롬프트의 첫 줄이
-                        // 그대로 나가 버린다.
+                        // **Rescue a paste burst as newlines.** A terminal without
+                        // bracketed paste (mobile Termius and the like) lets a paste
+                        // through as keys arriving in rapid succession. When keys arrive
+                        // at an interval no human can type at (< PASTE_BURST), an Enter
+                        // among them is a newline, not a submit — otherwise the first line
+                        // of a multi-line prompt goes out on its own.
                         let now = Instant::now();
                         let in_burst = last_key_at
                             .is_some_and(|t| now.duration_since(t) < PASTE_BURST);
@@ -1779,13 +1882,13 @@ async fn run_inner(
                             && k.modifiers.is_empty()
                             && !state.input.text.is_empty()
                         {
-                            // 폭주 중에 온 Enter는 줄바꿈이다.
+                            // An Enter that arrived mid-burst is a newline.
                             vec![Action::Insert('\n')]
                         } else {
                             on_key(&state, k)
                         }
                     }
-                    // 붙여넣기는 키가 아니다 — Enter로 쪼개지 않고 한 덩어리로 넣는다.
+                    // A paste is not a key — it goes in as one chunk, not split on Enter.
                     TermEvent::Paste(text) => vec![Action::Paste(text)],
                     TermEvent::Mouse(m) => match m.kind {
                         MouseEventKind::ScrollUp => vec![Action::Wheel(1)],
@@ -1799,16 +1902,17 @@ async fn run_inner(
                         MouseEventKind::Up(MouseButton::Left) => vec![Action::Release],
                         _ => vec![],
                     },
-                    // 포커스가 돌아오면 다시 그리되 **지우지는 않는다.** 포커스 이벤트는
-                    // 모바일 SSH(Termius)에서 키보드가 열리고 닫힐 때마다 온다 — 그때마다
-                    // 전체를 지우면 화면이 반짝인다. 화면이 진짜로 깨졌으면 Ctrl+L이
-                    // 통째로 다시 그린다.
+                    // On regaining focus, redraw but **do not clear.** The focus event
+                    // arrives every time the keyboard opens and closes on mobile SSH
+                    // (Termius) — clearing everything each time makes the screen flash. If
+                    // the screen really is broken, Ctrl+L redraws it whole.
                     TermEvent::FocusGained => {
                         dirty = true;
                         vec![]
                     }
-                    // 크기가 실제로 바뀌었을 때만 지우고 통째로 다시 그린다. 같은 크기의
-                    // resize가 연달아 와도 매번 전체를 지우면 깜빡인다.
+                    // Clear and redraw whole only when the size actually changed. With
+                    // same-size resizes arriving back to back, clearing everything each
+                    // time flickers.
                     TermEvent::Resize(w, h) => {
                         if last_size != Some((w, h)) {
                             last_size = Some((w, h));
@@ -1821,13 +1925,15 @@ async fn run_inner(
                 };
                 for action in actions {
                     match &action {
-                        // 화면 복구는 `run`이 하고, **서버에서 도는 턴은 이 밑에서 멈춘다.**
+                        // `run` restores the screen, and **the turn running on the server is
+                        // stopped below this.**
                         Action::Quit => break 'app,
-                        // **일하는 중이면 여기서 안 보낸다.** `apply`가 대기열에 담고,
-                        // 턴이 끝날 때 아래 `flush_queue`가 순서대로 보낸다.
-                        // `apply`는 이 match 뒤에 도므로 여기서 본 `running`이 아직 옛 값이다.
-                        // 슬래시 명령은 서버로 안 간다. `apply`가 `command_out`에
-                        // 담고, 이 match 아래에서 실행한다.
+                        // **While work is running we do not send here.** `apply` puts it on
+                        // the queue and `flush_queue` below sends them in order when the
+                        // turn ends. `apply` runs after this match, so the `running` seen
+                        // here is still the old value.
+                        // Slash commands never go to the server. `apply` puts them in
+                        // `command_out` and we run them below this match.
                         Action::Submit(text) if crate::command::is_command(text) => {}
                         Action::Submit(_) if state.running => {}
                         Action::Submit(text) => {
@@ -1838,7 +1944,8 @@ async fn run_inner(
                                     .await;
                             }
                         }
-                        // 목록은 서버에서 받아와야 한다 — 여는 순간 채운다.
+                        // The list has to be fetched from the server — fill it the moment it
+                        // opens.
                         Action::OpenPicker => match crate::conn::projects(&api).await {
                             Ok(items) => state.picker = Some(crate::picker::Picker::projects(items, state.lang)),
                             Err(e) => {
@@ -1846,8 +1953,8 @@ async fn run_inner(
                                 state.set_status(e.to_string());
                             }
                         },
-                        // 뒤로가기의 전부를 여기서 정한다 — 세션 단계면 프로젝트 목록으로
-                        // 되돌리고, 프로젝트 단계면 닫는다.
+                        // All of "back" is decided here — from the session level, go back to
+                        // the project list; at the project level, close.
                         Action::PickBack => {
                             let in_sessions = matches!(
                                 state.picker.as_ref().map(|p| &p.level),
@@ -1881,68 +1988,73 @@ async fn run_inner(
                                     .await;
                             }
                         }
-                        // 화면을 지우기만 한다. 바로 아래에서 다시 그린다.
+                        // Only clears the screen. It is redrawn just below.
                         Action::Repaint => {
                             repaint(terminal);
                         }
-                        // **스크롤은 diff가 그린다.** 예전에는 전각 부스러기를 지우려고
-                        // 통째로 지우고 다시 그렸는데, 이제 모든 칸에 배경이 깔려
-                        // (`theme::BG`) 부스러기가 구조적으로 생기지 않으므로 지울 필요가
-                        // 없다 — 지우는 순간 화면이 반짝인다.
+                        // **Scrolling is drawn by the diff.** This used to clear and redraw
+                        // whole to wipe wide-character crumbs, but now every cell has a
+                        // background (`theme::BG`) so crumbs cannot arise structurally and
+                        // there is nothing to clear — clearing makes the screen flash.
                         Action::Wheel(_) => {}
                         _ => {}
                     }
                     apply(&mut state, &action);
 
-                    // **판정은 여기서 도구로 돌아간다.** `apply`는 순수하므로 적어
-                    // 두기만 했다 — `submit_now`·`flush_queue`와 같은 수법이다.
+                    // **The verdict goes back to the tool here.** `apply` is pure, so it
+                    // only noted it down — same trick as `submit_now`/`flush_queue`.
                     if let Some((id, verdict)) = state.verdict_out.take() {
                         bridge.answer(id, verdict);
                     }
-                    // 열어 둔 디렉터리가 바뀌면 게이트가 보는 것도 같이 바뀌어야 한다.
-                    // 안 옮기면 화면은 허락했는데 도구는 계속 물어본다.
+                    // When the open directories change, what the gate sees has to change
+                    // with them. Without carrying it over, the screen says allowed while
+                    // the tools keep asking.
                     //
-                    // **모드는 여기서 안 본다.** Shift+Tab과 `/mode`가 서로 다른 길로 들어와
-                    // 아래 한 자리에서 함께 처리된다 — 나뉘어 있었을 때 `/mode`가 게이트에
-                    // 안 닿는 버그가 실제로 있었다.
+                    // **The mode is not looked at here.** Shift+Tab and `/mode` come in by
+                    // different paths and are handled together in one place below — when
+                    // they were split, there really was a bug where `/mode` never reached
+                    // the gate.
                     if matches!(action, Action::Approve | Action::Deny | Action::AlwaysAllow) {
                         bridge.sync(state.mode, &state.grants);
                     }
 
-                    // **마우스를 놓는 순간 고른 글이 클립보드로 나간다.** 누를 키가 따로
-                    // 없다 — Ctrl+C는 멈추는 키 하나로 두는 편이 급할 때 헷갈리지 않는다.
-                    // 범위는 `apply`가 정하므로 그 뒤여야 한다. 내보내는 것은 I/O라 여기다.
-                    // OSC 52를 모르는 터미널은 조용히 무시하고, 손해는 없다.
+                    // **Selected text goes to the clipboard the moment the mouse is
+                    // released.** There is no key to press — leaving Ctrl+C as the one stop
+                    // key is less confusing when it matters. `apply` sets the range, so
+                    // this has to come after it. Exporting is I/O, hence here. A terminal
+                    // that does not know OSC 52 ignores it quietly, at no cost.
                     if matches!(action, Action::Release) {
                         if let Some(text) = &state.selection {
                             crate::clipboard::export(text);
                         }
                     }
 
-                    // 슬래시 명령. 순수한 부분은 `run_command`가 끝내고, 서버나 디스크가
-                    // 필요한 것만 여기서 마저 한다.
+                    // Slash commands. `run_command` finishes the pure part, and only what
+                    // needs the server or the disk is finished here.
                     if let Some(text) = state.command_out.take() {
                         finish_command(&api, &bridge, &mut state, &mut session, &mut agent_id, &text)
                             .await;
-                        // `/quit`. 나가는 길은 Ctrl+C와 같다 — 도는 턴은 밑에서 멈춘다.
+                        // `/quit`. The way out is the same as Ctrl+C — a running turn is
+                        // stopped below.
                         if state.quitting {
                             break 'app;
                         }
                     }
 
-                    // **새 프로젝트 만들기.** 양식이 Enter를 받으면 여기서 만든다 — I/O라
-                    // `apply`가 못 한다. 실패하면 사유를 양식에 남기고 그대로 둔다 —
-                    // 고쳐서 다시 만들 수 있어야 한다.
+                    // **Creating a new project.** When the form takes Enter, it is created
+                    // here — it is I/O, so `apply` cannot. On failure the reason is left on
+                    // the form and the form stays — it has to be fixable and retryable.
                     if let Some((name, description)) = state.project_out.take() {
                         match crate::conn::create_project(&api, &name, Some(&description)).await {
                             Ok((id, name)) => {
-                                // **만들고 그 안으로 들어간다.** 만들어 놓고 다시 골라야
-                                // 하면 두 번 일이고, 방금 만든 것 말고 다른 데서 일을
-                                // 시작하는 사고가 난다.
+                                // **Create it and go inside.** Having to pick it again after
+                                // creating is doing the work twice, and it invites the
+                                // accident of starting work somewhere other than what was
+                                // just created.
                                 session.enter_project(id);
                                 session.stage_new_default();
-                                // 앞 세션의 턴 상태를 치운다 — 새 프로젝트로 갔는데
-                                // "작업 중"이 남으면 안 된다.
+                                // Clear the previous session's turn state — moving to a new
+                                // project must not leave "working" behind.
                                 leave_session(&mut state);
                                 state.new_project = None;
                                 state.picker = None;
@@ -1957,20 +2069,23 @@ async fn run_inner(
                         }
                     }
 
-                    // **모드가 바뀐 뒤에 할 일은 여기 하나로 모은다.** 들어오는 길이 둘이라
-                    // (Shift+Tab은 `apply`, `/mode`는 바로 위 `finish_command`) 각자
-                    // 고치면 언젠가 한쪽만 고친다 — 실제로 `/mode`가 게이트에 안 닿고 있었다.
+                    // **Everything to do after a mode change is gathered here in one place.**
+                    // There are two ways in (Shift+Tab through `apply`, `/mode` through the
+                    // `finish_command` just above), and fixing them separately means one day
+                    // only one gets fixed — `/mode` really was failing to reach the gate.
                     //
-                    // **가장자리에서만 돈다.** 모드에 머무는 동안 계속 돌면 job 모드에서
-                    // 말할 때마다 job이 하나씩 생겨, 되묻는 말에 답할 자리가 안 생긴다.
+                    // **It only runs on the edge.** Running for as long as we stay in the
+                    // mode would create one job per message in job mode, leaving no place to
+                    // answer a follow-up question.
                     if state.mode != last_mode {
                         last_mode = state.mode;
                         bridge.sync(state.mode, &state.grants);
                         restage(&mut state, &mut session);
                     }
 
-                    // 질문에서 제출을 누르면 곧바로 보낸다 — 답을 입력란에 실어 두고
-                    // 사람이 Enter를 한 번 더 치게 하면 제출이 아니라 초안이 된다.
+                    // Pressing submit on a question sends right away — putting the answer in
+                    // the input and making the user press Enter once more turns a submission
+                    // into a draft.
                     if std::mem::take(&mut state.submit_now) {
                         let text = state.input.take();
                         if !text.is_empty() {
@@ -1978,8 +2093,9 @@ async fn run_inner(
                                 .await;
                         }
                     }
-                    // **키를 누른 자리에서 바로 그린다.** 한 프레임 64바이트라 아낄 것이
-                    // 없고, 틱을 기다리면 그만큼 손이 굼떠 보인다.
+                    // **Draw right where the key was pressed.** One frame is 64 bytes so
+                    // there is nothing to save, and waiting for a tick makes the hand feel
+                    // sluggish by exactly that much.
                     terminal.draw(|f| widgets::draw(f, &mut state))?;
                     dirty = false;
                     drew_since_heal = true;
@@ -1987,30 +2103,33 @@ async fn run_inner(
                 }
             }
             Some((sid, action)) = rx.recv() => {
-                // **낡은 세션의 프레임은 버린다.** 화면을 갈아탔는데 앞 세션의 메시지가
-                // 계속 올라오면 안 된다 — 일을 걸어 두고 다른 세션에서 대화하는 동안
-                // 그 일의 이벤트가 여기로 쏟아진다. 턴은 서버에서 계속 돌고, 그 세션으로
-                // 돌아가면 다시 열 때 히스토리로 보인다.
+                // **Drop frames from a stale session.** After switching the screen, the
+                // previous session's messages must not keep coming up — leave work running
+                // and talk in another session, and that work's events pour in here. The
+                // turn keeps running on the server, and going back to that session shows it
+                // all as history on reopen.
                 if !frame_is_current(&sid, session.id()) {
                     continue;
                 }
                 apply(&mut state, &action);
-                // 배경 폴링이 제목을 바꿨으면 창 제목도 따라간다. `switch`도
-                // state.title을 바꾸므로 여기 한 자리에서 함께 본다.
+                // If background polling changed the title, the window title follows. `switch`
+                // changes state.title too, so both are watched here in one place.
                 if state.title != shown_title {
                     set_terminal_title(&state.title);
                     shown_title = state.title.clone();
                 }
-                // 턴이 끝나는 프레임이 여기로 온다 — 대기열을 비울 자리도 여기다.
+                // The frame ending a turn arrives here — so this is also where the queue is
+                // flushed.
                 flush_queue(&api, &mut session, &agent_id, &mut state, &tx).await;
                 dirty = true;
             }
-            // 재연결. 손잡이를 갈아 끼우고 보던 세션의 스트림을 다시 연다.
+            // Reconnect. Swap the handle in and reopen the stream for the session in view.
             Ok(()) = api_rx.changed() => {
                 if let Some(fresh) = api_of(&api_rx) {
                     api = fresh;
                     state.connected = true;
-                    // 끊겼다 붙은 것도 화면에 보인다 — connecting → connected → idle.
+                    // A drop and reattach shows on screen too — connecting → connected →
+                    // idle.
                     state.set_status(state.lang.connected());
                     if let Some(id) = session.id().map(str::to_string) {
                         spawn_stream(Arc::clone(&api), id, state.last_cursor, tx.clone());
@@ -2018,12 +2137,13 @@ async fn run_inner(
                     dirty = true;
                 }
             }
-            // 사용량과 제목은 이벤트로 오지 않으므로 주기적으로 물어본다.
+            // Usage and title do not arrive as events, so ask for them periodically.
             //
-            // **네트워크는 루프 밖에서 돈다.** 죽은 연결 위의 await는 마감(`within`)
-            // 이 풀 때까지 루프를 붙들고, 그동안 키도 그리기도 멈춘다 — 네트워크가
-            // 불안정할 때 화면이 버벅이는 그 자리다. 여기서는 태스크만 띄우고
-            // 결과는 `Frame::Poll`로 돌아온다. 그때 `dirty = true`가 붙어 그려진다.
+            // **The network runs outside the loop.** An await on a dead connection holds the
+            // loop until the deadline (`within`) releases it, and keys and drawing stop
+            // meanwhile — that is exactly where the screen stutters on a flaky network. Here
+            // we only spawn a task and the result comes back as `Frame::Poll`. That is when
+            // `dirty = true` is set and it gets drawn.
             _ = poll.tick() => {
                 if let Some(id) = session.id().map(str::to_string) {
                     let api = Arc::clone(&api);
@@ -2045,8 +2165,8 @@ async fn run_inner(
             _ = ticker.tick() => {
                 state.tick = state.tick.wrapping_add(1);
                 let pending = state.quit_pending();
-                // 알림이 시간이 지나 사라지는 순간에도 다시 그려야 한다. 안 그리면
-                // 지워진 글이 화면에 그대로 남는다 — 종료 예고와 같은 이유다.
+                // We have to redraw at the moment a notice fades too. Without it the erased
+                // text stays on screen — same reason as the armed quit.
                 let has_status = state.status().is_some();
                 if has_status != last_had_status {
                     last_had_status = has_status;
@@ -2055,23 +2175,25 @@ async fn run_inner(
                 if pending != last_quit_pending {
                     last_quit_pending = pending;
                     if !pending {
-                        // 예고가 풀렸으니 상태도 비워 둔다. 안 비우면 다음 판정이 또 걸린다.
+                        // The arming released, so clear the state too. Left set, the next
+                        // check catches on it again.
                         state.quit_armed_at = None;
                     }
                     dirty = true;
                 }
-                // 작업 중에는 점이 깜박여야 하므로 계속 다시 그린다. 한 프레임이
-                // 0.2ms대라 부담이 되지 않는다 — 그 전에는 이럴 수 없었다.
+                // While working the dot has to blink, so keep redrawing. One frame is around
+                // 0.2ms, so it is no burden — before, this was not possible.
                 if state.running {
                     dirty = true;
                 }
-                // 등록 코드 창이 떠 있으면 남은 시간이 흐르므로 계속 그린다.
+                // With the enrollment code window up, the time left is ticking down, so keep
+                // drawing.
                 if state.enroll.is_some() {
                     dirty = true;
                 }
-                // 턴이 도는 동안에는 묶어서 그린다. 스트리밍 한 조각이 3.4KB라 초당
-                // 스무 번이면 원격 터미널에 가장 부담이 큰 자리다 — 사람 눈에는 열 번이나
-                // 스무 번이나 같지만 나가는 양은 절반이 된다.
+                // While a turn runs, batch the drawing. One streaming chunk is 3.4KB, so
+                // twenty a second is the heaviest thing for a remote terminal — ten or
+                // twenty looks the same to the eye but halves the volume out.
                 let held = state.running && last_draw.elapsed() < STREAM_MIN_GAP;
                 if dirty && !held {
                     terminal.draw(|f| widgets::draw(f, &mut state))?;
@@ -2080,23 +2202,28 @@ async fn run_inner(
                     last_draw = Instant::now();
                 }
             }
-            // **밖에서 끄라고 해도 끄는 것은 같다.** `kill`이나 터미널 창을 닫은
-            // 것(SIGHUP)이 여기로 온다 — 그 길로 죽으면 서버에서 돌던 턴이 남는다.
+            // **Being told to quit from outside quits the same way.** `kill` or closing the
+            // terminal window (SIGHUP) arrives here — dying by that path would leave a turn
+            // running on the server.
             Some(()) = shutdown.recv() => break 'app,
-            // **러너가 끝났다.** `main`이 이 채널에 신호를 보내면(치명적 오류) 화면도
-            // 조용히 닫는다 — 터미널을 되돌린 뒤 `main`이 사유를 말한다.
+            // **The runner ended.** When `main` signals this channel (a fatal error) the
+            // screen closes quietly too — `main` says the reason after the terminal is
+            // restored.
             _ = die.changed(), if *die.borrow() => break 'app,
-            // 스스로 고치기. 마지막 치유 뒤로 그린 적이 있을 때만 한다 — 가만히 있는
-            // 화면은 깨질 일이 없고, 쉬는 세션이 SSH로 계속 바이트를 밀 이유도 없다.
+            // Self-healing. Only done if something was drawn since the last heal — a screen
+            // sitting still cannot break, and an idle session has no reason to keep pushing
+            // bytes over SSH.
             _ = heal.tick(), if healing => {
-                // **턴이 도는 동안은 치유하지 않는다.** 스트리밍이 이미 매 프레임 화면을
-                // 다시 그리므로 부스러기가 쌓일 틈이 없고, 무엇보다 SSH처럼 느린 링크에서
-                // 전체 덮어쓰기(~21KB)가 스트리밍 프레임과 겹쳐 그려진 화면 위에 어긋난
-                // 위치로 다시 그려져 **같은 단어가 두 번 보인다**(Termius 실측).
+                // **Do not heal while a turn runs.** Streaming already redraws the screen
+                // every frame so crumbs have no chance to build up, and above all, on a slow
+                // link like SSH a full overwrite (~21KB) overlaps a streaming frame and gets
+                // redrawn at a shifted position over the drawn screen, making **the same
+                // word appear twice** (measured on Termius).
                 if drew_since_heal && !state.running {
-                    // **지우지 않고 모든 칸을 강제로 다시 내보낸다.** clear는 깜빡임의
-                    // 원인이다 — `force_update`가 diff를 우회해 전 칸을 덮어써서 전각
-                    // 글자 뒤 trailing 칸의 잔상을 치운다. 다음 draw는 일반 diff로 돌아간다.
+                    // **Force every cell out again without clearing.** clear is what causes
+                    // the flicker — `force_update` bypasses the diff and overwrites every
+                    // cell, wiping the residue in the trailing cell behind a wide character.
+                    // The next draw goes back to the normal diff.
                     state.force_update = true;
                     terminal.draw(|f| widgets::draw(f, &mut state))?;
                     dirty = false;
@@ -2106,38 +2233,42 @@ async fn run_inner(
         }
     }
 
-    // 정상 종료 경로다. 감시 태스크가 남아 있으면 60초 뒤 오판으로 프로세스를
-    // 끝낼 수 있으니 여기서 끊는다.
+    // This is the normal exit path. A watchdog task left running could end the process on a
+    // false alarm 60 seconds later, so cut it here.
     watchdog.abort();
 
-    // **창을 닫으면 서버에서도 멈춘다.**
+    // **Closing the window stops it on the server too.**
     //
-    // 턴은 서버에서 돈다 — 이쪽이 사라져도 저쪽은 계속 생각하고, 도구를 부를 때마다
-    // 없는 노드를 찾다 실패한다. 크레딧은 그동안 계속 나간다. 닫는 사람의 뜻은
-    // "그만"이지 "여기까지는 안 보고 계속 시켜라"가 아니다.
+    // Turns run on the server — even once this side is gone, that side keeps thinking and
+    // fails looking for a node that is not there on every tool call. Credits keep going out
+    // meanwhile. Someone closing means "stop", not "keep it working while I stop watching".
     if let Some(id) = turn_to_stop(&state, &session) {
-        // 마지막 프레임 하나. 네트워크가 굼뜨면 잠시 멈춘 것처럼 보이는데, 아무 말도
-        // 없으면 안 꺼지는 줄 안다. 화면은 아직 우리 것이다 — 되돌리는 것은 `run`이다.
+        // One last frame. If the network is sluggish this looks like a brief freeze, and
+        // with nothing said it reads as refusing to quit. The screen is still ours — `run`
+        // is what restores it.
         //
-        // 종료 예고를 먼저 내린다. 활동 줄은 그것을 무엇보다 위에 두므로(`activity.rs`),
-        // 안 내리면 방금 누른 Ctrl+C의 안내가 이 마지막 한 줄을 덮는다.
+        // Disarm the quit first. The activity line puts that above everything
+        // (`activity.rs`), so leaving it armed lets the notice from the Ctrl+C just pressed
+        // cover this last line.
         state.quit_armed_at = None;
         state.set_status(state.lang.stopping_turn());
         let _ = terminal.draw(|f| widgets::draw(f, &mut state));
-        // **못 멈춰도 창은 닫힌다.** 서버가 답하지 않는데 여기서 마냥 기다리면,
-        // 끄려던 사람이 끌 수도 없는 화면 앞에 남는다.
+        // **The window closes even if it cannot be stopped.** Waiting here indefinitely for
+        // a server that does not answer leaves someone who wanted out in front of a screen
+        // they cannot close.
         match tokio::time::timeout(STOP_WAIT, api.cancel_turn(id)).await {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(error = %e, "끄면서 턴을 멈추지 못했다"),
-            Err(_) => tracing::warn!("끄면서 턴을 멈추라고 했는데 답이 없다"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "could not stop the turn while quitting"),
+            Err(_) => tracing::warn!("asked to stop the turn while quitting, but got no answer"),
         }
     }
     Ok(())
 }
 
-/// 끌 때 멈추라고 할 세션. 도는 턴이 없으면 `None`이다.
+/// The session to ask to stop when quitting. `None` if no turn is running.
 ///
-/// 순수하게 떼어 둔다 — 판정이 I/O 자리에 섞여 있으면 테스트가 서버를 띄워야 한다.
+/// Split out pure — with the decision mixed into the I/O place, tests would have to stand up
+/// a server.
 fn turn_to_stop(state: &State, session: &Session) -> Option<String> {
     if !state.running {
         return None;
@@ -2145,13 +2276,14 @@ fn turn_to_stop(state: &State, session: &Session) -> Option<String> {
     session.id().map(str::to_string)
 }
 
-/// 밖에서 끄라고 보내는 신호를 한 통로로 모은다.
+/// Gathers the shutdown signals sent from outside into one channel.
 ///
-/// Ctrl+C는 여기로 오지 않는다 — raw 모드라 시그널이 아니라 바이트로 들어와
-/// `on_key`가 받는다. 이쪽은 `kill`(SIGTERM)과 터미널 창이 닫힐 때(SIGHUP)다.
+/// Ctrl+C does not come here — raw mode makes it arrive as a byte rather than a signal, and
+/// `on_key` receives it. This side is `kill` (SIGTERM) and the terminal window closing
+/// (SIGHUP).
 ///
-/// 유닉스가 아니면 보내는 쪽이 없으니 `recv()`가 곧바로 `None`이 되고, `select!`가
-/// 그 가지를 꺼 버린다 — cfg로 가지를 지우는 것보다 이쪽이 조용하다.
+/// Off unix there is no sender, so `recv()` is immediately `None` and `select!` disables
+/// that arm — quieter than removing the arm with cfg.
 fn shutdown_signals() -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel(1);
     #[cfg(unix)]
@@ -2164,14 +2296,15 @@ fn shutdown_signals() -> mpsc::Receiver<()> {
             tokio::spawn(async move {
                 sig.recv().await;
                 let _ = tx.send(()).await;
-                // **루프가 어딘가에 갇혀 있으면 위 신호는 영영 처리되지 않는다.**
-                // (select!의 shutdown 가지를 루프가 돌아와야 본다.) 몇 초 뒤에도
-                // 안 끝나면 화면을 되돌리고 강제로 끝낸다 — `kill`이 언제나
-                // 통하게. 정상 종료는 그 전에 끝나므로 이 줄이 먼저 도는 일은 없다.
+                // **If the loop is stuck somewhere, the signal above is never handled.**
+                // (The loop has to come around to see `select!`'s shutdown arm.) If it has
+                // still not ended a few seconds later, restore the screen and force the
+                // exit — so `kill` always works. A normal exit finishes before that, so
+                // this line never runs first.
                 tokio::time::sleep(SHUTDOWN_FORCE).await;
-                // 강제 종료라도 bracketed paste와 키티 키보드 프로토콜은
-                // 되돌리고 간다 — 안 하면 셸이 붙여넣기를 계속 한 덩어리로
-                // 감싸고 Shift+Enter가 CSI-u로 남는다.
+                // Even on a forced exit, bracketed paste and the kitty keyboard protocol
+                // are restored on the way out — otherwise the shell keeps wrapping pastes
+                // in one chunk and Shift+Enter stays CSI-u.
                 let _ = execute!(
                     io::stdout(),
                     crossterm::event::DisableBracketedPaste,
@@ -2185,7 +2318,7 @@ fn shutdown_signals() -> mpsc::Receiver<()> {
     rx
 }
 
-/// 목록에서 고른 것을 실제로 처리한다.
+/// Actually acts on what was chosen from the list.
 async fn pick(
     api: &Arc<AttaccaApiClient>,
     state: &mut State,
@@ -2202,8 +2335,9 @@ async fn pick(
         Pick::Unavailable(why) => state.set_status(why),
         Pick::OpenProject { id, name } => {
             let items = crate::conn::sessions(api, &id).await?;
-            // **들어간 순간 기억한다.** 세션을 안 고르고 Esc로 닫아도 여기서 여는
-            // job·work는 이 프로젝트의 것이어야 한다.
+            // **Remember it the moment we enter.** Even if it closes with Esc without a
+            // session being chosen, jobs and works opened from here must belong to this
+            // project.
             session.enter_project(id.clone());
             state.picker = Some(Picker::sessions(id, name, items, state.lang));
         }
@@ -2211,12 +2345,14 @@ async fn pick(
             switch(api, state, session, id, Some(project_id), tx).await?;
         }
         Pick::NewSession { project_id } => {
-            // **서버에 지금 만들지 않는다.** 첫 메시지를 보낼 때 만든다 — 열어만 보고 마는
-            // 빈 세션이 계정에 쌓이면 안 된다. 여기서는 어느 프로젝트에 만들지만 기억한다.
+            // **Do not create it on the server now.** It is created when the first message
+            // is sent — empty sessions that were only opened and looked at must not pile up
+            // on the account. Here we only remember which project to create it in.
             session.stage_new(project_id);
-            // 앞 세션의 턴은 이 화면의 것이 아니다 — 상태줄과 대기열을 치운다.
+            // The previous session's turn does not belong to this screen — clear the status
+            // line and the queue.
             leave_session(state);
-            // 새 세션은 아직 제목이 없다.
+            // A new session has no title yet.
             state.title = "Zyris Code".into();
             state.sidebar.clear();
             state.timeline = Timeline::new();
@@ -2227,8 +2363,9 @@ async fn pick(
             state.scroll = Scroll::new();
             let _ = agent_id;
         }
-        // **고르는 즉시 화면 말이 바뀐다.** 확인 문구는 바꾼 뒤의 말로 낸다 — 영어로
-        // 바꿨는데 확인만 한국어로 오면 바뀐 건지 알 수 없다. 남기는 것은 여기서 한다.
+        // **The screen language changes the moment it is chosen.** The confirmation is said
+        // in the new language — switching to English and getting a Korean confirmation
+        // leaves no way to tell it changed. Persisting it happens here.
         Pick::UseLang { lang } => {
             state.picker = None;
             state.lang = lang;
@@ -2240,14 +2377,16 @@ async fn pick(
             state.picker = None;
             switch_agent(api, state, session, agent_id, &name).await;
         }
-        // **바로 만들지 않는다.** 이름과 설명을 받아야 한다 — 양식이 그 자리를 맡는다.
+        // **Do not create it right away.** A name and a description have to be taken — the
+        // form owns that job.
         Pick::NewProject => {
-            // **목록은 그대로 둔다.** 양식이 그 위에 얹히고, Esc로 닫으면 다시 그
-            // 자리로 돌아온다 — 다시 열어 목록을 받아올 필요가 없다.
+            // **Leave the list as it is.** The form goes on top of it, and closing with Esc
+            // returns right to that spot — no need to reopen and refetch the list.
             state.new_project = Some(crate::newproject::Form::new());
         }
-        // **바로 실행하지 않는다.** `/mode`처럼 인자를 받는 것이 있어서, 고른 뒤
-        // 이어 칠 수 있어야 한다. 뒤에 공백을 붙여 두면 바로 인자를 칠 수 있다.
+        // **Do not run it right away.** Some take arguments, like `/mode`, so it has to be
+        // possible to keep typing after choosing. A trailing space lets the argument be
+        // typed immediately.
         Pick::TypeCommand { text } => {
             state.picker = None;
             state.input.take();
@@ -2257,14 +2396,15 @@ async fn pick(
     Ok(())
 }
 
-/// 화면이 이 세션을 떠나는 자리에서 부른다. 앞 세션의 턴 상태를 치운다.
+/// Called where the screen leaves this session. Clears the previous session's turn state.
 ///
-/// 턴 자체는 서버에서 계속 돈다 — 여기서 끊으면 서버의 일을 죽이는 셈이다. 화면만
-/// 그 세션의 것이 아니게 되므로 그 턴의 표시(`running`·`stopping`)와 대기열을
-/// 비운다. **안 비우면 상태줄이 "작업 중"에 얼어붙는다**: 새 세션은 아직 스트림이
-/// 없어 아무도 `running`을 false로 되돌려 주지 않는데, 낡은 세션의 프레임은
-/// `frame_is_current`가 버리므로 거기서도 안 온다. 대기열도 그대로 두면 담아 둔
-/// 말이 이 세션이나 다음 세션의 턴 끝에 엉뚱하게 나간다.
+/// The turn itself keeps running on the server — cutting it here would amount to killing the
+/// server's work. Only the screen stops belonging to that session, so we clear that turn's
+/// indicators (`running`, `stopping`) and the queue. **Without clearing, the status line
+/// freezes on "working"**: a new session has no stream yet so nobody sets `running` back to
+/// false, and frames from the stale session are dropped by `frame_is_current` so it does not
+/// come from there either. Left as it is, the queue also fires the held messages off at the
+/// end of this or the next session's turn.
 fn leave_session(state: &mut State) {
     state.running = false;
     state.stopping = false;
@@ -2272,7 +2412,8 @@ fn leave_session(state: &mut State) {
     state.flush_queue = false;
 }
 
-/// 다른 세션으로 갈아탄다. 지난 기록을 되읽어 화면을 채우고 라이브 스트림을 다시 연다.
+/// Switches to another session. Re-reads the past record to fill the screen and reopens the
+/// live stream.
 async fn switch(
     api: &Arc<AttaccaApiClient>,
     state: &mut State,
@@ -2283,9 +2424,9 @@ async fn switch(
 ) -> anyhow::Result<()> {
     let events = crate::conn::history(api, &id).await?;
 
-    // 앞 세션의 화면을 지우고 다시 쌓는다. 안 지우면 두 세션이 섞인다.
-    // 턴 상태도 그 세션의 것이다 — "작업 중"을 이어 보여 주면 이 세션에서 아무것도
-    // 안 도는데도 줄이 서고, 담아 둔 말은 이 세션으로 나간다.
+    // Clear the previous session's screen and rebuild it. Without clearing, the two sessions
+    // mix. The turn state belongs to that session too — carrying "working" over puts a line
+    // up while nothing is running in this session, and the held messages go out to this one.
     leave_session(state);
     state.timeline = Timeline::new();
     state.folds = Folds::new();
@@ -2299,25 +2440,26 @@ async fn switch(
     }
 
     session.switch_to(id.clone(), project_id);
-    // 제목은 폴링을 기다리지 않고 지금 맞춘다 — 세션을 바꿨는데 창 제목이 몇 초 동안
-    // 앞 세션을 가리키면 어느 대화를 보고 있는지 헷갈린다.
+    // Set the title now rather than waiting for polling — a window title pointing at the
+    // previous session for a few seconds after a switch makes it unclear which conversation
+    // is in view.
     state.title = crate::conn::session_title(api, &id).await.unwrap_or_else(|| "Zyris Code".into());
     state.sidebar.clear();
     state.picker = None;
-    state.scroll = Scroll::new(); // 바닥부터 본다.
-                                  // 되읽은 곳 다음부터 이어 듣는다.
+    state.scroll = Scroll::new(); // Start from the bottom.
+                                  // Listen on from just past what was re-read.
     spawn_stream(Arc::clone(api), id, state.last_cursor, tx.clone());
     Ok(())
 }
 
-/// 세션을 (없으면 만들어) 확보하고, 메시지를 보내고, 턴 스트림을 연다.
-/// 턴이 끝났으면 들고 있던 말을 순서대로 보낸다.
+/// Secures a session (creating one if there is none), sends the message, and opens the turn
+/// stream. Once the turn ends, sends the held messages in order.
 ///
-/// **하나가 실패하면 거기서 멈추고 나머지는 그대로 둔다.** 다음 턴이 끝날 때 다시 시도한다 —
-/// 못 보낸 것을 조용히 버리면 사람은 보냈다고 믿는다.
-/// 슬래시 명령 중 **서버나 디스크가 필요한 것**을 마저 한다.
+/// **If one fails, stop there and leave the rest.** They are retried at the end of the next
+/// turn — quietly dropping what could not be sent leaves the user believing it went out.
+/// Finishes the slash commands **that need the server or the disk**.
 ///
-/// 순수한 부분은 `run_command`가 이미 끝냈다. 여기 오는 것은 넷뿐이다.
+/// `run_command` already finished the pure part. Only four kinds reach here.
 async fn finish_command(
     api: &Arc<AttaccaApiClient>,
     bridge: &crate::tools::bridge::Bridge,
@@ -2344,7 +2486,8 @@ async fn finish_command(
             let skills = crate::tools::skill::Skills::discover(&state.cwd);
             state.timeline.say(state.lang.skills_text(&skills.list()));
         }
-        // **preamble은 안 보이는 자리다.** 조용히 안 실렸을 때 알 방법이 이것뿐이다.
+        // **The preamble is an invisible place.** This is the only way to find out when
+        // something quietly failed to load into it.
         Command::Rules => {
             let found = crate::instructions::collect(&state.cwd);
             state.timeline.say(state.lang.rules_text(&found));
@@ -2369,11 +2512,13 @@ async fn finish_command(
             let said = run_plugin(state, what).await;
             state.timeline.say(said);
         }
-        // **닫았다는 것이 게이트에도 가야 한다.** `run_command`가 상태에서 지웠을 뿐이라,
-        // 여기서 옮기지 않으면 화면은 닫혔다는데 도구는 계속 통과시킨다.
+        // **The closing has to reach the gate too.** `run_command` only erased it from
+        // state, so without carrying it over here the screen says closed while the tools
+        // keep letting calls through.
         Command::GrantsClose => bridge.sync(state.mode, &state.grants),
-        // **고른 언어는 두 군데로 간다.** 화면 밖(셸 알림·도구 오류)이 쓰는 전역과,
-        // 다음 실행이 읽을 파일. `run_command`는 순수하므로 상태만 바꿔 두었다.
+        // **The chosen language goes to two places.** The global that off-screen code (shell
+        // notices, tool errors) uses, and the file the next launch reads. `run_command` is
+        // pure, so it only changed the state.
         Command::Lang(Some(lang)) => {
             crate::lang::set(lang);
             crate::lang::save(lang);
@@ -2390,9 +2535,9 @@ async fn finish_command(
                 Some(undo) => match undo.revert_last() {
                     Ok(path) => {
                         let shown = path.strip_prefix(&state.cwd).unwrap_or(&path);
-                        // **에이전트에게는 알리지 않는다.** 도는 턴 한가운데에 "네가 한
-                        // 걸 물렸다"를 끼워 넣으면 같은 편집을 다시 시도한다. 다음 턴에
-                        // 파일을 읽으면 어차피 바뀐 것이 보인다.
+                        // **Do not tell the agent.** Slipping "what you did was reverted"
+                        // into the middle of a running turn makes it retry the same edit.
+                        // Reading the file next turn shows the change anyway.
                         state.lang.reverted(&shown.display().to_string())
                     }
                     Err(why) => why,
@@ -2405,10 +2550,10 @@ async fn finish_command(
     }
 }
 
-/// 에이전트를 바꾼다. **못 찾으면 바꾸지 않는다.**
+/// Switches the agent. **If it cannot be found, nothing changes.**
 ///
-/// 조용히 폴백하면 상태줄에는 새 이름이 뜨는데 전송이 `Agent not found`로 실패하는,
-/// 원인을 찾기 어려운 상태가 된다 — `conn.rs`가 이미 겪은 자리다.
+/// Falling back quietly produces a hard-to-diagnose state where the status line shows the new
+/// name but sending fails with `Agent not found` — a spot `conn.rs` already went through.
 async fn switch_agent(
     api: &Arc<AttaccaApiClient>,
     state: &mut State,
@@ -2420,11 +2565,12 @@ async fn switch_agent(
         Ok(id) => {
             *agent_id = id;
             state.agent = name.to_string();
-            // **세션의 에이전트는 만들 때 정해지고 바꾸는 API가 없다**
-            // (`ZNewSession.agent_id`). 그래서 새 세션을 예약한다 — 서버에는 아직
-            // 아무것도 만들지 않고, 다음 메시지에서 열린다.
+            // **A session's agent is fixed at creation and there is no API to change it**
+            // (`ZNewSession.agent_id`). So we stage a new session — nothing is created on
+            // the server yet, and it opens on the next message.
             session.stage_new_default();
-            // 앞 세션의 턴은 화면 밖으로 간다 — 상태줄이 "작업 중"에 얼어붙지 않게 치운다.
+            // The previous session's turn goes off-screen — clear it so the status line does
+            // not freeze on "working".
             leave_session(state);
             state.timeline.say(state.lang.agent_staged(name));
         }
@@ -2432,7 +2578,7 @@ async fn switch_agent(
     }
 }
 
-/// `/plugin`. **받는 것은 남의 코드를 이 컴퓨터에 놓는 일이다** — 그 사실을 말해 준다.
+/// `/plugin`. **Installing means putting someone else's code on this computer** — say so.
 async fn run_plugin(state: &mut State, what: crate::command::Plugin) -> String {
     use crate::command::Plugin as P;
     use crate::plugin;
@@ -2477,8 +2623,9 @@ async fn flush_queue(
             Ok(announced) => {
                 state.queued.remove(0);
                 state.remember_sent(&text);
-                // **대기열의 첫 말도 work·job을 열 수 있다.** 일하는 중에 모드를 바꿔 두고
-                // 말을 담아 두면 그 말이 목표가 된다 — 열렸다는 것을 여기서도 말해야 한다.
+                // **The first queued message can open a work or job too.** Change the mode
+                // while work is running and hold a message, and that message becomes the
+                // goal — so the opening has to be announced here as well.
                 if let Some(said) = opened_text(state.lang, announced) {
                     state.timeline.say(said);
                 }
@@ -2491,18 +2638,19 @@ async fn flush_queue(
     }
 }
 
-/// 모드가 정한 곳으로 다음 메시지가 가도록 세션 예약을 맞춘다. **모드가 바뀐 순간에만 돈다.**
+/// Sets the session staging so the next message goes where the mode decided. **It only runs
+/// at the moment the mode changes.**
 ///
-/// **하던 대화가 있으면 모드는 그것을 가로채지 않는다.** work·job으로 바꿔도 지금
-/// 세션은 그대로 이어가고, 새 work·job은 새 쓰레드에서 연다 — 예전에는 모드를
-/// 바꾸는 순간 예약이 서서 다음 메시지가 조용히 새 세션을 열었다. 실제로 그렇게
-/// 헷갈렸다. 사람에게는 "지금 대화는 그대로"라고 말해 준다.
+/// **With a conversation in progress, the mode does not hijack it.** Switching to work or job
+/// keeps the current session going, and a new work or job opens in a new thread — this used
+/// to stage the moment the mode changed, so the next message quietly opened a new session.
+/// That really was confusing. We tell the user "the current conversation is untouched".
 ///
-/// 판정 자체는 `Mode::route()`가 하고 여기는 그것을 세션에 옮기고 사람에게 말할 뿐이다.
+/// The decision itself is `Mode::route()`'s; here we only carry it to the session and say so.
 fn restage(state: &mut State, session: &mut Session) {
     let route = state.mode.route();
-    // 세션이 있으면 예약하지 않는다 — `open_for`의 "예약이 없고 id가 있으면 이어
-    // 붙인다"가 그대로 동작해 다음 메시지는 지금 대화로 간다.
+    // With a session in hand, do not stage — `open_for`'s "no staging and an id means append"
+    // works as-is, so the next message goes to the current conversation.
     if session.id().is_some() {
         session.set_route(crate::mode::Route::Session);
         let said = match route {
@@ -2521,10 +2669,11 @@ fn restage(state: &mut State, session: &mut Session) {
     }
 }
 
-/// 보내고, 새로 연 것이 있으면 그것을 말한다.
+/// Sends, and if something new was opened, says so.
 ///
-/// **부르는 자리가 둘이라 여기 하나로 둔다**(입력란의 Enter와 질문 카드의 제출). 한쪽만
-/// 고치면 같은 일을 하는 두 길이 서로 다른 말을 하게 된다.
+/// **There are two call sites, so it lives here as one** (Enter in the input, and submit on
+/// a question card). Fixing only one would leave two paths doing the same thing while saying
+/// different words.
 async fn send_and_tell(
     api: &Arc<AttaccaApiClient>,
     state: &mut State,
@@ -2543,10 +2692,10 @@ async fn send_and_tell(
     }
 }
 
-/// 새로 연 것을 뭐라고 말할까. **`None`이면 아무 말도 안 한다** — 이어 붙였을 뿐인데 매
-/// 메시지에 한 줄씩 붙으면 대화가 그것으로 덮인다.
+/// What to say about what was newly opened. **`None` means say nothing** — a line per
+/// message when all that happened was appending would bury the conversation under it.
 ///
-/// 보내는 길이 둘이라(입력란, 대기열) 여기 한 자리에 둔다.
+/// There are two send paths (the input and the queue), so it lives here in one place.
 fn opened_text(
     lang: crate::lang::Lang,
     announced: Option<(crate::mode::Route, String)>,
@@ -2569,27 +2718,29 @@ async fn send(
 ) -> anyhow::Result<Option<(crate::mode::Route, String)>> {
     let opened = session.open_for(api, agent_id, text, mode).await?;
     let id = opened.id;
-    // **job·work는 여는 요청이 첫 메시지를 이미 먹었다**(`ZNewJob::message`). 여기서 또
-    // 보내면 같은 말이 두 번 들어가고, job은 그것을 새 지시로 읽는다.
+    // **For jobs and works the opening request already consumed the first message**
+    // (`ZNewJob::message`). Sending again here puts the same words in twice, and the job
+    // reads that as a new instruction.
     if !opened.sent {
         crate::conn::within(api, api.send_message(id.clone(), text.to_string(), vec![]))
             .await
             .map_err(|e| anyhow::anyhow!(crate::lang::current().send_failed(&e.to_string())))?;
     }
 
-    // **`after`를 비우면 안 된다.** 비우면 "지금부터의 라이브 프레임만" 오는데, 방금 보낸
-    // 메시지의 `chat_user` 이벤트는 스트림을 열기 전에 이미 기록돼 있어 영영 못 본다 —
-    // 보낸 말이 대화창에서 사라진다. 아직 아무것도 못 봤으면 0부터 되읽는다.
+    // **`after` must not be left empty.** Empty means "only live frames from now on", and
+    // the `chat_user` event for the message just sent was already recorded before the stream
+    // opened, so it is never seen — the sent message disappears from the transcript. If
+    // nothing has been seen yet, re-read from 0.
     spawn_stream(Arc::clone(api), id, Some(after.unwrap_or(0)), tx.clone());
     Ok(opened.announced)
 }
 
-/// 턴 스트림을 배경에서 읽어 액션으로 흘려보낸다.
+/// Reads the turn stream in the background and forwards it as actions.
 ///
-/// 프레임마다 **자기 세션의 id를 태그로 실어** 보낸다. 받는 쪽은 그 태그로 낡은
-/// 세션의 프레임을 버린다(`frame_is_current`) — 스트림을 끊는 대신 버리는 이유는
-/// 서버에서 도는 턴을 죽이지 않기 위해서다. 그 세션으로 돌아가면 다시 열 때
-/// 히스토리로 전부 보인다.
+/// Every frame goes out **tagged with its own session's id.** The receiver uses that tag to
+/// drop frames from a stale session (`frame_is_current`) — the reason for dropping rather
+/// than cutting the stream is not to kill a turn running on the server. Going back to that
+/// session shows it all as history on reopen.
 fn spawn_stream(
     api: Arc<AttaccaApiClient>,
     session_id: String,
@@ -2600,7 +2751,8 @@ fn spawn_stream(
         let tag = session_id.clone();
         match crate::conn::within(&api, api.turn_events(session_id, after)).await {
             Ok(mut stream) => {
-                // `Streaming`은 head와 items로 나뉜다. head가 현재 실행 상태를 들고 온다.
+                // `Streaming` splits into head and items. head carries the current running
+                // state.
                 let _ = tx.send((
                     Some(tag.clone()),
                     Action::Frame(Frame::Status { running: stream.head.running }),
@@ -2609,19 +2761,20 @@ fn spawn_stream(
                     match frame {
                         Ok(f) => {
                             if tx.send((Some(tag.clone()), Action::Frame(frame_from(f)))).is_err() {
-                                break; // 앱이 끝났다.
+                                break; // The app ended.
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "턴 스트림이 끊겼다");
+                            tracing::warn!(error = %e, "the turn stream dropped");
                             break;
                         }
                     }
                 }
-                // 스트림이 끝나면 턴도 끝난 것이다. 상태줄이 "작업 중"에 얼어붙으면 안 된다.
+                // When the stream ends the turn has ended too. The status line must not
+                // freeze on "working".
                 let _ = tx.send((Some(tag), Action::Frame(Frame::Status { running: false })));
             }
-            Err(e) => tracing::error!(error = %e, "턴 스트림을 열지 못했다"),
+            Err(e) => tracing::error!(error = %e, "could not open the turn stream"),
         }
     });
 }
@@ -2650,7 +2803,7 @@ mod tests {
         }
     }
 
-    /// 승인 창 두 개가 겹치면 무엇에 답하는지 알 수 없다.
+    /// With two approval windows overlapping there is no telling which one is being answered.
     #[test]
     fn a_second_ask_waits_behind_the_first() {
         let mut s = state();
@@ -2660,11 +2813,11 @@ mod tests {
         assert_eq!(s.ask_queue.len(), 1);
 
         apply(&mut s, &Action::Deny);
-        assert_eq!(s.pending.as_ref().unwrap().id, 2, "답하면 다음 것이 올라와야 한다");
+        assert_eq!(s.pending.as_ref().unwrap().id, 2, "answering should bring the next one up");
         assert!(s.ask_queue.is_empty());
     }
 
-    /// 답은 도구 쪽으로 되돌아가야 한다 — 안 가면 그 호출이 영영 막혀 있다.
+    /// The answer has to go back to the tool — otherwise that call is blocked forever.
     #[test]
     fn answering_sends_the_verdict_back() {
         let mut s = state();
@@ -2673,9 +2826,9 @@ mod tests {
         assert_eq!(s.verdict_out, Some((7, Verdict::Allow)));
     }
 
-    /// Shift+Enter·Alt+Enter는 줄바꿈이지 전송이 아니다. 키티 키보드 프로토콜을
-    /// 켜면 Shift+Enter가 Enter+SHIFT로 따로 도착하고, Alt+Enter(ESC+\r)는
-    /// 프로토콜 없는 터미널의 구원책이다.
+    /// Shift+Enter and Alt+Enter are newlines, not submits. With the kitty keyboard protocol
+    /// on, Shift+Enter arrives separately as Enter+SHIFT, and Alt+Enter (ESC+\r) is the
+    /// fallback for terminals without the protocol.
     #[test]
     fn shift_enter_and_alt_enter_insert_a_newline_instead_of_submitting() {
         let mut s = state();
@@ -2691,21 +2844,21 @@ mod tests {
         );
     }
 
-    /// `CSI ? u`에 대한 응답 판정. 형식은 `CSI ? <flags> u` — 답할 수 있는 터미널은
-    /// 프로토콜을 아는 터미널뿐이므로 형식만 보면 된다.
+    /// Deciding on the answer to `CSI ? u`. The format is `CSI ? <flags> u` — only a terminal
+    /// that knows the protocol can answer, so the format alone is enough.
     #[test]
     fn kitty_probe_ok_accepts_flag_responses() {
-        assert!(kitty_probe_ok(b"\x1b[?1u"), "flag 1 그대로");
-        assert!(kitty_probe_ok(b"\x1b[?3u"), "여러 flag");
-        assert!(kitty_probe_ok(b"\x1b[?1;2u"), "event type까지");
-        assert!(kitty_probe_ok(b"x\x1b[?1u"), "앞에 친 글자가 섞여도");
-        assert!(!kitty_probe_ok(b""), "응답 없음");
-        assert!(!kitty_probe_ok(b"abc"), "일반 글자");
-        assert!(!kitty_probe_ok(b"\x1b[?zzu"), "숫자가 아닌 flags");
+        assert!(kitty_probe_ok(b"\x1b[?1u"), "flag 1 as-is");
+        assert!(kitty_probe_ok(b"\x1b[?3u"), "several flags");
+        assert!(kitty_probe_ok(b"\x1b[?1;2u"), "event type too");
+        assert!(kitty_probe_ok(b"x\x1b[?1u"), "even with typed characters in front");
+        assert!(!kitty_probe_ok(b""), "no answer");
+        assert!(!kitty_probe_ok(b"abc"), "plain text");
+        assert!(!kitty_probe_ok(b"\x1b[?zzu"), "non-numeric flags");
     }
 
-    /// 붙여넣기는 줄바꿈을 그대로 살린다 — Enter처럼 쪼개면 여러 줄 프롬프트의
-    /// 첫 줄이 그냥 전송돼 버린다.
+    /// A paste keeps its newlines — splitting on Enter would fire off the first line of a
+    /// multi-line prompt on its own.
     #[test]
     fn paste_inserts_multiline_verbatim() {
         let mut s = state();
@@ -2714,7 +2867,7 @@ mod tests {
         assert_eq!(s.input.height(40), 2);
     }
 
-    /// 붙여넣기는 커서 자리에 들어간다. 중간에 붙여도 앞뒤가 그대로다.
+    /// A paste lands at the cursor. Pasting mid-text leaves what is before and after intact.
     #[test]
     fn paste_lands_at_the_cursor() {
         let mut s = state();
@@ -2725,7 +2878,7 @@ mod tests {
         assert_eq!(s.input.text, "가나\n라다");
     }
 
-    /// **`a`는 그 디렉터리째로 연다.** 파일 하나하나를 다시 묻는 것은 쓸 수 없다.
+    /// **`a` opens the whole directory.** Asking again for every single file is unusable.
     #[test]
     fn always_allow_opens_the_whole_directory() {
         let mut s = state();
@@ -2736,8 +2889,8 @@ mod tests {
         assert!(!s.grants.covers(std::path::Path::new("/home/ruma/prompts/x.yml")));
     }
 
-    /// **이미 포기한 호출에는 답을 보내지 않는다.** 보내면 에이전트가 모르는 채로
-    /// 파일이 바뀐다 — 허용만 기록되고 다음 호출에서 그것이 쓰인다.
+    /// **A call that was already given up on gets no answer.** Answering changes a file
+    /// without the agent knowing — only the grant is recorded, and the next call uses it.
     #[test]
     fn approving_an_expired_ask_only_records_the_grant() {
         let mut s = state();
@@ -2745,20 +2898,24 @@ mod tests {
         a.expired = true;
         apply(&mut s, &Action::Frame(Frame::Ask(a)));
         apply(&mut s, &Action::AlwaysAllow);
-        assert_eq!(s.verdict_out, None, "이미 포기한 호출에 답을 보내면 안 된다");
+        assert_eq!(s.verdict_out, None, "must not answer a call already given up on");
         assert!(s.grants.covers(std::path::Path::new("/home/ruma/attacca/x.rs")));
     }
 
-    /// 마감이 지나도 **창은 남는다.** 치워 버리면 사람이 무엇을 놓쳤는지 모른다.
+    /// **The window stays** even past the deadline. Clearing it away leaves the user with no
+    /// idea what they missed.
     #[test]
     fn a_pending_ask_can_go_stale_while_it_waits() {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::Ask(ask(4))));
         apply(&mut s, &Action::Frame(Frame::Expired(4)));
-        assert!(s.pending.as_ref().unwrap().expired, "포기한 것을 안 알리면 헛승인을 한다");
+        assert!(
+            s.pending.as_ref().unwrap().expired,
+            "not saying it was given up on leads to a pointless approval"
+        );
     }
 
-    /// 승인 창이 떠 있으면 y·n·a가 글자가 아니라 답이다.
+    /// With an approval window up, y/n/a are answers, not characters.
     #[test]
     fn the_approval_keys_answer_instead_of_typing() {
         let mut s = state();
@@ -2769,31 +2926,32 @@ mod tests {
             on_key(&s, key(KeyCode::Char('a'), KeyModifiers::NONE)),
             vec![Action::AlwaysAllow]
         );
-        // **Enter는 없다.** 다음 말을 치려고 누르던 손이 승인을 눌러 버리면 안 된다.
+        // **There is no Enter.** A hand pressing it to type the next message must not
+        // approve.
         assert!(on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)).is_empty());
     }
 
-    /// Windows는 press와 release를 각각 KeyEvent로 보낸다. release를 걸러내지 않으면
-    /// 한 번 누른 키가 두 번 입력된다 — `/exit`가 `//eexxitit`이 되는 버그(ratatui
-    /// issue #347). macOS/Linux에는 release 이벤트가 없어 이 테스트는 그냥 지켜 준다.
+    /// Windows sends press and release as separate KeyEvents. Without filtering the release,
+    /// one press types twice — the bug where `/exit` becomes `//eexxitit` (ratatui issue
+    /// #347). macOS/Linux have no release event, so this test simply guards it there.
     #[test]
     fn a_key_release_is_not_typed_twice() {
         let s = state();
         assert_eq!(
             on_key(&s, key(KeyCode::Char('x'), KeyModifiers::NONE)),
             vec![Action::Insert('x')],
-            "press는 입력이어야 한다"
+            "a press should be input"
         );
         let release =
             KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Release);
         assert_eq!(
             on_key(&s, release),
             vec![],
-            "release는 입력이 아니어야 한다 — Windows에서 한 번 누른 키가 두 번 들어간다"
+            "a release should not be input — on Windows one press would type twice"
         );
     }
 
-    /// 승인 창이 없을 때는 그냥 글자다.
+    /// With nothing pending they are just characters.
     #[test]
     fn those_keys_are_just_letters_when_nothing_is_pending() {
         let s = state();
@@ -2803,7 +2961,7 @@ mod tests {
         );
     }
 
-    /// 승인 창이 떠 있어도 종료는 통해야 한다. 막히면 빠져나갈 길이 없다.
+    /// Quitting has to work even with an approval up. Blocked, there is no way out.
     #[test]
     fn ctrl_c_still_works_while_an_approval_is_up() {
         let mut s = state();
@@ -2823,31 +2981,32 @@ mod tests {
         }
     }
 
-    /// **등록 코드 창은 Esc로만 닫힌다.** 다른 키가 창을 치우면 코드를 보지도
-    /// 못한 채 승인 단계를 지나친다 — `y`가 승인 창에 먹히지도 않아야 한다.
+    /// **Esc is the only key that closes the enrollment code window.** If another key clears
+    /// it away, the approval step goes by without the code ever being seen — and `y` must
+    /// not be taken by the approval window either.
     #[test]
     fn the_enroll_window_closes_only_with_esc() {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::Enroll(enroll())));
         assert!(s.enroll.is_some());
 
-        // 아무 키나 눌러도 창은 그대로다.
+        // Any other key leaves the window as it is.
         assert_eq!(
             on_key(&s, key(KeyCode::Char('y'), KeyModifiers::NONE)),
             vec![],
-            "등록 중에 y가 승인으로 먹히면 안 된다"
+            "y must not be taken as an approval while enrolling"
         );
         assert_eq!(on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)), vec![]);
         assert_eq!(on_key(&s, key(KeyCode::Up, KeyModifiers::NONE)), vec![]);
 
-        // Esc 하나만 닫는다.
+        // Esc alone closes it.
         assert_eq!(on_key(&s, key(KeyCode::Esc, KeyModifiers::NONE)), vec![Action::EnrollClose]);
         apply(&mut s, &Action::EnrollClose);
-        assert!(s.enroll.is_none(), "Esc로 닫아야 한다");
+        assert!(s.enroll.is_none(), "Esc should close it");
     }
 
-    /// **등록 코드 창이 떠 있어도 끄는 길은 막지 않는다.** Ctrl+C는 언제나 통한다 —
-    /// 화면이 코드를 가린 채 죽은 채로 남으면 빠져나갈 길이 없다.
+    /// **The way out is not blocked even with the enrollment code window up.** Ctrl+C always
+    /// works — a screen left dead while covering the code leaves no way out.
     #[test]
     fn ctrl_c_still_quits_while_the_enroll_window_is_up() {
         let mut s = state();
@@ -2858,31 +3017,31 @@ mod tests {
         );
     }
 
-    /// **승인이 도착하면 창이 저절로 닫힌다.** 사람이 Esc를 누르지 않아도
-    /// 붙었으면 등록 창이 남아 있을 이유가 없다.
+    /// **The window closes on its own once approval arrives.** Even without the user pressing
+    /// Esc, once attached there is no reason for the enrollment window to remain.
     #[test]
     fn approving_clears_the_enroll_window() {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::Enroll(enroll())));
         apply(&mut s, &Action::Frame(Frame::EnrollDone));
-        assert!(s.enroll.is_none(), "승인됐는데 창이 남아 있다");
+        assert!(s.enroll.is_none(), "approved, but the window is still there");
     }
 
-    /// 만료·거부는 창을 닫지 않고 **사정만 바꾼다** — 새 코드가 오면 그 위에
-    /// 다시 그리므로, 닫아 버리면 중간 상태를 놓친다.
+    /// A lapse or a denial does not close the window, it **only changes what it says** — a
+    /// new code redraws over it, so closing would lose the intermediate state.
     #[test]
     fn a_lapsed_or_denied_code_changes_the_phase_not_the_window() {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::Enroll(enroll())));
         apply(&mut s, &Action::Frame(Frame::EnrollPhase(EnrollPhase::Lapsed)));
         assert_eq!(s.enroll.as_ref().unwrap().phase, EnrollPhase::Lapsed);
-        assert!(s.enroll.is_some(), "만료됐다고 창을 닫으면 안 된다");
+        assert!(s.enroll.is_some(), "a lapse must not close the window");
 
         apply(&mut s, &Action::Frame(Frame::EnrollPhase(EnrollPhase::Denied)));
         assert_eq!(s.enroll.as_ref().unwrap().phase, EnrollPhase::Denied);
     }
 
-    /// 앱이 마지막으로 한 말.
+    /// The last thing the app said.
     fn last_system(state: &mut State) -> String {
         state
             .timeline
@@ -2902,16 +3061,16 @@ mod tests {
         }
     }
 
-    /// **슬래시 명령은 서버로 안 간다.** 오타 하나가 크레딧을 쓰면 안 된다.
+    /// **Slash commands never reach the server.** One typo must not spend credits.
     #[test]
     fn a_slash_command_never_reaches_the_server() {
         let mut s = State::new();
         apply(&mut s, &Action::Submit("/cwd".into()));
         assert_eq!(s.command_out.as_deref(), Some("/cwd"));
-        assert!(s.queued.is_empty(), "명령이 대기열로 샜다");
+        assert!(s.queued.is_empty(), "the command leaked into the queue");
     }
 
-    /// 일하는 중이어도 명령은 지금 돈다 — 모드를 바꾸는 일이 턴을 기다릴 이유가 없다.
+    /// A command runs now even mid-work — changing the mode has no reason to wait for a turn.
     #[test]
     fn a_command_runs_even_while_a_turn_is_going() {
         let mut s = State::new();
@@ -2921,9 +3080,9 @@ mod tests {
         assert!(s.queued.is_empty(), "{:?}", s.queued);
     }
 
-    /// **하던 대화가 있으면 모드가 그것을 가로채지 않는다.** work·job으로 바꿔도
-    /// 다음 메시지는 지금 세션으로 간다 — 예전에는 모드를 바꾸는 순간 예약이 서서
-    /// 조용히 새 세션을 열었다. 실제로 그렇게 헷갈렸다.
+    /// **With a conversation in progress the mode does not hijack it.** Switching to work or
+    /// job still sends the next message to the current session — this used to stage the
+    /// moment the mode changed and quietly open a new session. That really was confusing.
     #[test]
     fn restage_keeps_the_active_conversation() {
         let mut s = State::new();
@@ -2932,10 +3091,10 @@ mod tests {
         session.switch_to("지금-세션".into(), None);
         s.mode = crate::mode::Mode::Work;
         restage(&mut s, &mut session);
-        assert_eq!(session.pending_open(), None, "하던 대화를 가로채면 안 된다");
+        assert_eq!(session.pending_open(), None, "must not hijack the conversation in progress");
         assert!(last_system(&mut s).contains("이어갑니다"), "{}", last_system(&mut s));
 
-        // 영어 화면도 같은 뜻을 말한다 — 번역이 빠지면 안 된다.
+        // The English screen says the same thing — the translation must not be missing.
         let mut s = State::new();
         s.lang = crate::lang::Lang::En;
         let mut session = Session::new(None);
@@ -2945,7 +3104,8 @@ mod tests {
         assert!(last_system(&mut s).contains("continues as-is"), "{}", last_system(&mut s));
     }
 
-    /// 대화가 없으면 모드가 무엇을 열지 정한다 — 첫 메시지가 work·job이 된다.
+    /// With no conversation the mode decides what opens — the first message becomes the work
+    /// or job.
     #[test]
     fn restage_stages_an_open_only_without_a_conversation() {
         let mut s = State::new();
@@ -2956,7 +3116,7 @@ mod tests {
         assert!(last_system(&mut s).contains("job"), "{}", last_system(&mut s));
     }
 
-    /// 평범한 메시지는 그대로 서버로 간다.
+    /// An ordinary message still goes to the server.
     #[test]
     fn a_normal_message_still_goes_to_the_server() {
         let mut s = State::new();
@@ -2964,8 +3124,9 @@ mod tests {
         assert!(s.command_out.is_none());
     }
 
-    /// `/mode 계획`은 모드를 바꾸고 화면에 남는다. **한국어 이름도 받는다** — 영어 화면을
-    /// 쓰는 사람도 손에 익은 말로 칠 수 있어야 한다.
+    /// `/mode 계획` changes the mode and says so on screen. **Korean names are accepted
+    /// too** — someone on the English screen should still be able to type what their hands
+    /// know.
     #[test]
     fn the_mode_command_changes_the_mode_and_says_so() {
         let mut s = State::new();
@@ -2981,28 +3142,30 @@ mod tests {
         assert!(last_system(&mut s).contains("plan"), "{}", last_system(&mut s));
     }
 
-    /// **화면 말을 고르는 창이 뜬다.** 둘뿐이라 목록이 곧 답이다.
+    /// **A window to pick the screen language comes up.** There are only two, so the list is
+    /// the answer.
     #[test]
     fn the_lang_command_opens_a_list_to_pick_from() {
         let mut s = State::new();
         run_command(&mut s, "/lang");
-        let picker = s.picker.as_ref().expect("목록이 떠야 한다");
+        let picker = s.picker.as_ref().expect("the list should be up");
         let labels: Vec<&str> = picker.rows.iter().map(|r| r.label.as_str()).collect();
         assert!(labels.contains(&"English"), "{labels:?}");
         assert!(labels.contains(&"한국어"), "{labels:?}");
     }
 
-    /// 이름을 바로 대면 창 없이 바꾼다 — `/lang ko`가 손에 익은 사람도 있다.
+    /// Naming it outright changes it without the window — `/lang ko` is what some hands know.
     #[test]
     fn naming_a_language_changes_it_without_the_list() {
         let mut s = State::new();
         run_command(&mut s, "/lang ko");
         assert_eq!(s.lang, crate::lang::Lang::Ko);
-        assert!(s.picker.is_none(), "이름을 댔으면 목록을 열 이유가 없다");
+        assert!(s.picker.is_none(), "with a name given there is no reason to open the list");
         assert!(last_system(&mut s).contains("한국어"), "{}", last_system(&mut s));
     }
 
-    /// 모르는 명령은 무엇이 있는지 알려 준다. "모릅니다"만 하면 다음에 또 틀린다.
+    /// An unknown command says what does exist. Just "unknown" means getting it wrong again
+    /// next time.
     #[test]
     fn an_unknown_command_lists_what_exists() {
         let mut s = State::new();
@@ -3010,18 +3173,18 @@ mod tests {
         assert!(last_system(&mut s).contains("/help"), "{}", last_system(&mut s));
     }
 
-    /// `/clear`는 **화면만** 비운다. 지웠다고 세션이 없어진 줄 알면 안 된다.
+    /// `/clear` empties **only the screen.** Clearing must not read as the session being gone.
     #[test]
     fn clearing_says_the_session_is_still_there() {
         let mut s = State::new();
         apply(&mut s, &work_start(1));
         run_command(&mut s, "/clear");
         assert!(last_system(&mut s).contains("thread"), "{}", last_system(&mut s));
-        assert_eq!(s.timeline.items().len(), 1, "지운 뒤에는 안내 한 줄만 남는다");
+        assert_eq!(s.timeline.items().len(), 1, "after clearing only the one notice remains");
     }
 
-    /// 열어 둔 것이 없으면 **어떻게 열리는지**를 말해야 한다. "없습니다"만으로는
-    /// 이 명령이 무엇을 보여주는 것인지 알 수 없다.
+    /// With nothing open it has to say **how they open.** "None" alone gives no idea what
+    /// this command is showing.
     #[test]
     fn listing_grants_with_nothing_open_says_how_they_open() {
         let mut s = State::new();
@@ -3030,7 +3193,8 @@ mod tests {
         assert!(said.contains('a'), "{said}");
     }
 
-    /// **한 번 누른 `a`가 세션 내내 산다.** 무엇을 열어 뒀는지 볼 수 있어야 한다.
+    /// **One press of `a` lives for the whole session.** It has to be possible to see what
+    /// was left open.
     #[test]
     fn listing_grants_names_every_directory_that_is_open() {
         let mut s = State::new();
@@ -3043,27 +3207,28 @@ mod tests {
         assert!(said.contains("/home/ruma/prompts"), "{said}");
     }
 
-    /// 닫으면 정말 닫혀야 한다 — 말만 하고 남아 있으면 최악이다.
+    /// Closing has to really close — saying so while they remain is the worst case.
     #[test]
     fn closing_grants_actually_closes_them() {
         let mut s = State::new();
         s.grants.allow_under(std::path::Path::new("/home/ruma/attacca/Cargo.toml"));
 
         run_command(&mut s, "/grants close");
-        assert!(s.grants.is_empty(), "닫았다는데 남아 있다");
+        assert!(s.grants.is_empty(), "said closed, but they are still there");
         assert!(last_system(&mut s).contains('1'), "{}", last_system(&mut s));
     }
 
-    /// 목록을 보려다 닫으면 안 된다.
+    /// Looking at the list must not close it.
     #[test]
     fn listing_grants_does_not_close_them() {
         let mut s = State::new();
         s.grants.allow_under(std::path::Path::new("/home/ruma/attacca/Cargo.toml"));
         run_command(&mut s, "/grants");
-        assert!(!s.grants.is_empty(), "보기만 했는데 닫혔다");
+        assert!(!s.grants.is_empty(), "only looked, but they got closed");
     }
 
-    /// `/quit`는 깃발만 세운다. 끄는 것은 I/O 자리가 한다 — 거기서 도는 턴도 멈춘다.
+    /// `/quit` only raises the flag. Quitting is the I/O side's job — a running turn is
+    /// stopped there too.
     #[test]
     fn the_quit_command_asks_the_io_side_to_leave() {
         let mut s = State::new();
@@ -3072,7 +3237,7 @@ mod tests {
         assert!(s.quitting);
     }
 
-    /// 바꾼 것이 없으면 그렇게 말한다.
+    /// With nothing changed, say so.
     #[test]
     fn the_changes_list_says_when_nothing_was_touched() {
         let said =
@@ -3080,7 +3245,8 @@ mod tests {
         assert!(said.contains("없습니다"), "{said}");
     }
 
-    /// **만든 파일은 그렇다고 말한다.** 되돌리면 지워진다는 뜻이라 무게가 다르다.
+    /// **A created file is marked as such.** Reverting means deleting it, which carries a
+    /// different weight.
     #[test]
     fn the_changes_list_shows_counts_and_marks_new_files() {
         let cwd = std::path::Path::new("/home/ruma/zyris-code");
@@ -3103,37 +3269,39 @@ mod tests {
             ],
             cwd,
         );
-        // 경로는 작업 디렉터리 기준으로 줄인다 — 절대경로 열 줄은 눈으로 못 가려낸다.
+        // Paths are shortened against the working directory — ten absolute paths cannot be
+        // told apart by eye.
         assert!(said.contains("`src/app.rs`  +42 −7"), "{said}");
         assert!(said.contains("3번 고침"), "{said}");
         assert!(said.contains("새로 만든 것"), "{said}");
-        assert!(!said.contains("/home/ruma"), "절대경로가 그대로 나왔다:\n{said}");
+        assert!(!said.contains("/home/ruma"), "an absolute path came out verbatim:\n{said}");
     }
 
-    /// **`/`를 치면 목록이 뜬다.** 안 뜨면 무슨 명령이 있는지 알 방법이 없다.
+    /// **Typing `/` brings the list up.** Without it there is no way to know what commands
+    /// exist.
     #[test]
     fn typing_a_slash_opens_the_command_list() {
         let mut s = State::new();
         typed(&mut s, "/");
-        assert!(s.picker.is_some(), "목록이 안 떴다");
+        assert!(s.picker.is_some(), "the list did not come up");
         assert!(matches!(
             s.picker.as_ref().map(|p| &p.level),
             Some(crate::picker::Level::Commands)
         ));
     }
 
-    /// 치는 대로 좁혀져야 고르는 값이 있다.
+    /// It has to narrow as typing goes on for picking to be worth anything.
     #[test]
     fn typing_narrows_the_command_list() {
         let mut s = State::new();
         typed(&mut s, "/mo");
-        let rows = &s.picker.as_ref().expect("목록이 없다").rows;
+        let rows = &s.picker.as_ref().expect("there is no list").rows;
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert_eq!(rows[0].label, "/mode");
     }
 
-    /// **목록이 떠 있어도 글자는 그대로 입력이다.** k·j가 이동키로 먹히면
-    /// `/skills`를 칠 수 없다.
+    /// **Characters are still plain input while the list is up.** If k/j were taken as
+    /// movement keys, `/skills` could not be typed.
     #[test]
     fn letters_still_type_while_the_command_list_is_open() {
         let mut s = State::new();
@@ -3148,36 +3316,37 @@ mod tests {
         );
     }
 
-    /// **경로를 치면 목록이 사라져야 한다.** `/home/...`은 명령이 아니다.
+    /// **Typing a path has to make the list go away.** `/home/...` is not a command.
     #[test]
     fn a_path_closes_the_command_list() {
         let mut s = State::new();
         typed(&mut s, "/home");
-        assert!(s.picker.is_none(), "경로에 목록이 남아 있다");
+        assert!(s.picker.is_none(), "the list is still up on a path");
     }
 
-    /// 인자를 치기 시작하면 목록은 제 할 일을 다했다.
+    /// Once an argument starts, the list has done its job.
     #[test]
     fn the_command_list_closes_once_an_argument_starts() {
         let mut s = State::new();
         typed(&mut s, "/mode ");
-        assert!(s.picker.is_none(), "인자를 치는데 목록이 화면을 가린다");
+        assert!(s.picker.is_none(), "the list covers the screen while typing an argument");
     }
 
-    /// **다 친 명령은 Enter 한 번에 돌아야 한다.** 목록이 떠 있다고 Enter가 "고르기"로만
-    /// 먹히면, 끝까지 치고 눌렀는데 같은 글이 다시 써질 뿐 아무 일도 안 일어난다.
+    /// **A fully typed command must run on the first Enter.** If Enter only ever meant
+    /// "pick" because the list is up, typing it to the end and pressing would just rewrite
+    /// the same text and do nothing.
     #[test]
     fn a_fully_typed_command_runs_on_the_first_enter() {
         let mut s = State::new();
         typed(&mut s, "/rules");
-        assert!(s.picker.is_some(), "목록이 떠 있는 상황이어야 한다");
+        assert!(s.picker.is_some(), "the situation has to be one where the list is up");
         assert_eq!(
             on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)),
             vec![Action::Submit("/rules".into())]
         );
     }
 
-    /// 아직 다 안 친 것은 목록에서 고르는 것이 맞다.
+    /// Something not fully typed is right to pick from the list.
     #[test]
     fn a_half_typed_command_still_picks_from_the_list() {
         let mut s = State::new();
@@ -3185,28 +3354,29 @@ mod tests {
         assert_eq!(on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)), vec![Action::PickConfirm]);
     }
 
-    /// 보내면 목록이 닫힌다. 안 닫으면 답이 오는 동안 화면을 가린다.
+    /// Submitting closes the list. Left open it covers the screen while the answer arrives.
     #[test]
     fn submitting_closes_the_command_list() {
         let mut s = State::new();
         typed(&mut s, "/cwd");
         apply(&mut s, &Action::Submit("/cwd".into()));
-        assert!(s.picker.is_none(), "목록이 남아 있다");
+        assert!(s.picker.is_none(), "the list is still there");
     }
 
-    /// 다 지우면 목록도 닫힌다.
+    /// Erasing it all closes the list too.
     #[test]
     fn erasing_the_slash_closes_the_list() {
         let mut s = State::new();
         typed(&mut s, "/m");
         apply(&mut s, &Action::Backspace);
         apply(&mut s, &Action::Backspace);
-        assert!(s.picker.is_none(), "다 지웠는데 목록이 남았다");
+        assert!(s.picker.is_none(), "erased it all, but the list is still there");
     }
 
-    // ── 새 프로젝트 양식
+    // ── The new-project form
 
-    /// 양식이 열려 있으면 글자는 그 활성 칸으로 간다 — 아래 입력란에 새어 들어가면 안 된다.
+    /// With the form open, characters go to its active field — they must not leak into the
+    /// input below.
     #[test]
     fn typing_goes_to_the_form_while_it_is_open() {
         let mut s = state();
@@ -3217,21 +3387,21 @@ mod tests {
         let form = s.new_project.as_ref().unwrap();
         assert_eq!(form.name.text, "가");
         assert_eq!(form.description.text, "나");
-        assert!(s.input.text.is_empty(), "아래 입력란에 샜다: {:?}", s.input.text);
+        assert!(s.input.text.is_empty(), "it leaked into the input below: {:?}", s.input.text);
     }
 
-    /// 만들기. **이름이 비면 조용히 넘어가지 않는다** — 사유를 양식에 담는다.
+    /// Creating. **An empty name is not passed over quietly** — the reason goes on the form.
     #[test]
     fn confirming_without_a_name_says_so() {
         let mut s = state();
         s.new_project = Some(crate::newproject::Form::new());
         apply(&mut s, &Action::FormConfirm);
         let form = s.new_project.as_ref().unwrap();
-        assert!(form.error.is_some(), "이름이 비었는데 사유가 없다");
-        assert!(s.project_out.is_none(), "서버를 부르면 안 된다");
+        assert!(form.error.is_some(), "the name is empty but there is no reason given");
+        assert!(s.project_out.is_none(), "must not call the server");
     }
 
-    /// 이름이 있으면 (이름, 설명)이 만들기 자리로 간다 — 만들어진 것은 아니다.
+    /// With a name, (name, description) goes to the creating slot — it is not created yet.
     #[test]
     fn confirming_with_a_name_stages_creation() {
         let mut s = state();
@@ -3241,10 +3411,10 @@ mod tests {
         }
         apply(&mut s, &Action::FormConfirm);
         assert_eq!(s.project_out, Some(("제목".to_string(), String::new())));
-        assert!(s.new_project.is_some(), "만들어지기 전에는 양식이 남아 있어야 한다");
+        assert!(s.new_project.is_some(), "the form should remain until it is created");
     }
 
-    /// Esc는 양식을 닫는다 — 목록은 그대로 아래에 있으므로 다시 그 자리로 돌아온다.
+    /// Esc closes the form — the list stays underneath, so it returns right to that spot.
     #[test]
     fn escaping_closes_the_form_not_the_list() {
         let mut s = state();
@@ -3252,10 +3422,10 @@ mod tests {
         s.new_project = Some(crate::newproject::Form::new());
         apply(&mut s, &Action::FormCancel);
         assert!(s.new_project.is_none());
-        assert!(s.picker.is_some(), "목록까지 닫으면 다시 받아와야 한다");
+        assert!(s.picker.is_some(), "closing the list too would mean refetching it");
     }
 
-    /// 양식이 열려 있으면 키가 양식으로 간다.
+    /// With the form open, keys go to the form.
     #[test]
     fn keys_route_to_the_form_while_it_is_open() {
         let mut s = state();
@@ -3273,7 +3443,7 @@ mod tests {
         })
     }
 
-    /// 화면이 깨졌을 때 사람이 반사적으로 누르는 키다. 다른 뜻을 주면 안 된다.
+    /// The key people press reflexively when the screen breaks. It must get no other meaning.
     #[test]
     fn ctrl_l_asks_for_a_full_repaint() {
         let s = state();
@@ -3283,7 +3453,8 @@ mod tests {
         );
     }
 
-    /// 다시 그리기는 화면만의 일이다. 상태를 건드리면 Ctrl+L이 작업을 바꿔 버린다.
+    /// Repainting is the screen's business alone. Touching state would let Ctrl+L change the
+    /// work.
     #[test]
     fn repainting_changes_no_state() {
         let mut s = state();
@@ -3294,8 +3465,8 @@ mod tests {
         assert_eq!(s.view_top, 7);
     }
 
-    /// 제목은 서버가 지어 준다 — 우리가 쓰지 않은 글자다. 제어문자가 섞이면 OSC가 거기서
-    /// 끊겨 나머지가 화면에 글자로 쏟아진다.
+    /// The title is written by the server — text we did not write. A control character mixed
+    /// in cuts the OSC short there and dumps the rest onto the screen as literal text.
     #[test]
     fn a_title_cannot_break_out_of_the_escape_sequence() {
         let out = title_for_osc("깨\u{7}뜨리\u{1b}기\n다음 줄");
@@ -3303,7 +3474,7 @@ mod tests {
         assert!(!out.chars().any(char::is_control));
     }
 
-    /// 아주 긴 제목은 자른다. 터미널마다 받아 주는 길이가 다르다.
+    /// A very long title is cut short. Terminals differ in the length they accept.
     #[test]
     fn a_very_long_title_is_cut_short() {
         assert_eq!(title_for_osc(&"가".repeat(500)).chars().count(), 120);
@@ -3325,31 +3496,33 @@ mod tests {
         assert!(on_key(&s, key(KeyCode::Enter, KeyModifiers::NONE)).is_empty());
     }
 
-    /// **추론은 처음부터 숨어 있다.** 답을 보러 온 화면을 생각 더미가 밀어내면 안 된다.
+    /// **Reasoning is hidden from the start.** A pile of thinking must not push out the
+    /// screen someone came to for the answer.
     #[test]
     fn a_work_card_starts_folded_and_stays_that_way_while_reasoning_streams() {
         let mut s = state();
         apply(&mut s, &work_start(1));
-        assert!(!s.folds[&1].open, "처음부터 접혀 있어야 한다");
+        assert!(!s.folds[&1].open, "it should be folded from the start");
         apply(
             &mut s,
             &Action::Frame(Frame::Delta { kind: ZDeltaKind::Reasoning, text: "생각 중".into() }),
         );
-        assert!(!s.folds[&1].open, "추론이 흘러도 저절로 펴지면 안 된다");
+        assert!(!s.folds[&1].open, "streaming reasoning must not unfold it on its own");
     }
 
-    /// **저절로 접히지도 않는다.** 펴 놓고 읽는 중에 화면이 스스로 움직이면 안 된다.
+    /// **Nor does it fold on its own.** The screen must not move by itself while it is
+    /// unfolded and being read.
     #[test]
     fn an_opened_card_is_never_folded_behind_the_users_back() {
         let mut s = state();
         apply(&mut s, &work_start(1));
         apply(&mut s, &Action::ToggleFold);
-        assert!(s.folds[&1].open, "Ctrl+O 한 번이면 펼쳐진다");
+        assert!(s.folds[&1].open, "one Ctrl+O unfolds it");
 
         for kind in [ZDeltaKind::Reasoning, ZDeltaKind::Assistant] {
             apply(&mut s, &Action::Frame(Frame::Delta { kind, text: "무언가".into() }));
         }
-        assert!(s.folds[&1].open, "델타가 카드를 접었다");
+        assert!(s.folds[&1].open, "a delta folded the card");
     }
 
     #[test]
@@ -3360,7 +3533,7 @@ mod tests {
         assert_eq!(actions, vec![Action::ToggleFold]);
     }
 
-    /// 재연결에 쓸 위치를 놓치면 안 된다.
+    /// The position for resuming must not be lost.
     #[test]
     fn the_last_cursor_is_remembered_for_resume() {
         let mut s = state();
@@ -3368,25 +3541,26 @@ mod tests {
         assert_eq!(s.last_cursor, Some(42));
     }
 
-    /// **낡은 세션의 프레임은 화면에 닿으면 안 된다.** 일을 걸어 두고 다른 세션으로
-    /// 갈아타면 앞 세션의 턴은 서버에서 계속 돌고 그 스트림도 계속 보낸다 — 태그가
-    /// 지금 세션과 다르면 버린다. 화면 밖(도구·다리)에서 온 것은 언제나 통과한다.
+    /// **A frame from a stale session must not reach the screen.** Leave work running and
+    /// switch to another session, and the previous session's turn keeps running on the
+    /// server with its stream still sending — a tag differing from the current session is
+    /// dropped. Anything from off-screen (tools, the bridge) always passes.
     #[test]
     fn a_frame_from_a_stale_session_is_dropped() {
-        // 화면 밖에서 온 것(None)은 세션과 무관하게 통과한다.
+        // What came from off-screen (None) passes regardless of the session.
         assert!(frame_is_current(&None, Some("현재")));
         assert!(frame_is_current(&None, None));
-        // 자기 세션의 프레임은 통과한다.
+        // A frame from its own session passes.
         assert!(frame_is_current(&Some("a".into()), Some("a")));
-        // **낡은 세션의 프레임은 버린다** — 화면을 갈아탔는데 앞 세션의 메시지가
-        // 계속 올라오면 안 된다.
+        // **A frame from a stale session is dropped** — the previous session's messages must
+        // not keep coming up after switching the screen.
         assert!(!frame_is_current(&Some("옛 세션".into()), Some("새 세션")));
-        // 세션이 아직 없는데 스트림 프레임이 오는 것도 낡은 것이다.
+        // A stream frame arriving while there is no session yet is stale too.
         assert!(!frame_is_current(&Some("어떤 세션".into()), None));
     }
 
-    /// 휠은 마지막으로 그린 뷰포트 크기를 기준으로 움직인다 — apply는 순수해야 하므로
-    /// 크기를 스스로 알 수 없고 위젯이 적어 둔 값을 읽는다.
+    /// The wheel moves against the viewport size as last drawn — apply has to stay pure so it
+    /// cannot know the size itself and reads what the widget wrote down.
     #[test]
     fn the_wheel_uses_the_last_drawn_viewport() {
         let mut s = state();
@@ -3397,8 +3571,8 @@ mod tests {
         assert_eq!(s.scroll.top, 87);
     }
 
-    /// **Ctrl+C는 고른 글이 있어도 복사하지 않는다.** 멈추거나 끝내는 키 하나다 —
-    /// 뜻이 겹치면 급할 때 무엇이 일어날지 알 수 없다.
+    /// **Ctrl+C never copies, even with a selection.** It is the one key that stops or quits —
+    /// with meanings overlapping there is no telling what happens when it matters.
     #[test]
     fn ctrl_c_never_copies_even_with_a_selection() {
         let mut s = state();
@@ -3420,10 +3594,10 @@ mod tests {
         );
     }
 
-    /// **취소가 안 먹혀도 창은 닫을 수 있어야 한다.**
+    /// **The window has to be closable even when the cancel does not take.**
     ///
-    /// 서버가 굳으면 `running`이 참인 채로 남는다. Ctrl+C가 그때마다 취소로만 가면
-    /// 몇 번을 눌러도 같은 부탁이 다시 나갈 뿐 종료로는 못 간다.
+    /// When the server hangs, `running` stays true. If Ctrl+C only ever went to cancel then,
+    /// every press would just send the same request again and never reach quitting.
     #[test]
     fn ctrl_c_after_a_cancel_goes_to_quitting() {
         let mut s = state();
@@ -3431,17 +3605,18 @@ mod tests {
         let k = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
         let first = on_key(&s, k);
-        assert_eq!(first, vec![Action::Cancel], "첫 번째는 취소여야 한다");
+        assert_eq!(first, vec![Action::Cancel], "the first should be a cancel");
         apply(&mut s, &first[0]);
 
         let second = on_key(&s, k);
-        assert_eq!(second, vec![Action::ArmQuit], "돌고 있어도 두 번째는 종료 예고다");
+        assert_eq!(second, vec![Action::ArmQuit], "the second arms the quit even while running");
         apply(&mut s, &second[0]);
 
         assert_eq!(on_key(&s, k), vec![Action::Quit]);
     }
 
-    /// 멈춰 달라던 부탁은 이번 턴까지다. 다음 턴에서 Ctrl+C는 다시 취소로 가야 한다.
+    /// The request to stop lasts only for that turn. On the next turn Ctrl+C has to go back
+    /// to cancelling.
     #[test]
     fn asking_to_stop_lasts_only_for_that_turn() {
         let mut s = state();
@@ -3449,28 +3624,29 @@ mod tests {
         apply(&mut s, &Action::Cancel);
         assert!(s.stopping);
 
-        // 도는 동안 같은 상태가 여러 번 온다. 그때마다 풀리면 안 된다.
+        // The same state arrives many times while running. It must not release each time.
         apply(&mut s, &Action::Frame(Frame::Status { running: true }));
-        assert!(s.stopping, "도는 중에 같은 상태가 또 왔다고 풀리면 안 된다");
+        assert!(s.stopping, "the same state arriving again mid-run must not release it");
 
         apply(&mut s, &Action::Frame(Frame::Status { running: false }));
-        assert!(!s.stopping, "턴이 끝났으면 풀려야 한다");
+        assert!(!s.stopping, "it should release once the turn ends");
     }
 
-    /// 한 번은 예고, 두 번째가 종료. 실수로 한 번 눌러 꺼지면 안 된다.
+    /// One press arms, the second quits. One accidental press must not quit.
     #[test]
     fn ctrl_c_needs_two_presses_to_quit() {
         let mut s = state();
         let k = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
 
         let first = on_key(&s, k);
-        assert_eq!(first, vec![Action::ArmQuit], "첫 번째는 예고여야 한다");
+        assert_eq!(first, vec![Action::ArmQuit], "the first should arm the quit");
         apply(&mut s, &first[0]);
 
-        assert_eq!(on_key(&s, k), vec![Action::Quit], "두 번째는 종료여야 한다");
+        assert_eq!(on_key(&s, k), vec![Action::Quit], "the second should quit");
     }
 
-    /// 예고는 시간이 지나면 저절로 풀린다 — 한참 뒤의 Ctrl+C가 종료가 되면 놀란다.
+    /// The arming releases on its own once time passes — a Ctrl+C much later turning into a
+    /// quit is a nasty surprise.
     #[test]
     fn the_quit_warning_expires() {
         let mut s = state();
@@ -3478,13 +3654,13 @@ mod tests {
         assert!(s.quit_pending_at(Instant::now()));
 
         let later = Instant::now() + QUIT_WINDOW + Duration::from_millis(1);
-        assert!(!s.quit_pending_at(later), "1.5초가 지나면 풀려야 한다");
+        assert!(!s.quit_pending_at(later), "it should release after 1.5 seconds");
     }
 
-    /// **알림도 시간이 지나면 사라진다.**
+    /// **A notice fades once time passes too.**
     ///
-    /// 지나간 사정을 계속 붙들고 있으면 그 자리가 지금 무슨 일인지 말해 주지 못한다 —
-    /// "Zyris로는 아직 만들 수 없습니다"가 영영 남아 있었다.
+    /// Holding on to a past circumstance means that spot can no longer say what is happening
+    /// now — "Zyris로는 아직 만들 수 없습니다" used to stay forever.
     #[test]
     fn a_notice_fades_on_its_own() {
         let mut s = state();
@@ -3492,10 +3668,10 @@ mod tests {
         assert_eq!(s.status_at(Instant::now()), Some("Zyris로는 아직 만들 수 없습니다"));
 
         let later = Instant::now() + STATUS_WINDOW + Duration::from_millis(1);
-        assert_eq!(s.status_at(later), None, "시간이 지나면 사라져야 한다");
+        assert_eq!(s.status_at(later), None, "it should be gone once time passes");
     }
 
-    /// Ctrl+U는 친 것을 통째로 지운다. 어디에 커서가 있든 남는 것이 없어야 한다.
+    /// Ctrl+U wipes everything typed. Wherever the cursor is, nothing may remain.
     #[test]
     fn ctrl_u_wipes_the_whole_input() {
         let mut s = state();
@@ -3510,7 +3686,7 @@ mod tests {
         assert_eq!(s.input.cursor, 0);
     }
 
-    /// 터미널이 알려 주기만 하면 Ctrl+Backspace도 같은 일을 한다.
+    /// As long as the terminal reports it, Ctrl+Backspace does the same thing.
     #[test]
     fn ctrl_backspace_wipes_it_too() {
         let s = state();
@@ -3520,7 +3696,7 @@ mod tests {
         );
     }
 
-    /// 그냥 Backspace는 한 글자만 지운다 — 위 갈래가 이걸 삼키면 안 된다.
+    /// A plain Backspace still deletes one character — the arm above must not swallow it.
     #[test]
     fn a_plain_backspace_still_deletes_one_character() {
         let s = state();
@@ -3538,18 +3714,22 @@ mod tests {
         s
     }
 
-    /// 입력란이 비었을 때 ↑는 마지막에 보낸 말을 되살린다.
+    /// With the input empty, ↑ brings back the last thing sent.
     #[test]
     fn up_brings_back_the_last_thing_sent() {
         let mut s = sent(&["첫 말", "둘째 말"]);
         assert_eq!(on_key(&s, key(KeyCode::Up, KeyModifiers::NONE)), vec![Action::RecallOlder]);
         apply(&mut s, &Action::RecallOlder);
         assert_eq!(s.input.text, "둘째 말");
-        assert_eq!(s.input.cursor, s.input.len_chars(), "커서가 끝에 서야 이어 칠 수 있다");
+        assert_eq!(
+            s.input.cursor,
+            s.input.len_chars(),
+            "the cursor must sit at the end to keep typing"
+        );
     }
 
-    /// **두 번째 ↑에서 멈추면 안 된다.** 되살린 뒤에는 입력란이 비어 있지 않으므로
-    /// "비었을 때만"이라는 조건 하나로는 한 칸밖에 못 올라간다.
+    /// **It must not stop at the second ↑.** After a recall the input is no longer empty, so
+    /// the single condition "only when empty" would only ever walk back one step.
     #[test]
     fn up_keeps_walking_further_back() {
         let mut s = sent(&["첫 말", "둘째 말"]);
@@ -3557,12 +3737,12 @@ mod tests {
         assert_eq!(on_key(&s, key(KeyCode::Up, KeyModifiers::NONE)), vec![Action::RecallOlder]);
         apply(&mut s, &Action::RecallOlder);
         assert_eq!(s.input.text, "첫 말");
-        // 더 위는 없다. 맨 위에서 버틴다.
+        // There is nothing further back. It holds at the top.
         apply(&mut s, &Action::RecallOlder);
         assert_eq!(s.input.text, "첫 말");
     }
 
-    /// ↓로 내려와 맨 아래를 지나면 입력란이 비워진다 — 치던 자리로 돌아온 셈이다.
+    /// Walking down past the bottom empties the input — back to where the typing was.
     #[test]
     fn down_walks_back_out_of_the_history() {
         let mut s = sent(&["첫 말", "둘째 말"]);
@@ -3572,7 +3752,7 @@ mod tests {
         assert!(!s.recalling());
     }
 
-    /// 되살린 말을 고치면 되살리기에서 빠져나온다. 안 그러면 고친 것을 ↓ 한 번에 잃는다.
+    /// Editing a recalled message leaves the history. Otherwise one ↓ would lose the edit.
     #[test]
     fn editing_a_recalled_message_leaves_the_history() {
         let mut s = sent(&["보낸 말"]);
@@ -3583,7 +3763,7 @@ mod tests {
         assert_eq!(s.input.text, "보낸 말!");
     }
 
-    /// 보낸 적이 없으면 ↑는 아무 일도 하지 않는다.
+    /// With nothing ever sent, ↑ does nothing.
     #[test]
     fn up_does_nothing_with_an_empty_history() {
         let mut s = state();
@@ -3591,37 +3771,37 @@ mod tests {
         assert_eq!(s.input.text, "");
     }
 
-    /// 같은 말을 연달아 보내면 한 번만 남는다 — 되살릴 때 같은 줄을 두 번 지나면
-    /// 되살리기가 고장 난 것처럼 보인다.
+    /// The same message sent twice is remembered once — passing the same line twice while
+    /// recalling makes recall look broken.
     #[test]
     fn the_same_message_twice_is_remembered_once() {
         let s = sent(&["같은 말", "같은 말"]);
         assert_eq!(s.sent.len(), 1);
     }
 
-    /// **일하는 중에 친 말은 보내지 않고 들고 있는다.** 보낸 기록에도 아직 안 들어간다 —
-    /// 진짜 나간 것만 "보낸 말"이어야 한다.
+    /// **What is typed mid-turn is held, not sent.** It does not enter the sent history yet —
+    /// only what actually went out may count as "sent".
     #[test]
     fn typing_during_a_turn_queues_instead_of_sending() {
         let mut s = state();
         s.running = true;
         apply(&mut s, &Action::Submit("일하는 중에 친 말".into()));
         assert_eq!(s.queued, vec!["일하는 중에 친 말"]);
-        assert!(s.sent.is_empty(), "아직 안 보냈는데 보낸 기록에 들어갔다");
-        assert_eq!(s.input.text, "", "입력란은 비워야 한다");
+        assert!(s.sent.is_empty(), "it entered the sent history before being sent");
+        assert_eq!(s.input.text, "", "the input must be cleared");
     }
 
-    /// 턴이 끝나는 순간 대기열을 비우라고 알린다. 보내는 것은 I/O 자리가 한다.
+    /// Says to drain the queue the moment the turn ends. The sending itself is done by the I/O side.
     #[test]
     fn the_end_of_a_turn_asks_for_the_queue_to_be_flushed() {
         let mut s = state();
         s.running = true;
         apply(&mut s, &Action::Submit("나중에 보낼 말".into()));
         apply(&mut s, &Action::Frame(Frame::Status { running: false }));
-        assert!(s.flush_queue, "턴이 끝났는데 보내라는 신호가 없다");
+        assert!(s.flush_queue, "the turn ended but there is no signal to send");
     }
 
-    /// 대기열이 비어 있으면 턴이 끝나도 보낼 것이 없다.
+    /// With an empty queue there is nothing to send when the turn ends.
     #[test]
     fn an_empty_queue_asks_for_nothing() {
         let mut s = state();
@@ -3630,7 +3810,7 @@ mod tests {
         assert!(!s.flush_queue);
     }
 
-    /// **↑는 대기 중인 말을 먼저 꺼낸다.** 그것이 아직 고칠 수 있는 유일한 말이다.
+    /// **↑ takes from the queue first.** That is the only message still open to editing.
     #[test]
     fn up_pulls_the_queued_message_back_first() {
         let mut s = state();
@@ -3640,11 +3820,11 @@ mod tests {
 
         apply(&mut s, &Action::RecallOlder);
         assert_eq!(s.input.text, "대기 중인 말");
-        assert!(s.queued.is_empty(), "꺼냈으면 대기열에서 빠져야 한다");
+        assert!(s.queued.is_empty(), "once taken it must leave the queue");
         assert_eq!(s.input.cursor, s.input.len_chars());
     }
 
-    /// 꺼내 놓고 또 ↑를 눌러 지금 고치는 것을 잃으면 안 된다.
+    /// Taking one out and pressing ↑ again must not lose what is being edited now.
     #[test]
     fn pulling_a_queued_message_back_stops_the_walk() {
         let mut s = state();
@@ -3655,22 +3835,22 @@ mod tests {
         assert_eq!(on_key(&s, key(KeyCode::Up, KeyModifiers::NONE)), vec![]);
     }
 
-    /// **어떤 델타도 접힘을 건드리지 않는다.**
+    /// **No delta ever touches a fold.**
     ///
-    /// 사용자가 겪은 "혼자 펴진다"가 여기서 났었다 — 답하다 잠깐 더 생각하면 Reasoning
-    /// 델타가 뒤늦게 오고, 그때마다 카드가 도로 펴져 읽던 답이 밀려 내려갔다.
-    /// 자동 접기를 걷어냈으므로 이제 그런 예외가 있을 자리가 없다.
+    /// This is where the "it unfolds by itself" a user hit came from — pausing to think while
+    /// answering made a Reasoning delta arrive late, and each one refolded the card so the
+    /// answer being read was pushed down. Auto-folding is gone, so there is no room for that now.
     #[test]
     fn no_delta_ever_changes_a_fold() {
         let mut s = state();
         apply(&mut s, &work_start(1));
         for kind in [ZDeltaKind::Reasoning, ZDeltaKind::Assistant, ZDeltaKind::Reasoning] {
             apply(&mut s, &Action::Frame(Frame::Delta { kind, text: "무언가".into() }));
-            assert!(!s.folds[&1].open, "델타가 카드를 폈다");
+            assert!(!s.folds[&1].open, "a delta unfolded the card");
         }
     }
 
-    /// 새 런이 시작돼도 접힌 채로 열린다. **처음부터 숨어 있다**가 여기에도 걸린다.
+    /// A new run still opens folded. **Hidden from the start** applies here too.
     #[test]
     fn a_new_work_run_also_starts_folded() {
         let mut s = state();
@@ -3679,33 +3859,32 @@ mod tests {
         assert!(s.folds[&1].open);
 
         apply(&mut s, &work_start(2));
-        assert!(!s.folds[&2].open, "새 카드가 펴진 채로 열렸다");
-        assert!(s.folds[&1].open, "앞 카드를 건드리면 안 된다");
+        assert!(!s.folds[&2].open, "a new card opened unfolded");
+        assert!(s.folds[&1].open, "the earlier card must not be touched");
     }
 
-    // ── 도구 승인 ──────────────────────────────────────────────────────
+    // ── Tool approval ──────────────────────────────────────────────────
 
-    /// 열린 셸이 화면에 안 뜨면 유령 셸이 돈다.
-    /// 배경에서 도는 것이 화면에 있어야 한다. **안 보이면 사람은 모른 채 앱을 끈다.**
+    /// An open shell that never reaches the screen becomes a ghost shell.
+    /// What runs in the background must be on screen. **Unseen, a person quits the app not knowing.**
     #[test]
     fn a_background_job_shows_up_and_leaves_when_it_ends() {
         let mut s = state();
-        let start =
-            Frame::JobStart { id: "b1".into(), label: "cargo build".into() };
+        let start = Frame::JobStart { id: "b1".into(), label: "cargo build".into() };
         apply(&mut s, &Action::Frame(start.clone()));
         assert_eq!(s.jobs.len(), 1);
-        // 같은 id가 두 번 와도 줄이 두 벌이 되면 안 된다.
+        // The same id arriving twice must not produce two rows.
         apply(&mut s, &Action::Frame(start));
         assert_eq!(s.jobs.len(), 1);
 
         apply(&mut s, &Action::Frame(Frame::JobEnded { id: "b1".into(), ok: true, secs: 252 }));
         assert!(s.jobs.is_empty());
-        // 끝난 것은 상태 줄로 한 번 말하고 사라진다.
+        // A finished one is said once on the status line and then disappears.
         assert!(s.status().is_some_and(|t| t.contains("b1")), "{:?}", s.status());
     }
 
-    /// 활동 줄이 **"작업 중…"보다 구체적인 것을 고른다.** 도는 턴이 있어도 그렇다 —
-    /// 그 턴은 대개 이 작업을 기다리는 중이다.
+    /// The activity line **picks something more specific than "working…".** It does so even while
+    /// a turn is running — that turn is usually waiting on this job.
     #[test]
     fn the_activity_line_prefers_the_background_job_over_working() {
         let mut s = state();
@@ -3715,16 +3894,15 @@ mod tests {
             &mut s,
             &Action::Frame(Frame::JobStart { id: "b1".into(), label: "cargo build".into() }),
         );
-        let (_, text, _) =
-            crate::widgets::activity_parts_at(&s, std::time::Instant::now());
+        let (_, text, _) = crate::widgets::activity_parts_at(&s, std::time::Instant::now());
         assert!(text.contains("b1") && text.contains("cargo build"), "{text}");
     }
 
-    /// `/jobs`는 **목록과 멈추는 길만** 말한다. 로그를 쏟으면 대화창이 덮인다.
+    /// `/jobs` says **only the list and how to stop**. Dumping logs would cover the transcript.
     #[test]
     fn the_jobs_command_lists_what_runs_and_how_to_stop_it() {
         let mut s = state();
-        // 말은 `lang`에서 온다 — 글자를 박아 두면 화면 말을 바꿀 때 여기가 깨진다.
+        // The words come from `lang` — hardcoding them here breaks when the screen language changes.
         assert_eq!(jobs_text(&s.jobs, s.lang), s.lang.jobs_none());
         apply(
             &mut s,
@@ -3740,14 +3918,14 @@ mod tests {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::ShellOpened { id: "p1".into(), name: "zsh".into() }));
         assert_eq!(s.shells.len(), 1);
-        // 같은 것이 두 번 와도 두 벌이 되면 안 된다.
+        // The same one arriving twice must not produce two entries.
         apply(&mut s, &Action::Frame(Frame::ShellOpened { id: "p1".into(), name: "zsh".into() }));
         assert_eq!(s.shells.len(), 1);
         apply(&mut s, &Action::Frame(Frame::ShellClosed { id: "p1".into() }));
         assert!(s.shells.is_empty());
     }
 
-    /// 실행 중일 때만 취소가 의미 있다.
+    /// Cancelling only means something while something is running.
     #[test]
     fn esc_cancels_only_while_a_turn_runs() {
         let mut s = state();
@@ -3756,8 +3934,8 @@ mod tests {
         assert_eq!(on_key(&s, key(KeyCode::Esc, KeyModifiers::NONE)), vec![Action::Cancel]);
     }
 
-    /// **창을 닫으면 서버에서도 멈춘다.** 안 그러면 이쪽이 사라진 뒤에도 저쪽은 계속
-    /// 생각하고, 도구를 부를 때마다 없는 노드를 찾다 실패하며 크레딧만 나간다.
+    /// **Closing the window stops it on the server too.** Otherwise the far side keeps thinking
+    /// after this side is gone, failing to find the missing node on every tool call, burning credit.
     #[test]
     fn quitting_mid_turn_stops_the_turn_on_the_server() {
         let mut s = state();
@@ -3768,7 +3946,7 @@ mod tests {
         assert_eq!(turn_to_stop(&s, &session), Some("세션-1".into()));
     }
 
-    /// 도는 것이 없으면 멈추라고 하지 않는다 — 끄는 길에 쓸데없는 왕복을 넣지 않는다.
+    /// With nothing running we do not ask it to stop — no pointless round trip on the way out.
     #[test]
     fn quitting_while_idle_says_nothing_to_the_server() {
         let mut s = state();
@@ -3776,14 +3954,14 @@ mod tests {
         session.switch_to("세션-1".into(), None);
         assert_eq!(turn_to_stop(&s, &session), None);
 
-        // 아직 첫 메시지를 안 보낸 세션은 서버에 없다. 멈추라고 할 대상도 없다.
+        // A session that never sent a first message does not exist on the server. There is nothing to stop.
         apply(&mut s, &Action::Frame(Frame::Status { running: true }));
         assert_eq!(turn_to_stop(&s, &Session::new(None)), None);
     }
 
-    /// **세션을 떠날 때 앞 세션의 턴 상태를 치운다.** 안 치우면 상태줄이 "작업 중"에
-    /// 얼어붙고(새 세션은 스트림이 없어 아무도 false로 되돌려 주지 않는다) 담아 둔
-    /// 말이 엉뚱한 세션으로 나간다.
+    /// **Leaving a session clears the previous one's turn state.** Without that the status line
+    /// freezes on "working" (a new session has no stream, so nobody sets it back to false) and
+    /// what was held goes out to the wrong session.
     #[test]
     fn leaving_a_session_clears_the_old_turn_state() {
         let mut s = state();
@@ -3794,30 +3972,38 @@ mod tests {
 
         leave_session(&mut s);
 
-        assert!(!s.running, "running이 남았다");
-        assert!(!s.stopping, "stopping이 남았다");
-        assert!(s.queued.is_empty(), "대기열이 남았다: {:?}", s.queued);
-        assert!(!s.flush_queue, "flush 신호가 남았다");
+        assert!(!s.running, "running is still set");
+        assert!(!s.stopping, "stopping is still set");
+        assert!(s.queued.is_empty(), "the queue was not drained: {:?}", s.queued);
+        assert!(!s.flush_queue, "the flush signal is still set");
     }
 
-    /// **새 쓰레드에서 보낸 말은 앞 세션의 턴에 엮이지 않는다.** 앞 세션의 턴 상태를
-    /// 치웠으므로(`leave_session`) 여기서 친 말은 대기열로 새지 않고 곧바로 보낸
-    /// 기록에 들어간다. 안 치우면 `running`이 남아 이 말까지 대기열로 들어가고,
-    /// 새 세션은 스트림이 없어 아무도 그 대기열을 비우지 못한다.
+    /// **A message sent in a new thread is not tied to the previous session's turn.** The previous
+    /// turn state was cleared (`leave_session`), so what is typed here does not leak into the queue
+    /// and goes straight into the sent history. Without that clearing, `running` would still be set,
+    /// this message would join the queue, and a new session has no stream to drain it.
     #[test]
     fn a_fresh_thread_does_not_queue_messages_behind_the_old_turn() {
         let mut s = state();
-        s.running = true; // 앞 세션의 턴이 도는 중
+        s.running = true; // the previous session's turn is running
         apply(&mut s, &Action::Submit("앞 턴에 담아 둔 말".into()));
         assert_eq!(s.queued, vec!["앞 턴에 담아 둔 말"]);
 
-        // 새 쓰레드를 열었다 — 앞 세션의 턴 상태가 치워진다.
+        // A new thread was opened — the previous session's turn state gets cleared.
         leave_session(&mut s);
-        assert!(s.queued.is_empty(), "앞 턴의 대기열이 새 화면에 남았다: {:?}", s.queued);
+        assert!(
+            s.queued.is_empty(),
+            "the queue from the previous turn survived into the new screen: {:?}",
+            s.queued
+        );
 
-        // 새 쓰레드에서 보낸 말은 대기로 새지 않고 보낸 기록에 바로 들어간다.
+        // A message sent in a new thread does not leak into the queue; it enters the sent history at once.
         apply(&mut s, &Action::Submit("새 쓰레드에서 보낸 말".into()));
-        assert!(s.queued.is_empty(), "새 쓰레드의 말이 대기로 갔다: {:?}", s.queued);
+        assert!(
+            s.queued.is_empty(),
+            "the message for the new thread went to the queue: {:?}",
+            s.queued
+        );
         assert_eq!(s.sent, vec!["새 쓰레드에서 보낸 말"]);
     }
 }

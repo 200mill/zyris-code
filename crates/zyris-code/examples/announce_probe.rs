@@ -34,11 +34,11 @@ fn ask() -> String {
     std::env::var("ZYRIS_CODE_PROBE_ASK").unwrap_or_else(|_| ASK.to_string())
 }
 
-const ASK: &str = "두 가지를 하라. \
-                   (1) 이름이 '__code_probe__ping'으로 끝나는 도구를 say='PROBE-OK'로 호출하라. \
-                   (2) 이름이 '__code_edit__edit'으로 끝나는 도구를 \
-                   path='note.txt', old_string='BEFORE', new_string='AFTER'로 호출하라. \
-                   각각에 대해 도구가 목록에 있었는지 없었는지 한 줄로 알려라.";
+const ASK: &str = "Do two things. \
+                   (1) Call the tool whose name ends in '__code_probe__ping' with say='PROBE-OK'. \
+                   (2) Call the tool whose name ends in '__code_edit__edit' with \
+                   path='note.txt', old_string='BEFORE', new_string='AFTER'. \
+                   For each one, say in a single line whether the tool was in your list or not.";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct Pong {
@@ -57,7 +57,7 @@ struct Probe;
 #[async_trait::async_trait]
 impl CodeProbe for Probe {
     async fn ping(&self, say: String) -> zyris::Result<Pong> {
-        println!("\n>>> code_probe.ping이 불렸다: {say}\n");
+        println!("\n>>> code_probe.ping was called: {say}\n");
         Ok(Pong { said: say })
     }
 }
@@ -71,7 +71,8 @@ async fn main() -> ExitCode {
         )
         .init();
 
-    // Use the same node identity as the TUI. Connecting with a different profile would ask for the enrollment code again.
+    // Use the same node identity as the TUI. Connecting with a different profile would ask for
+    // the enrollment code again.
     if std::env::var_os("ZYRIS_PROFILE").is_none() {
         std::env::set_var("ZYRIS_PROFILE", "zyris-code");
     }
@@ -79,10 +80,10 @@ async fn main() -> ExitCode {
     // Don't let it touch the real repo. One temp directory is this probe's whole world.
     let dir = std::env::temp_dir().join("zyris-code-probe");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("임시 디렉터리");
+    std::fs::create_dir_all(&dir).expect("temp directory");
     let note = dir.join("note.txt");
     std::fs::write(&note, "첫 줄\nBEFORE\n끝 줄\n").expect("note.txt");
-    println!("작업 디렉터리: {}\n", dir.display());
+    println!("working directory: {}\n", dir.display());
 
     // **Hand out a control too.** `code_probe` is a known good the agent has actually called.
     // If it shows up but `code_edit` doesn't, the cause is code_edit's schema.
@@ -101,7 +102,7 @@ async fn main() -> ExitCode {
             let note = note.clone();
             async move {
                 if let Err(e) = ask_the_agent(&conn, &note).await {
-                    println!("\n### 프로브 실패: {e}\n");
+                    println!("\n### probe failed: {e}\n");
                 }
                 std::process::exit(0);
             }
@@ -120,7 +121,7 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
     // Wait generously — rule out this spot as the cause first.
     let wait: u64 =
         std::env::var("ZYRIS_CODE_PROBE_WAIT").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
-    println!("{wait}초 기다린다");
+    println!("waiting {wait}s");
     tokio::time::sleep(Duration::from_secs(wait)).await;
 
     let api = conn.wait_capability::<AttaccaApiClient>(CONSUME_WAIT).await?;
@@ -130,8 +131,8 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
     let agent = agents
         .into_iter()
         .find(|a| a.name == wanted)
-        .ok_or_else(|| anyhow::anyhow!("'{wanted}' 에이전트가 없다"))?;
-    println!("에이전트: {} ({})", agent.name, agent.id);
+        .ok_or_else(|| anyhow::anyhow!("no agent named '{wanted}'"))?;
+    println!("agent: {} ({})", agent.name, agent.id);
 
     let session = api
         .create_session_with(ZNewSession {
@@ -142,14 +143,15 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
         })
         .await?;
     let ask = ask();
-    println!("세션: {}\n묻는다: {ask}\n", session.id);
+    println!("session: {}\nasking: {ask}\n", session.id);
 
     api.send_message(session.id.clone(), ask.clone(), Vec::new()).await?;
 
     let mut stream = api.turn_events(session.id.clone(), None).await?;
     let mut answer = String::new();
     // **Don't mistake a `running:false` before the turn starts for its end.** If the subscription
-    // attaches later than the send, the first status arrives as false, and cutting off there makes the answer always look empty.
+    // attaches later than the send, the first status arrives as false, and cutting off there
+    // makes the answer always look empty.
     let mut started = false;
     while let Some(frame) = stream.items.next().await {
         match frame? {
@@ -166,20 +168,20 @@ async fn ask_the_agent(conn: &Connection, note: &std::path::Path) -> anyhow::Res
         }
     }
 
-    println!("\n\n=== 판정 1: 파일이 실제로 바뀌었는가 ===");
+    println!("\n\n=== verdict 1: did the file actually change? ===");
     let body = std::fs::read_to_string(note).unwrap_or_default();
     if body.contains("AFTER") && !body.contains("BEFORE") {
-        println!("통과 — 에이전트가 이 컴퓨터의 파일을 실제로 고쳤다.");
-        println!("파일 내용:\n{body}");
+        println!("pass — the agent actually edited a file on this computer.");
+        println!("file contents:\n{body}");
     } else {
-        println!("실패 — 파일이 안 바뀌었다.");
-        println!("파일 내용: {body:?}");
-        println!("에이전트의 답: {}", answer.trim());
+        println!("fail — the file did not change.");
+        println!("file contents: {body:?}");
+        println!("the agent's answer: {}", answer.trim());
     }
 
-    println!("\n=== 판정 2: 그 이벤트가 화면에서 초록/빨강이 되는가 ===");
+    println!("\n=== verdict 2: do those events become green/red on screen? ===");
     let events = api.session_history(session.id, ZHistoryQuery::default()).await?;
-    println!("이벤트 {}개를 다시 읽었다", events.len());
+    println!("read {} events back", events.len());
     check_the_diff_paints(&events);
     Ok(())
 }
@@ -213,11 +215,11 @@ fn check_the_diff_paints(events: &[zyris_attacca::ZSessionEvent]) {
     let added = coloured(zyris_code::theme::DIFF_ADD);
     let removed = coloured(zyris_code::theme::DIFF_DEL);
     if added.is_empty() || removed.is_empty() {
-        println!("실패 — diff가 화면 줄이 되지 않았다.");
-        println!("초록 줄: {added:?}\n빨강 줄: {removed:?}");
+        println!("fail — the diff did not become screen lines.");
+        println!("green lines: {added:?}\nred lines: {removed:?}");
         return;
     }
-    println!("통과 — 초록/빨강으로 그려진다.");
+    println!("pass — it draws in green/red.");
     for line in added.iter().chain(&removed) {
         println!("  {}", line.trim_end());
     }

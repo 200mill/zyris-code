@@ -57,13 +57,10 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &EnrollView, lang: crate::lang:
                 format!("   {}   ", view.code),
                 Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(Span::styled(
-                view.uri.clone(),
-                Style::default().fg(theme::TOOL),
-            )));
+            lines
+                .push(Line::from(Span::styled(view.uri.clone(), Style::default().fg(theme::TOOL))));
             lines.push(Line::from(""));
-            let remaining =
-                view.expires_at.saturating_duration_since(std::time::Instant::now());
+            let remaining = view.expires_at.saturating_duration_since(std::time::Instant::now());
             lines.push(Line::from(Span::styled(
                 lang.enroll_expires(remaining.as_secs()),
                 Style::default().fg(theme::TEXT_MUTED),

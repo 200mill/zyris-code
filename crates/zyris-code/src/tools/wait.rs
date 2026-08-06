@@ -1,12 +1,12 @@
-//! 기다리는 도구. **배경 실행 도구가 아니다** — 로컬 빌드도, 원격 빌드도, attacca의
-//! work도 같은 도구로 기다린다.
+//! The waiting tool. **Not a background-run tool** — a local build, a remote build and an
+//! attacca work all wait through this same tool.
 //!
-//! **이 파일의 전부는 `until`의 반환 계약이다.** 끝났든 안 끝났든 성공으로 답하고,
-//! 와이어 마감 안쪽에 돌아오고, 안 끝났으면 다시 부르라고 말한다.
+//! **This whole file is `until`'s return contract.** Finished or not it answers with success,
+//! it comes back inside the wire deadline, and when it is not finished it says to call again.
 //!
-//! 고치려는 것은 이것이다: `terminal.exec`이 50초에 잘리면서 프로세스 트리까지 죽이고
-//! `timed_out: true, exit_code: -1`을 주면, 에이전트는 그것을 **실패로 읽고 멈춘다.**
-//! 그 판단은 에이전트가 옳다 — 고칠 것은 그 모양을 만들어 보내는 쪽이다.
+//! This is what it fixes: when `terminal.exec` is cut off at 50s, kills the process tree with
+//! it and hands back `timed_out: true, exit_code: -1`, the agent **reads that as a failure and
+//! stops.** The agent is right to — what needs fixing is the side that makes that shape.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,42 +15,44 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use zyris::WireError;
-// `AttaccaApi`는 트레이트다. 클라이언트만 임포트하면 메서드가 전부 "method not found"다.
+// `AttaccaApi` is a trait. Import only the client and every method is "method not found".
 use zyris_attacca::{AttaccaApi, AttaccaApiClient};
 
 use crate::tools::bridge::Bridge;
 use crate::tools::jobs::{Chunk, Jobs, Snapshot, Spec};
 
-/// 한 번의 `logs`가 주는 최대 크기. 남은 것은 `more`로 말한다.
+/// The most one `logs` hands back. The rest is announced with `more`.
 const LOGS_BYTES: usize = 16_000;
-/// 결과에 싣는 출력 꼬리. **매번 전문을 실으면 컨텍스트가 남아나지 않는다** —
-/// 20분 빌드면 확인이 25번쯤 오간다. 전문은 `wait.logs`로 가져간다.
+/// The output tail carried in a result. **Carrying the whole thing every time leaves no
+/// context** — a 20-minute build takes some 25 checks. The whole thing comes via `wait.logs`.
 const TAIL_BYTES: usize = 2000;
-/// 우리가 답을 만들어 보낼 여유. 마감에서 이만큼 뺀 것이 한 번의 예산이다.
+/// Room for us to build an answer and send it. The deadline minus this is one call's budget.
 const HEADROOM: std::time::Duration = std::time::Duration::from_secs(5);
-/// 마감이 꺼져 있을 때의 상한. 그때는 저쪽이 안 끊는다는 뜻이지만 영원히 잡고 있을 수는 없다.
+/// The cap when the deadline is off. That means the other side does not cut us off, but we
+/// cannot hold on forever either.
 const NO_DEADLINE_CAP: std::time::Duration = std::time::Duration::from_secs(600);
-/// 되묻는 기본 간격.
+/// The default gap between probes.
 const PROBE_EVERY_MS: u64 = 5_000;
-/// 그 바닥. **되물을 명령은 싸야 한다** — `cargo build`를 되묻기로 거는 사고를 막는다.
+/// Its floor. **A probe command has to be cheap** — it stops the mistake of putting
+/// `cargo build` on a probe.
 const PROBE_FLOOR_MS: u64 = 2_000;
-/// 되묻는 명령 하나의 제한. 넘으면 그 회차는 거짓으로 친다.
+/// The limit on one probe command. Past it that round counts as false.
 const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// attacca work를 되묻는 간격. **저쪽은 알림이 없어 폴링뿐이다.**
+/// The gap between probes of an attacca work. **That side has no notice, so polling is all.**
 const WORK_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn probe_gap(every_ms: Option<u64>) -> std::time::Duration {
     std::time::Duration::from_millis(every_ms.unwrap_or(PROBE_EVERY_MS).max(PROBE_FLOOR_MS))
 }
 
-/// work가 **사람이나 에이전트가 움직여야 하는 자리**에 닿았는가.
+/// Has the work reached **a place where a person or the agent has to move**?
 ///
-/// 관문 둘·멈춤·끝이다. `Planning`·`Executing`은 아직 저쪽이 도는 중이라, 그때
-/// 깨우면 에이전트는 할 일이 없는데 돌아와 확인만 되풀이한다.
+/// The two gates, halted, and done. `Planning` and `Executing` mean that side is still
+/// running, and waking the agent there brings it back with nothing to do but check again.
 ///
-/// **일부러 남김없이 적는다** — 상류에 상태가 하나 늘면 여기서 컴파일이 막혀야
-/// 새 상태를 어느 쪽으로 볼지 정하게 된다.
+/// **Deliberately exhaustive** — when upstream grows a state, compilation has to break here
+/// so that someone decides which side the new state belongs on.
 fn work_needs_someone(state: zyris_attacca::ZWorkState) -> bool {
     use zyris_attacca::ZWorkState::*;
     match state {
@@ -154,11 +156,11 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
 }
 
-/// 이 한 번의 호출이 쓸 수 있는 시간.
+/// The time this one call may spend.
 ///
-/// **attacca가 노드 호출을 60초에 오류로 끊는다.** 그 전에 우리가 성공으로 답해야
-/// 에이전트가 실패로 읽지 않는다. 마감은 상한이지 기본값이 아니라, 에이전트가 짧게
-/// 잡았으면 그쪽이 이긴다.
+/// **attacca cuts a node call off at 60s with an error.** We have to answer with success
+/// before that or the agent reads it as a failure. The deadline is a ceiling, not a default —
+/// when the agent asks for less, that wins.
 fn budget(deadline: Option<std::time::Duration>, timeout_ms: Option<u64>) -> std::time::Duration {
     let asked = timeout_ms.map(std::time::Duration::from_millis);
     match deadline {
@@ -170,16 +172,16 @@ fn budget(deadline: Option<std::time::Duration>, timeout_ms: Option<u64>) -> std
     }
 }
 
-/// `Jobs`와 attacca 손잡이를 들고 있는 구현.
+/// The implementation, holding `Jobs` and the attacca handle.
 ///
-/// **손잡이는 붙은 뒤에 온다** — 도구는 붙기 전에 announce되므로 `watch`로 받아 두고
-/// 부를 때 집는다. `work.rs`의 `Works`와 같은 수법이다.
+/// **The handle arrives after we connect** — tools are announced before that, so we take it
+/// over a `watch` and pick it up when called. The same trick as `Works` in `work.rs`.
 #[derive(Clone)]
 pub struct Waits {
     pub(crate) jobs: Jobs,
     api: watch::Receiver<Option<Arc<AttaccaApiClient>>>,
-    /// 화면에 알리는 길. **화면을 아는 곳은 여기 하나다** — `jobs.rs`는 프로세스와
-    /// 버퍼만 알아야 테스트가 화면 없이 돈다.
+    /// The way to the screen. **This is the only place that knows the screen** — `jobs.rs`
+    /// must know only processes and buffers so its tests run without one.
     bridge: Bridge,
 }
 
@@ -192,10 +194,10 @@ impl Waits {
         Waits { jobs, api, bridge }
     }
 
-    /// 걸린 작업을 화면에 띄우고, 끝나면 지운다.
+    /// Put a started job on the screen, and clear it once it ends.
     ///
-    /// 끝나는 시점을 아는 것은 `Jobs`의 수확 태스크뿐이므로 그 신호를 여기서 기다린다.
-    /// **화면으로 가는 길을 하나로 두려고** `jobs.rs`에 콜백을 심지 않았다.
+    /// Only the reaping task in `Jobs` knows when it ends, so we wait on that signal here.
+    /// **To keep one single way to the screen** we did not plant a callback in `jobs.rs`.
     fn tell_the_screen(&self, id: &str, label: &str) {
         self.bridge
             .frame(crate::app::Frame::JobStart { id: id.to_string(), label: label.to_string() });
@@ -223,8 +225,8 @@ impl Waits {
         })
     }
 
-    /// 모르는 작업은 **오류다.** 조용히 빈 결과를 주면 도구가 고장 난 줄 알고
-    /// 에이전트가 다른 길로 같은 일을 시도한다.
+    /// An unknown job is **an error.** Hand back a quietly empty result and the agent takes
+    /// the tool for broken and tries the same thing another way.
     fn known(&self, id: &str) -> Result<Snapshot, WireError> {
         self.jobs.snapshot(id).ok_or_else(|| {
             WireError::invalid_params(format!(
@@ -248,7 +250,7 @@ impl Wait for Waits {
             command,
             argv,
             cwd: cwd.filter(|s| !s.is_empty()).map(PathBuf::from),
-            // `KEY=VALUE` 줄로 받는다. 맵을 스키마에 넣으면 모델이 자주 틀린다.
+            // Taken as `KEY=VALUE` lines. Models get a map in the schema wrong far too often.
             env: env
                 .unwrap_or_default()
                 .iter()
@@ -275,10 +277,10 @@ impl Wait for Waits {
         let snap = self.known(&job)?;
         let offset = offset.unwrap_or(0);
         let chunk = self.jobs.read(&job, offset).unwrap_or_else(empty_chunk);
-        // 이 덩어리가 실제로 시작하는 절대 위치. 버려진 앞을 달라고 했으면 뒤로 밀린다.
+        // Where this chunk actually starts, absolute. Asking for dropped bytes pushes it on.
         let start = offset + chunk.dropped;
-        // 한 번에 다 주지 않는다. **남은 것은 `more`로 말한다** — 잘렸는데 안 말하면
-        // 에이전트는 그것이 출력의 전부인 줄 안다.
+        // Not all of it at once. **The rest is announced with `more`** — cut without saying
+        // so and the agent takes it for the whole output.
         let (text, more, next_offset) = if chunk.text.len() > LOGS_BYTES {
             let cut = chunk.text.floor_char_boundary(LOGS_BYTES);
             (chunk.text[..cut].to_string(), true, start + cut as u64)
@@ -311,7 +313,7 @@ impl Wait for Waits {
             let gap = probe_gap(every_ms);
             return self.until_probe(&line, matches.as_deref(), gap, budget, at).await;
         }
-        let work = work.expect("셋 중 하나는 있다");
+        let work = work.expect("exactly one of the three is set");
         self.until_work(&work, budget, at).await
     }
 
@@ -323,7 +325,7 @@ impl Wait for Waits {
 }
 
 impl Waits {
-    /// 배경 작업이 끝나기를 기다린다. **끝나면 그 즉시 돌아온다.**
+    /// Wait for a background job to end. **The moment it ends, this returns.**
     async fn until_job(
         &self,
         id: &str,
@@ -350,8 +352,8 @@ impl Waits {
         if waited.is_ok() && !snap.running {
             return Ok(self.finished(id, snap, at));
         }
-        // **여기가 이 파일의 요점이다.** 안 끝났어도 오류가 아니다 — 오류로 주면
-        // 에이전트는 빌드가 실패한 줄 알고 멈춘다.
+        // **This is the point of the whole file.** Not finished is still not an error — hand
+        // back an error and the agent takes the build for failed and stops.
         Ok(Outcome {
             done: false,
             why: format!(
@@ -366,9 +368,11 @@ impl Waits {
         })
     }
 
-    /// 명령을 되물어 참이 될 때까지. **원격 빌드·CI·파일 생성·포트 열림이 전부 이 갈래다.**
+    /// Re-run a command until it is true. **Remote builds, CI, a file appearing, a port
+    /// opening — all of it takes this branch.**
     ///
-    /// 참/거짓은 기본이 종료 코드 0이고, `matches`를 주면 출력이 그 정규식에 걸릴 때 참이다.
+    /// True is exit code 0 by default; give `matches` and it is true when the output hits
+    /// that regex.
     async fn until_probe(
         &self,
         command: &str,
@@ -388,8 +392,8 @@ impl Waits {
         let mut last;
         let mut rounds = 0u32;
         loop {
-            // **적어도 한 번은 물어본다.** 예산이 짧다고 한 번도 안 보고 돌아오면
-            // 부른 쪽은 아무것도 얻지 못한다.
+            // **At least one round always runs.** Returning without a single look because
+            // the budget is short leaves the caller with nothing.
             rounds += 1;
             let left = budget.saturating_sub(at.elapsed());
             let limit = PROBE_LIMIT.min(left.max(std::time::Duration::from_secs(1)));
@@ -409,7 +413,7 @@ impl Waits {
                     exit_code: None,
                 });
             }
-            // 다음 회차를 돌릴 시간이 없으면 여기서 답한다.
+            // No time left for another round, so answer here.
             if budget.saturating_sub(at.elapsed()) <= gap {
                 break;
             }
@@ -425,11 +429,11 @@ impl Waits {
         })
     }
 
-    /// attacca work가 **사람이나 에이전트가 움직여야 하는 자리**에 닿기를 기다린다.
+    /// Wait for an attacca work to reach **a place where a person or the agent has to move**.
     ///
-    /// 저쪽은 알림이 없어 폴링뿐이다. 그래도 이 갈래가 여기 있어야 하는 이유는
-    /// 하나다 — **상류 zyris는 attacca를 모른다.** 셋을 한 도구로 묶을 수 있는 곳이
-    /// 이 리포뿐이다.
+    /// That side has no notice, so polling is all. There is still one reason this branch has
+    /// to live here — **upstream zyris does not know attacca.** This repo is the only place
+    /// the three can be tied into one tool.
     async fn until_work(
         &self,
         work_id: &str,
@@ -503,8 +507,8 @@ fn job_ref(s: Snapshot) -> JobRef {
     }
 }
 
-/// 되묻기 한 회차. **작업 목록에 남기지 않는다** — 되물을 때마다 줄이 쌓이면
-/// `/jobs`가 못 쓰게 되고, 되묻기는 작업이 아니라 질문이다.
+/// One probe round. **Not left in the job list** — a line piling up per probe makes `/jobs`
+/// unusable, and a probe is a question, not a job.
 async fn probe_once(
     command: &str,
     root: &std::path::Path,
@@ -526,8 +530,8 @@ async fn probe_once(
             text.push_str(&strip.flush());
             (out.status.success(), text)
         }
-        // **시간이 넘거나 못 띄우면 그 회차는 거짓이다.** 오류로 만들지 않는다 —
-        // 아직 안 떠 있는 서버를 기다리는 것이 이 도구의 정상 쓰임이다.
+        // **Over the limit or unable to spawn means that round is false.** Not an error —
+        // waiting on a server that is not up yet is a normal use of this tool.
         Ok(Err(e)) => (false, format!("되묻기를 띄우지 못했습니다: {e}")),
         Err(_) => (false, format!("되묻기가 {}초를 넘겨 끊었습니다.", limit.as_secs())),
     }
@@ -548,24 +552,24 @@ mod tests {
 
     fn waits() -> Waits {
         let (tx, rx) = watch::channel(None);
-        // 보내는 쪽을 살려 둔다 — 떨어뜨리면 `borrow`가 마지막 값을 보긴 하지만
-        // 테스트가 무엇을 재는지 흐려진다.
+        // Keep the sender alive — dropping it still lets `borrow` see the last value, but it
+        // blurs what the test is measuring.
         std::mem::forget(tx);
         Waits::new(Jobs::new(std::env::temp_dir()), rx, Bridge::new())
     }
 
-    /// 예산을 **환경에서 읽지 않는다.** `guard`의 테스트가 같이 도는 동안
-    /// `ZYRIS_CODE_WIRE_DEADLINE_SECS`를 세웠다 지우므로, 공개 경로로 예산을 재면
-    /// 실행마다 값이 달라진다. 예산 계산 자체는 `the_budget_never_outlives_the_wire_deadline`이
-    /// 순수하게 잠근다.
+    /// The budget is **not read from the environment.** `guard`'s tests set and clear
+    /// `ZYRIS_CODE_WIRE_DEADLINE_SECS` while these run, so measuring the budget through the
+    /// public path gives a different value every run. The calculation itself is locked purely
+    /// by `the_budget_never_outlives_the_wire_deadline`.
     fn ms(n: u64) -> std::time::Duration {
         std::time::Duration::from_millis(n)
     }
 
     async fn wait_for(w: &Waits, id: &str) {
-        let mut ended = w.jobs.ended(id).expect("작업이 있어야 한다");
+        let mut ended = w.jobs.ended(id).expect("the job must exist");
         while !*ended.borrow() {
-            ended.changed().await.expect("보내는 쪽이 살아 있어야 한다");
+            ended.changed().await.expect("the sender must stay alive");
         }
     }
 
@@ -575,7 +579,7 @@ mod tests {
         let started = w.start(Some("echo hi".into()), None, None, None, None).await.unwrap();
         assert_eq!(started.id, "b1");
         assert_eq!(started.label, "echo hi");
-        // **다음에 무엇을 할지 말해 준다.** 없으면 에이전트가 걸어 놓고 잊는다.
+        // **It says what to do next.** Without it the agent starts a job and forgets it.
         assert!(started.next.contains("wait.until"), "{}", started.next);
     }
 
@@ -593,11 +597,11 @@ mod tests {
         assert!(logs.text.contains("안녕"), "{}", logs.text);
         assert_eq!(logs.exit_code, Some(0));
         assert!(!logs.more);
-        // 이어 읽으면 빈 것이 온다 — 같은 것을 두 번 주면 안 된다.
+        // Reading on gives back nothing — the same bytes must never come twice.
         assert_eq!(w.logs(id, Some(logs.next_offset)).await.unwrap().text, "");
     }
 
-    /// 잘렸으면 **잘렸다고 말하고**, 이어 읽을 자리를 준다.
+    /// When it is cut, **it says so** and gives the place to read on from.
     #[tokio::test]
     async fn a_long_log_is_cut_but_says_there_is_more() {
         let w = waits();
@@ -622,7 +626,8 @@ mod tests {
         assert!(w.stop(id).await.is_ok());
     }
 
-    /// 조용히 빈 결과를 주면 도구가 고장 난 줄 알고 다른 길로 같은 일을 시도한다.
+    /// Hand back a quietly empty result and the agent takes the tool for broken and tries the
+    /// same thing another way.
     #[tokio::test]
     async fn an_unknown_job_is_an_error_not_an_empty_answer() {
         let w = waits();
@@ -630,30 +635,30 @@ mod tests {
         assert!(w.stop("b9".into()).await.is_err());
     }
 
-    /// 인자가 틀린 것은 오류다. **그것만이 오류다.**
+    /// Wrong arguments are an error. **That is the only error.**
     #[tokio::test]
     async fn starting_with_neither_command_nor_argv_is_an_error() {
         let w = waits();
         assert!(w.start(None, None, None, None, None).await.is_err());
     }
 
-    /// **예산은 마감을 넘지 않는다.** attacca가 60초에 오류로 끊으므로 그 전에 우리가
-    /// 성공으로 답해야 한다. 순수 함수로 재는 이유는 환경 변수를 흔들면 같이 도는
-    /// 다른 테스트를 밟기 때문이다.
+    /// **The budget never outlives the deadline.** attacca cuts off at 60s with an error, so
+    /// we have to answer with success before that. It is measured through the pure function
+    /// because shaking an environment variable treads on other tests running alongside.
     #[test]
     fn the_budget_never_outlives_the_wire_deadline() {
         let deadline = Some(std::time::Duration::from_secs(55));
-        // 10분을 달라고 해도 마감 안쪽으로 자른다.
+        // Asking for 10 minutes still gets trimmed inside the deadline.
         assert_eq!(budget(deadline, Some(600_000)), std::time::Duration::from_secs(50));
-        // 짧게 잡았으면 그쪽이 이긴다 — **마감은 상한이지 기본값이 아니다.**
+        // Asking for less wins — **the deadline is a ceiling, not a default.**
         assert_eq!(budget(deadline, Some(3_000)), std::time::Duration::from_millis(3_000));
         assert_eq!(budget(deadline, None), std::time::Duration::from_secs(50));
-        // 마감이 꺼져 있으면(저쪽이 고쳐지면) 에이전트가 준 값만 본다.
+        // With the deadline off (once that side is fixed) only the agent's value counts.
         assert_eq!(budget(None, Some(600_000)), std::time::Duration::from_secs(600));
     }
 
-    /// **지금 버그의 정본이다.** 안 끝난 것은 실패가 아니다 — `exec`이 주는
-    /// `timed_out: true, exit_code: -1`을 에이전트가 실패로 읽는 것이 이 작업의 이유다.
+    /// **The canonical statement of the bug.** Not finished is not a failure — the agent
+    /// reading `exec`'s `timed_out: true, exit_code: -1` as a failure is why this work exists.
     #[tokio::test]
     async fn an_unfinished_wait_answers_success_not_an_error() {
         let w = waits();
@@ -661,16 +666,16 @@ mod tests {
         let out = w
             .until_job(&id, ms(1500), std::time::Instant::now())
             .await
-            .expect("안 끝났다고 오류를 내면 안 된다");
+            .expect("not finishing must not raise an error");
         assert!(!out.done);
         assert_eq!(out.exit_code, None);
-        // 다시 부르라고 말해야 한다. 안 그러면 에이전트가 "멈췄다"로 읽고 포기한다.
+        // It has to say to call again. Otherwise the agent reads it as "stuck" and gives up.
         assert!(out.next.contains("wait.until"), "{}", out.next);
         assert!(out.why.contains(&id), "{}", out.why);
         w.stop(id).await.unwrap();
     }
 
-    /// 예산 안쪽에 돌아온다.
+    /// It comes back inside its budget.
     #[tokio::test]
     async fn a_wait_answers_before_its_budget_runs_out() {
         let w = waits();
@@ -681,7 +686,7 @@ mod tests {
         w.stop(id).await.unwrap();
     }
 
-    /// 끝나면 기다리지 않고 그 자리에서 돌아온다.
+    /// Once it ends, it returns on the spot instead of waiting out the budget.
     #[tokio::test]
     async fn a_wait_returns_the_moment_the_job_ends() {
         let w = waits();
@@ -694,8 +699,8 @@ mod tests {
         assert!(at.elapsed() < std::time::Duration::from_secs(5), "{:?}", at.elapsed());
     }
 
-    /// 이미 끝난 것을 기다리라고 하면 곧바로 끝났다고 답한다. **예산과 무관하므로**
-    /// 여기서는 공개 경로로 부른다 — 갈래 배선까지 같이 잠근다.
+    /// Waiting on something already finished answers done at once. **Budget plays no part**,
+    /// so this one goes through the public path — it locks the branch wiring too.
     #[tokio::test]
     async fn waiting_on_an_already_finished_job_answers_at_once() {
         let w = waits();
@@ -704,11 +709,11 @@ mod tests {
         let out = w.until(Some(id), None, None, None, None, None).await.unwrap();
         assert!(out.done);
         assert_eq!(out.exit_code, Some(7));
-        // 실패한 작업은 **어디를 보라고** 말한다.
+        // A failed job says **where to look**.
         assert!(out.next.contains("wait.logs"), "{}", out.next);
     }
 
-    /// 무엇을 기다릴지 정확히 하나여야 한다.
+    /// Exactly one thing to wait for, no more and no fewer.
     #[tokio::test]
     async fn until_needs_exactly_one_thing_to_wait_for() {
         let w = waits();
@@ -719,7 +724,8 @@ mod tests {
             .is_err());
     }
 
-    /// 참이 되면 그 자리에서 끝난다. **예산과 무관하므로** 공개 경로로 부른다.
+    /// Turning true ends the wait on the spot. **Budget plays no part**, so this one goes
+    /// through the public path.
     #[tokio::test]
     async fn a_probe_that_succeeds_ends_the_wait() {
         let w = waits();
@@ -727,8 +733,8 @@ mod tests {
         assert!(out.done, "{}", out.why);
     }
 
-    /// 출력이 패턴에 걸리면 참이다 — **원격 빌드 상태를 이렇게 본다.**
-    /// 종료 코드가 0이어도 패턴이 우선이다.
+    /// Output hitting the pattern is true — **this is how a remote build's state is read.**
+    /// The pattern wins even when the exit code is 0.
     #[tokio::test]
     async fn a_probe_can_match_on_output_instead_of_exit_code() {
         let w = waits();
@@ -746,7 +752,7 @@ mod tests {
         assert!(out.tail.contains("queued"), "{}", out.tail);
     }
 
-    /// **되물을 명령은 싸야 한다.** 간격을 바닥 밑으로 내려 달라고 해도 안 내려간다.
+    /// **A probe command has to be cheap.** Asking for a gap under the floor does not go under.
     #[test]
     fn a_probe_command_cannot_run_more_often_than_the_floor() {
         assert_eq!(probe_gap(Some(10)), std::time::Duration::from_millis(PROBE_FLOOR_MS));
@@ -754,7 +760,8 @@ mod tests {
         assert_eq!(probe_gap(Some(30_000)), std::time::Duration::from_millis(30_000));
     }
 
-    /// **실제로 다시 돌린다.** 두 번째 회차에서야 참이 되는 명령으로 잰다.
+    /// **It really does run again.** Measured with a command that only turns true on the
+    /// second round.
     #[tokio::test]
     async fn a_probe_actually_runs_again_until_it_is_true() {
         let w = waits();
@@ -764,18 +771,19 @@ mod tests {
             .until_probe(
                 &format!("echo x >> {n}; test $(wc -c < {n}) -ge 3"),
                 None,
-                probe_gap(Some(0)), // 바닥(2초)으로 올라간다
+                probe_gap(Some(0)), // rises to the floor (2s)
                 ms(20_000),
                 std::time::Instant::now(),
             )
             .await
             .unwrap();
         assert!(out.done, "{}", out.why);
-        // 한 회차에 2바이트씩 쌓이므로 4바이트면 두 번 돌았다는 뜻이다.
+        // Two bytes pile up per round, so four bytes means it ran twice.
         assert_eq!(std::fs::read(&n).unwrap().len(), 4);
     }
 
-    /// 안 걸려도 마감 안에 **성공으로** 돌아오고 다시 부르라고 말한다.
+    /// Even when it never hits, it comes back **with success** inside the deadline and says
+    /// to call again.
     #[tokio::test]
     async fn a_probe_that_never_succeeds_still_answers_success() {
         let w = waits();
@@ -786,7 +794,7 @@ mod tests {
         assert!(at.elapsed() < std::time::Duration::from_secs(4), "{:?}", at.elapsed());
     }
 
-    /// 정규식이 아니면 인자 오류다. 이것은 진짜 오류다.
+    /// Not a regex is an argument error. This one is a real error.
     #[tokio::test]
     async fn a_broken_pattern_is_an_argument_error() {
         let w = waits();
@@ -796,21 +804,21 @@ mod tests {
             .is_err());
     }
 
-    /// **와이어 이름은 정확히 넷으로 갈라져야 한다.** 이 리포에서 두 번 틀렸고,
-    /// 두 번 다 로컬 테스트는 초록인 채로 라이브에서 드러났다.
+    /// **A wire name has to split into exactly four.** This repo got it wrong twice, and both
+    /// times the local tests stayed green and it surfaced live.
     #[test]
     fn the_wire_name_splits_into_exactly_four() {
         use zyris::ServeCapability;
         let d = WaitServer(waits()).descriptor();
         assert!(!d.name.contains("__") && !d.name.ends_with('_'), "{}", d.name);
         for tool in ["start", "until", "list", "logs", "stop"] {
-            assert!(d.tools.iter().any(|t| t.name == tool), "{tool}이 없다");
+            assert!(d.tools.iter().any(|t| t.name == tool), "{tool} is missing");
             let wire = format!("zyris__arch__{}__{tool}", d.name);
             assert_eq!(wire.split("__").count(), 4, "{wire}");
         }
     }
 
-    /// 설명이 예산 안에 들어오는가. `trim.rs`의 file_io 테스트와 짝이다.
+    /// Do the descriptions fit the budget? The twin of the file_io test in `trim.rs`.
     #[test]
     fn the_announced_wait_fits_the_budget() {
         use zyris::ServeCapability;
@@ -821,7 +829,7 @@ mod tests {
         for tool in gate.descriptor().tools {
             assert!(
                 tool.description.len() <= crate::tools::trim::DESCRIPTION_LIMIT,
-                "{}: {} 바이트\n{}",
+                "{}: {} bytes\n{}",
                 tool.name,
                 tool.description.len(),
                 tool.description
@@ -829,8 +837,8 @@ mod tests {
         }
     }
 
-    /// **관문·멈춤·끝에서만 깨운다.** 저쪽이 도는 중에 돌려보내면 에이전트는 할 일이
-    /// 없는데 깨어나고, 그러면 확인만 되풀이한다.
+    /// **Wake only at a gate, at halted, at done.** Sending the agent back while that side is
+    /// still running wakes it with nothing to do, and then it only repeats the check.
     #[test]
     fn a_work_only_wakes_the_agent_where_someone_must_move() {
         use zyris_attacca::ZWorkState::*;
@@ -844,7 +852,7 @@ mod tests {
         }
     }
 
-    /// 안 붙었으면 그렇게 말한다. **조용히 실패하면 원인을 못 찾는다.**
+    /// Not connected says so. **A quiet failure leaves the cause unfindable.**
     #[tokio::test]
     async fn waiting_on_a_work_before_attacca_is_up_says_so() {
         let w = waits();
@@ -852,7 +860,7 @@ mod tests {
         assert!(err.is_err());
     }
 
-    /// `KEY=VALUE` 줄이 그대로 환경이 된다.
+    /// `KEY=VALUE` lines become the environment as they are.
     #[tokio::test]
     async fn env_lines_reach_the_command() {
         let w = waits();

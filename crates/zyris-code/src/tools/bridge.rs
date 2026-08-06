@@ -107,12 +107,12 @@ impl Bridge {
         self.0.root.lock().unwrap().clone()
     }
 
-    /// 배경 작업 레지스트리를 알려 둔다. `tools::announce`가 한 번 부른다.
+    /// Records the background-job registry. `tools::announce` calls it once.
     pub fn set_jobs(&self, jobs: crate::tools::jobs::Jobs) {
         *self.0.jobs.lock().unwrap() = Some(jobs);
     }
 
-    /// `/jobs`와 나가는 자리가 쓴다. announce 전에는 `None`이다.
+    /// `/jobs` and the exit path use it. `None` before announce.
     pub fn jobs(&self) -> Option<crate::tools::jobs::Jobs> {
         self.0.jobs.lock().unwrap().clone()
     }
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn the_gate_sees_the_mode_the_screen_is_in() {
         let b = Bridge::new();
-        assert_eq!(b.decide(&edit_call()), Decision::Run, "기본값은 그냥 돈다");
+        assert_eq!(b.decide(&edit_call()), Decision::Run, "the default just runs");
         b.sync(Mode::Plan, &Default::default());
         assert!(matches!(b.decide(&edit_call()), Decision::Refuse(_)));
         b.sync(Mode::Job, &Default::default());
@@ -256,8 +256,8 @@ mod tests {
         let b = Bridge::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         b.attach(tx);
-        let (id, wait) = b.ask(edit_call(), "x".into()).expect("화면이 붙어 있다");
-        assert!(rx.try_recv().is_ok(), "화면으로 물음이 가야 한다");
+        let (id, wait) = b.ask(edit_call(), "x".into()).expect("the screen is attached");
+        assert!(rx.try_recv().is_ok(), "the question must reach the screen");
         b.answer(id, Verdict::Allow);
         assert_eq!(wait.await.unwrap(), Verdict::Allow);
     }
@@ -271,7 +271,7 @@ mod tests {
         let (id, wait) = b.ask(edit_call(), "x".into()).unwrap();
         b.expire(id);
         b.answer(id, Verdict::Allow);
-        assert!(wait.await.is_err(), "포기한 호출이 답을 받으면 안 된다");
+        assert!(wait.await.is_err(), "a call that gave up must not receive an answer");
     }
 
     /// Without a screen yet, a frame has nowhere to go. **Dropped, not fatal.**
@@ -287,7 +287,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         b.attach(tx);
         b.frame(Frame::ShellClosed { id: "p1".into() });
-        assert!(rx.try_recv().is_ok(), "화면으로 가야 한다");
+        assert!(rx.try_recv().is_ok(), "it must reach the screen");
     }
 
     /// Ids must not overlap — you'd confuse what to clear.

@@ -336,11 +336,11 @@ mod tests {
         let rows = many(30);
         let got = slots(&rows, 0, 8);
         let Some(Slot::More { count, up }) = got.last() else {
-            panic!("아래로 남은 개수가 없다: {got:?}");
+            panic!("the count left below is missing: {got:?}");
         };
         assert!(!up);
         let shown = got.iter().filter(|s| matches!(s, Slot::Row(_))).count();
-        assert_eq!(shown + count, rows.len(), "센 것이 안 맞는다: {got:?}");
+        assert_eq!(shown + count, rows.len(), "the count is wrong: {got:?}");
     }
 
     /// Scrolling down adds a count of what's left above.
@@ -374,7 +374,7 @@ mod tests {
         for height in 1..14 {
             for cursor in [0, 5, 39] {
                 let got = slots(&rows, cursor, height);
-                assert!(got.len() <= height, "{height}줄에 {}줄: {got:?}", got.len());
+                assert!(got.len() <= height, "{} rows in a height of {height}: {got:?}", got.len());
             }
         }
     }
@@ -384,7 +384,7 @@ mod tests {
     fn the_create_row_is_ruled_off_from_the_list() {
         let got = slots(&many(3), 0, 10);
         assert_eq!(got[0], Slot::Row(0));
-        assert_eq!(got[1], Slot::Rule, "가름선이 없다: {got:?}");
+        assert_eq!(got[1], Slot::Rule, "no rule: {got:?}");
         assert_eq!(got[2], Slot::Row(1));
     }
 
@@ -450,7 +450,7 @@ mod tests {
     fn the_project_list_starts_with_a_create_row() {
         let p = projects();
         assert_eq!(p.rows[0].label, "＋ 새 프로젝트");
-        assert!(p.rows[0].enabled, "이제 만들 수 있다 — `projects:write`가 생겼다");
+        assert!(p.rows[0].enabled, "it can be created now — `projects:write` exists");
         assert_eq!(p.rows.len(), 3);
     }
 
@@ -486,7 +486,7 @@ mod tests {
             crate::lang::Lang::Ko,
         );
         assert_eq!(s.rows[0].label, "＋ 새 쓰레드");
-        assert!(s.rows[0].enabled, "thread는 만들 수 있다");
+        assert!(s.rows[0].enabled, "a thread can be created");
         assert_eq!(s.cursor, 0);
         assert_eq!(s.pick(), Some(Pick::NewSession { project_id: "p1".into() }));
     }

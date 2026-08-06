@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(compact(999), "999");
         assert_eq!(compact(1_500), "1.5k");
         assert_eq!(compact(2_400_000), "2.4M");
-        assert_eq!(compact(200_000), "200k", "딱 떨어지면 소수점을 뗀다");
+        assert_eq!(compact(200_000), "200k", "a round number drops the decimal");
     }
 
     /// Unknown tools are ignored.

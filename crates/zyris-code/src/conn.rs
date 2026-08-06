@@ -28,7 +28,7 @@ pub(crate) async fn within<T>(
         Ok(result) => result.map_err(|e| anyhow!("{e}")),
         Err(_) => {
             tracing::warn!(
-                "서버 호출이 {}초 안에 답하지 않았다 — 연결을 끊고 다시 붙는다",
+                "the server call did not answer within {}s — closing and reattaching",
                 CALL_TIMEOUT.as_secs()
             );
             api.handle().connection().close("call timed out");
@@ -458,9 +458,10 @@ pub struct Session {
     /// The project currently in view. **Everything opened from here goes to this project** —
     /// sessions, jobs, and works alike.
     ///
-    /// **Must not be consumed on first use.** It used to be single-use: `＋ 새 세션` filled it and the first
-    /// creation cleared it, so when a job was launched after picking a project, `project_id` was already
-    /// empty and the server created it in the **default project**. That actually happened.
+    /// **Must not be consumed on first use.** It used to be single-use: `＋ New thread` filled it
+    /// and the first creation cleared it, so when a job was launched after picking a project,
+    /// `project_id` was already empty and the server created it in the **default project**.
+    /// That actually happened.
     ///
     /// `None` means "not picked yet", and only then is the server's default project right.
     project: Option<String>,
@@ -632,8 +633,9 @@ impl Session {
         //
         // **Even without a staged open, the mode decides when there's no conversation yet.** A stage only
         // happens at the moment the mode *changes*, so there are several spots without one — the first word
-        // right after startup, after staging a new thread with `/agent`, after `＋ 새 세션`. There, creating only a
-        // session means **the bottom bar says job but the plain session opens**. That actually happened.
+        // right after startup, after staging a new thread with `/agent`, after `＋ New thread`.
+        // There, creating only a session means **the bottom bar says job but the plain session
+        // opens**. That actually happened.
         let route = match self.pending_open.take() {
             Some(staged) => staged,
             // If there's a conversation to continue, continue it. The mode only decides what opens *when opening anew*.
@@ -733,7 +735,7 @@ async fn planner_session(api: &AttaccaApiClient, work: &zyris_attacca::ZWork) ->
                 }
             }
             // One failure isn't a reason to stop. Ask again on the next loop.
-            Err(e) => tracing::debug!(error = %e, work = %work.id, "work를 다시 읽지 못했다"),
+            Err(e) => tracing::debug!(error = %e, work = %work.id, "could not re-read the work"),
         }
     }
     Err(anyhow!(
@@ -905,7 +907,7 @@ mod tests {
         };
         assert_eq!(ours.file_name().unwrap(), "zyris-code");
         assert_eq!(legacy.file_name().unwrap(), "zyris");
-        assert_eq!(ours.parent(), legacy.parent(), "두 자리는 같은 부모 아래에 있어야 한다");
+        assert_eq!(ours.parent(), legacy.parent(), "both places must sit under the same parent");
     }
 
     /// **The location the person gave wins.** And no app name is appended to it — that
@@ -934,9 +936,12 @@ mod tests {
         std::fs::write(old.path().join("wss-attacca-cc-default.json"), "{}").unwrap();
 
         assert_eq!(migrate_credentials(old.path(), new.path(), "zyris-code"), 1);
-        assert!(new.path().join(name).exists(), "새 자리에 있어야 한다");
-        assert!(!old.path().join(name).exists(), "옛 자리는 비어야 한다");
-        assert!(old.path().join("wss-attacca-cc-default.json").exists(), "남의 것은 그대로다");
+        assert!(new.path().join(name).exists(), "must be at the new place");
+        assert!(!old.path().join(name).exists(), "the old place must be empty");
+        assert!(
+            old.path().join("wss-attacca-cc-default.json").exists(),
+            "someone else's file is left alone"
+        );
     }
 
     /// **If something is already here, don't overwrite it.** Overwriting the identity currently attached
@@ -952,7 +957,7 @@ mod tests {
 
         assert_eq!(migrate_credentials(old.path(), new.path(), "zyris-code"), 0);
         assert_eq!(std::fs::read_to_string(new.path().join(name)).unwrap(), "지금것");
-        assert!(old.path().join(name).exists(), "안 가져왔으면 지우지도 않는다");
+        assert!(old.path().join(name).exists(), "what wasn't taken isn't deleted either");
     }
 
     /// **When short, we ask once more.** Permissions fixed at approval time don't widen on refresh,
@@ -960,10 +965,10 @@ mod tests {
     #[test]
     fn a_narrow_approval_is_asked_again_exactly_once() {
         let narrow: Vec<String> = vec!["agents:read".into()];
-        assert!(needs_reenrollment(&narrow, false), "모자라면 다시 묻는다");
+        assert!(needs_reenrollment(&narrow, false), "when short, ask again");
         // **We don't ask twice.** The person can approve narrowly again, and asking every time becomes
         // a loop that keeps demanding the browser.
-        assert!(!needs_reenrollment(&narrow, true), "한 번 해 봤으면 말로만 알린다");
+        assert!(!needs_reenrollment(&narrow, true), "after trying once, only tell them in words");
     }
 
     /// With everything granted, nothing should happen. **If the browser pops up on the ordinary path, that's an accident.**
@@ -1028,7 +1033,7 @@ mod tests {
         std::env::set_var("HOSTNAME", "a-very-long-machine-name-here");
         let name = node_name();
         let slug = slug_of(&name);
-        assert!(slug.contains("zyris-code"), "앱 이름이 잘려 나갔다: {name} → {slug}");
+        assert!(slug.contains("zyris-code"), "the app name got truncated away: {name} → {slug}");
         assert!(slug.len() <= 16, "{slug}");
     }
 
@@ -1059,11 +1064,14 @@ mod tests {
     fn claiming_the_lock_marks_another_window_and_releasing_clears_it() {
         let dir = tempfile::tempdir().unwrap();
         assert!(!another_instance_alive(dir.path(), "test"));
-        let lock = claim_instance_lock(dir.path(), "test").expect("첫 창은 주인이다");
+        let lock = claim_instance_lock(dir.path(), "test").expect("the first window is the owner");
         assert!(another_instance_alive(dir.path(), "test"));
-        assert!(claim_instance_lock(dir.path(), "test").is_none(), "둘째 창은 주인이 될 수 없다");
+        assert!(
+            claim_instance_lock(dir.path(), "test").is_none(),
+            "the second window cannot become the owner"
+        );
         drop(lock);
-        assert!(!another_instance_alive(dir.path(), "test"), "풀렸는데 남아 있다");
+        assert!(!another_instance_alive(dir.path(), "test"), "released, yet it is still there");
     }
 
     /// A lock holding a dead PID is cleared and claimed again — if a dead window makes the second window
@@ -1073,7 +1081,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(instance_lock_path(dir.path(), "test"), "4000000000").unwrap();
         assert!(!another_instance_alive(dir.path(), "test"));
-        assert!(claim_instance_lock(dir.path(), "test").is_some(), "죽은 창의 잠금은 치워야 한다");
+        assert!(
+            claim_instance_lock(dir.path(), "test").is_some(),
+            "a dead window's lock must be cleared away"
+        );
     }
 
     /// Changing the agent **opens a new session at the next message.** A session's agent is fixed at
@@ -1084,7 +1095,7 @@ mod tests {
         s.switch_to("abc".into(), None);
         assert_eq!(s.id(), Some("abc"));
         s.stage_new_default();
-        assert_eq!(s.id(), None, "앞 세션을 계속 쓰면 에이전트가 안 바뀐다");
+        assert_eq!(s.id(), None, "keeping the previous session would not change the agent");
     }
 
     /// **Nothing is created on the server now.** Only staging; actual creation happens at the first message —
@@ -1103,7 +1114,7 @@ mod tests {
         let mut s = Session::new(None);
         s.switch_to("abc".into(), None);
         s.set_route(Route::Session);
-        assert_eq!(s.id(), Some("abc"), "계획 모드가 하던 대화를 버렸다");
+        assert_eq!(s.id(), Some("abc"), "plan mode threw away the conversation in progress");
         assert_eq!(s.pending_open(), None);
     }
 
@@ -1124,10 +1135,10 @@ mod tests {
         let mut s = Session::new(None);
         s.switch_to("abc".into(), None);
         s.set_route(Route::Job);
-        assert_eq!(s.id(), Some("abc"), "예약만 했는데 하던 대화를 잃었다");
+        assert_eq!(s.id(), Some("abc"), "only staged, yet the conversation in progress was lost");
         s.set_route(Route::Session);
         assert_eq!(s.id(), Some("abc"));
-        assert_eq!(s.pending_open(), None, "돌아왔는데 예약이 남아 있다");
+        assert_eq!(s.pending_open(), None, "came back, yet the staged open is still there");
     }
 
     /// Picking a session from the list means "going there". **If a staged open remains, it doesn't go
@@ -1167,7 +1178,11 @@ mod tests {
 
         // On a path that doesn't know the project, **what we knew isn't cleared.**
         s.switch_to("세션-2".into(), None);
-        assert_eq!(s.project(), Some("프로젝트-2"), "모른다고 비우면 기본 프로젝트로 떨어진다");
+        assert_eq!(
+            s.project(),
+            Some("프로젝트-2"),
+            "clearing it out of ignorance drops into the default project"
+        );
 
         // `/agent` changes the agent, not leaves the project.
         s.stage_new_default();
@@ -1186,9 +1201,10 @@ mod tests {
 
     /// **What the mode decides must also hold when there's no staged open.**
     ///
-    /// A stage only happens at the moment the mode *changes*. So there are several spots without one — the first
-    /// word right after startup, after `/agent`, after `＋ 새 세션`. There, creating only a session means **the bottom
-    /// bar says job but the plain session opens**. That actually happened.
+    /// A stage only happens at the moment the mode *changes*. So there are several spots without
+    /// one — the first word right after startup, after `/agent`, after `＋ New thread`. There,
+    /// creating only a session means **the bottom bar says job but the plain session opens**.
+    /// That actually happened.
     ///
     /// `open_for` can't be called here (it needs a server), so this decision is mimicked as is.
     /// If this diverges, nothing this test protects is left, so when `open_for` changes, change this too.
@@ -1202,7 +1218,11 @@ mod tests {
         };
 
         // No conversation and no staged open → the mode decides.
-        assert_eq!(route_for(None, false, Mode::Job), Route::Job, "job 모드인데 맨 세션이 열린다");
+        assert_eq!(
+            route_for(None, false, Mode::Job),
+            Route::Job,
+            "job mode, yet a plain session opens"
+        );
         assert_eq!(route_for(None, false, Mode::Work), Route::Work);
         assert_eq!(route_for(None, false, Mode::Normal), Route::Session);
         assert_eq!(route_for(None, false, Mode::Plan), Route::Session);
@@ -1230,9 +1250,9 @@ mod tests {
         match frame_from(f) {
             Frame::Event { cursor, entry } => {
                 assert_eq!(cursor, 99);
-                assert!(entry.is_none(), "recall은 렌더하지 않는다");
+                assert!(entry.is_none(), "recall is not rendered");
             }
-            other => panic!("이벤트 프레임이어야 한다: {other:?}"),
+            other => panic!("must be an event frame: {other:?}"),
         }
     }
 
@@ -1244,7 +1264,7 @@ mod tests {
                 assert_eq!(kind, ZDeltaKind::Reasoning);
                 assert_eq!(text, "생각");
             }
-            other => panic!("델타 프레임이어야 한다: {other:?}"),
+            other => panic!("must be a delta frame: {other:?}"),
         }
     }
 
@@ -1259,7 +1279,7 @@ mod tests {
     fn a_status_frame_carries_running() {
         match frame_from(ZTurnFrame::Status { running: true }) {
             Frame::Status { running } => assert!(running),
-            other => panic!("상태 프레임이어야 한다: {other:?}"),
+            other => panic!("must be a status frame: {other:?}"),
         }
     }
 }

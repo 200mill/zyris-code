@@ -404,7 +404,7 @@ mod tests {
     fn a_step_without_options_is_free_text_only() {
         let steps = parse(&json!({"questions": [{"question": "이름이 뭐예요?"}]})).unwrap();
         assert!(steps[0].options.is_empty());
-        assert_eq!(steps[0].free_row(), 0, "자유 입력이 첫 줄이다");
+        assert_eq!(steps[0].free_row(), 0, "free input is the first row");
     }
 
     #[test]
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn there_is_always_a_free_text_row_below_the_options() {
         let a = Answering::new(parse(&args()).unwrap());
-        assert_eq!(a.current().free_row(), 2, "선택지 2 아래가 자유 입력");
+        assert_eq!(a.current().free_row(), 2, "free input sits below option 2");
         assert!(a.rows().iter().any(|r| matches!(r, RowKind::Free)));
     }
 
@@ -427,15 +427,18 @@ mod tests {
         let mut a = Answering::new(parse(&args()).unwrap());
 
         let first: Vec<RowKind> = a.rows();
-        assert!(!first.contains(&RowKind::Action(Act::Back)), "첫 질문에는 이전이 없다");
-        assert!(first.contains(&RowKind::Action(Act::Skip)), "안 골랐으니 건너뛰기다");
+        assert!(!first.contains(&RowKind::Action(Act::Back)), "the first question offers no back");
+        assert!(first.contains(&RowKind::Action(Act::Skip)), "nothing was chosen, so it is skip");
         // **There is no Submit on the question screen.** It's easy to send while leaving unseen questions behind.
-        assert!(!first.contains(&RowKind::Action(Act::Submit)), "질문 화면에 제출이 있다");
+        assert!(
+            !first.contains(&RowKind::Action(Act::Submit)),
+            "submit appears on the question screen"
+        );
 
         a.toggle();
-        assert!(a.rows().contains(&RowKind::Action(Act::Next)), "고르면 다음이 된다");
+        assert!(a.rows().contains(&RowKind::Action(Act::Next)), "choosing turns it into next");
         a.advance();
-        assert!(a.rows().contains(&RowKind::Action(Act::Back)), "둘째 질문에는 이전이 있다");
+        assert!(a.rows().contains(&RowKind::Action(Act::Back)), "the second question offers back");
 
         // Past the last question is the review screen, and only there is there a Submit.
         a.advance();
@@ -453,7 +456,7 @@ mod tests {
         a.advance();
         a.back();
         assert_eq!(a.step, 0);
-        assert!(a.is_chosen(0), "앞 답이 남아 있어야 한다");
+        assert!(a.is_chosen(0), "the earlier answer must survive");
     }
 
     /// **It moves on even without an answer** — that's what skipping is. Forcing an answer means the asker
@@ -461,9 +464,9 @@ mod tests {
     #[test]
     fn an_unanswered_step_can_be_skipped() {
         let mut a = Answering::new(parse(&args()).unwrap());
-        assert!(a.rows().contains(&RowKind::Action(Act::Skip)), "건너뛰기가 있어야 한다");
+        assert!(a.rows().contains(&RowKind::Action(Act::Skip)), "skip must be offered");
         a.advance();
-        assert_eq!(a.step, 1, "건너뛰고 다음으로 갔어야 한다");
+        assert_eq!(a.step, 1, "it should have skipped and moved on");
     }
 
     /// A skipped step is marked as such in the summary.
@@ -490,7 +493,7 @@ mod tests {
         a.to_edit();
         assert!(!a.in_review());
         assert_eq!(a.step, 0);
-        assert!(a.is_chosen(0), "고른 것은 남아 있어야 한다");
+        assert!(a.is_chosen(0), "the choice must survive");
     }
 
     #[test]
@@ -500,7 +503,7 @@ mod tests {
         assert!(a.is_chosen(0));
         a.down();
         a.toggle();
-        assert!(!a.is_chosen(0), "단일 선택은 앞의 것을 대신한다");
+        assert!(!a.is_chosen(0), "single select replaces the previous one");
         assert!(a.is_chosen(1));
     }
 
@@ -508,13 +511,13 @@ mod tests {
     fn multi_select_keeps_both() {
         let mut a = Answering::new(parse(&args()).unwrap());
         a.toggle();
-        assert!(!a.confirm(), "첫 단계 확정은 다음으로 넘어간다");
+        assert!(!a.confirm(), "confirming the first step moves on");
         assert_eq!(a.step, 1);
 
         a.toggle();
         a.down();
         a.toggle();
-        assert!(a.is_chosen(0) && a.is_chosen(1), "다중 선택은 둘 다 남는다");
+        assert!(a.is_chosen(0) && a.is_chosen(1), "multi-select keeps both");
     }
 
     #[test]
@@ -522,8 +525,8 @@ mod tests {
         let mut a = Answering::new(parse(&args()).unwrap());
         let last = a.rows().len() - 1;
         a.up();
-        assert_eq!(a.cursor, last, "위로 가면 맨 아래로 돈다");
-        assert_eq!(a.row_at(a.cursor), Some(RowKind::Action(Act::Skip)), "맨 아래는 건너뛰기");
+        assert_eq!(a.cursor, last, "going up wraps to the bottom");
+        assert_eq!(a.row_at(a.cursor), Some(RowKind::Action(Act::Skip)), "the bottom row is skip");
         a.down();
         assert_eq!(a.cursor, 0);
     }
@@ -533,7 +536,7 @@ mod tests {
     fn confirming_without_an_answer_does_nothing() {
         let mut a = Answering::new(parse(&args()).unwrap());
         assert!(!a.confirm());
-        assert_eq!(a.step, 0, "단계가 넘어가면 안 된다");
+        assert_eq!(a.step, 0, "the step must not advance");
     }
 
     #[test]
@@ -546,9 +549,9 @@ mod tests {
         for c in "직접 쓴 답".chars() {
             a.input.insert(c);
         }
-        assert!(!a.confirm(), "타자를 끝내는 것이 먼저다");
+        assert!(!a.confirm(), "finishing the keystroke comes first");
         assert!(!a.typing);
-        assert!(a.answered(), "자유 입력도 답이다");
+        assert!(a.answered(), "free input counts as an answer");
     }
 
     #[test]
@@ -559,12 +562,15 @@ mod tests {
         a.toggle(); // Log
         a.down();
         a.toggle(); // Metrics
-        assert!(a.confirm(), "마지막 단계 확정이면 끝이다");
+        assert!(a.confirm(), "confirming the last step ends it");
 
         let text = a.answer_text(crate::lang::Lang::Ko);
-        assert!(text.contains("[방식] 어느 쪽으로 갈까요?"), "질문을 그대로 실어야 한다:\n{text}");
-        assert!(text.contains("A안 (빠르다)"), "설명까지 실어야 한다:\n{text}");
-        assert!(text.contains("- 로그"), "여러 개는 줄로 나눠야 한다:\n{text}");
+        assert!(
+            text.contains("[방식] 어느 쪽으로 갈까요?"),
+            "the question must be carried verbatim:\n{text}"
+        );
+        assert!(text.contains("A안 (빠르다)"), "the description must be carried too:\n{text}");
+        assert!(text.contains("- 로그"), "several of them must be split across lines:\n{text}");
         assert!(text.contains("- 지표"), "{text}");
     }
 
@@ -577,7 +583,7 @@ mod tests {
         }
         a.confirm();
         let text = a.answer_text(crate::lang::Lang::Ko);
-        assert!(text.contains("직접 입력: 그냥요"), "직접 쓴 것임을 밝혀야 한다: {text}");
+        assert!(text.contains("직접 입력: 그냥요"), "it must say the answer was typed: {text}");
         assert_eq!(a.free_answers(), vec!["그냥요".to_string()]);
     }
 }

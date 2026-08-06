@@ -65,7 +65,7 @@ impl<C: ServeCapability> ServeCapability for Gate<C> {
         // knowing nothing.
         // **Which window took this call.** With several windows up, it only goes to the one the server picked, and
         // looking at the screen alone can't tell whether a window missed it or wasn't asked.
-        tracing::info!(capability = %gated.capability, tool = %gated.tool, "도구 호출을 받았다");
+        tracing::info!(capability = %gated.capability, tool = %gated.tool, "took a tool call");
 
         let running = self.tell_the_screen_it_started(&gated, &args);
         let out = self.inner.dispatch(call).await;
@@ -92,7 +92,7 @@ impl<C: ServeCapability> Gate<C> {
             capability = %call.capability,
             tool = %call.tool,
             path = %outside,
-            "작업 디렉터리 밖이라 사람에게 묻는다"
+            "outside the working directory, so a human is asked"
         );
 
         let Some((id, wait)) = self.bridge.ask(call.clone(), summarize(call)) else {
@@ -227,8 +227,8 @@ fn note_the_cut(out: Outgoing, deadline: Duration) -> Outgoing {
     }
     let Some(obj) = v.as_object_mut() else { return Outgoing::Response(payload) };
     let mut stderr = obj.get("stderr").and_then(Value::as_str).unwrap_or_default().to_string();
-    // **어디로 가라고 말한다.** 예전에는 `terminal.open`+`read`를 가리켰는데 그 길에는
-    // "명령이 끝났는가"를 알려 주는 신호가 없어 에이전트가 프롬프트를 눈치로 읽어야 했다.
+    // **Says where to go instead.** It used to point at `terminal.open`+`read`, but that path has
+    // no signal for "did the command finish", so the agent had to read the prompt by guesswork.
     stderr.push_str(&format!(
         "\n\n이 배포는 노드 호출을 {}초에 끊습니다. **명령은 실패한 것이 아니라 시간에 \
          잘린 것입니다.** 오래 걸리는 것은 wait.start로 배경에 걸고 wait.until로 \
@@ -368,9 +368,9 @@ mod tests {
         let gate = Gate::new(fake, bridge);
 
         let Err(e) = gate.dispatch(incoming("edit", json!({"path": "/etc/passwd"}))).await else {
-            panic!("승인 없이 밖으로 나갔다")
+            panic!("it left the tree with no approval")
         };
-        assert!(!ran.load(Ordering::SeqCst), "도구가 돌아 버렸다");
+        assert!(!ran.load(Ordering::SeqCst), "the tool ran anyway");
         assert!(e.message.contains("작업 디렉터리 밖"), "{}", e.message);
     }
 
@@ -389,14 +389,14 @@ mod tests {
         let _ = gate.dispatch(incoming("edit", json!({"path": "/etc/passwd"}))).await;
         std::env::remove_var("ZYRIS_CODE_WIRE_DEADLINE_SECS");
 
-        match rx.try_recv().expect("화면으로 물어야 한다") {
+        match rx.try_recv().expect("it must ask the screen") {
             (_, crate::app::Action::Frame(Frame::Ask(ask))) => {
                 assert_eq!(ask.summary, "/etc/passwd");
                 assert_eq!(ask.call.outside, Some(std::path::PathBuf::from("/etc/passwd")));
             }
-            other => panic!("승인 물음이어야 한다: {other:?}"),
+            other => panic!("it must be an approval question: {other:?}"),
         }
-        assert!(!ran.load(Ordering::SeqCst), "답도 안 했는데 돌았다");
+        assert!(!ran.load(Ordering::SeqCst), "it ran before anyone answered");
     }
 
     /// The normal mode runs without asking.
@@ -420,7 +420,7 @@ mod tests {
         let gate = Gate::new(fake, bridge);
 
         let Err(e) = gate.dispatch(incoming("edit", json!({"path": "a"}))).await else {
-            panic!("계획 모드에서 통과했다")
+            panic!("it passed in plan mode")
         };
         assert!(!ran.load(Ordering::SeqCst));
         assert!(e.message.contains("계획"), "{}", e.message);
@@ -450,11 +450,11 @@ mod tests {
         let gate = Gate::new(fake, bridge.clone());
 
         assert!(gate.dispatch(incoming("open", json!({"shell": "zsh"}))).await.is_ok());
-        match rx.try_recv().expect("화면으로 알려야 한다") {
+        match rx.try_recv().expect("it must tell the screen") {
             (_, crate::app::Action::Frame(Frame::ShellOpened { id, name })) => {
                 assert_eq!((id.as_str(), name.as_str()), ("p1", "zsh"));
             }
-            other => panic!("셸이 열렸다고 알려야 한다: {other:?}"),
+            other => panic!("it must say a shell opened: {other:?}"),
         }
     }
 
@@ -470,10 +470,10 @@ mod tests {
         let args = json!({"command": "cargo build", "timeout_ms": 600_000u64});
         let (call, cut) =
             gate.clamp_exec(incoming("exec", args.clone()), &args, Some(Duration::from_secs(55)));
-        assert_eq!(cut, Some(Duration::from_secs(55)), "잘랐다고 표시해야 한다");
+        assert_eq!(cut, Some(Duration::from_secs(55)), "it must mark that it was cut");
         let sent = call.params.to_json().unwrap();
-        assert_eq!(sent["timeout_ms"], json!(50_000u64), "마감 안쪽으로 들어와야 한다");
-        assert_eq!(sent["command"], json!("cargo build"), "다른 인자를 건드리면 안 된다");
+        assert_eq!(sent["timeout_ms"], json!(50_000u64), "it must come inside the deadline");
+        assert_eq!(sent["command"], json!("cargo build"), "no other argument may be touched");
     }
 
     /// If the agent already set it shorter, that side wins. The deadline is a cap, not a default.
@@ -509,14 +509,14 @@ mod tests {
             json!({"exit_code": -1, "stdout": "", "stderr": "앞선 오류", "timed_out": true}),
         ));
         let Outgoing::Response(p) = note_the_cut(out, Duration::from_secs(55)) else {
-            panic!("단항 응답이어야 한다")
+            panic!("it must be a unary response")
         };
         let v = p.to_json().unwrap();
         let stderr = v["stderr"].as_str().unwrap();
-        assert!(stderr.starts_with("앞선 오류"), "원래 있던 것을 지우면 안 된다: {stderr}");
-        // **무엇을 하라는지 말해야 한다.** 그리고 실패가 아니라는 것도 —
-        // 그것이 없으면 에이전트는 빌드가 깨진 줄 알고 멈춘다.
-        assert!(stderr.contains("wait.start"), "무엇을 하라는지 말해야 한다: {stderr}");
+        assert!(stderr.starts_with("앞선 오류"), "what was there must not be erased: {stderr}");
+        // **It must say what to do.** And that this isn't a failure — without that, the agent
+        // thinks the build broke and stops.
+        assert!(stderr.contains("wait.start"), "it must say what to do: {stderr}");
         assert!(stderr.contains("실패한 것이 아니라"), "{stderr}");
     }
 
@@ -527,7 +527,7 @@ mod tests {
             json!({"exit_code": 0, "stdout": "됐다", "stderr": "", "timed_out": false}),
         ));
         let Outgoing::Response(p) = note_the_cut(out, Duration::from_secs(55)) else {
-            panic!("단항 응답이어야 한다")
+            panic!("it must be a unary response")
         };
         assert_eq!(p.to_json().unwrap()["stderr"], json!(""));
     }

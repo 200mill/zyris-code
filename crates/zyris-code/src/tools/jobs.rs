@@ -1,8 +1,8 @@
-//! 배경에 건 명령. **띄우고, 모으고, 그룹째 죽인다.**
+//! Commands put in the background. **Spawn them, collect them, kill them by group.**
 //!
-//! 여기는 프로세스와 버퍼만 안다. 와이어 표면(마감 계약·`until`의 갈래)은 `wait.rs`다.
-//! 둘을 가른 이유는 테스트다 — 한 파일이면 마감을 재는 테스트마저 진짜 프로세스를
-//! 띄워야 한다.
+//! This file knows only processes and buffers. The wire surface (the deadline contract,
+//! `until`'s branches) is `wait.rs`. They are split apart for the tests — in one file even
+//! the tests that measure the deadline would have to spawn a real process.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -12,58 +12,61 @@ use regex::Regex;
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
 
-/// 한 작업의 출력 상한. 넘치면 앞이 사라지고 `dropped`가 그만큼 는다.
+/// Output cap for one job. On overflow the front is lost and `dropped` grows to match.
 const RING_CAP: usize = 1024 * 1024;
-/// 들고 있는 작업 수. 넘치면 **끝난 것 중** 오래된 것부터 버린다.
+/// How many jobs we hold. Over that, the oldest **finished** ones go first.
 const KEEP: usize = 20;
-/// `stop` 뒤 SIGKILL까지의 유예. 배포 스크립트가 정리할 틈이다.
+/// Grace between `stop` and SIGKILL. Room for a deploy script to clean up.
 const GRACE: Duration = Duration::from_secs(2);
-/// 앱을 끌 때의 유예. **여기서는 짧아야 한다** — 나가는 길을 2초 붙들면 안 눌린 줄 안다.
+/// Grace when quitting the app. **It has to be short here** — hold the way out for two
+/// seconds and it reads as a keypress that did not land.
 const QUIT_GRACE: Duration = Duration::from_millis(300);
 
-/// ANSI 이스케이프. CSI(`ESC [ … 최종문자`)·OSC(`ESC ] … BEL|ST`)·그 밖의 두 글자짜리.
+/// ANSI escapes. CSI (`ESC [ … final byte`), OSC (`ESC ] … BEL|ST`), and the other
+/// two-character ones.
 ///
-/// `\x1b[`는 두 글자짜리 갈래에서 **일부러 뺐다**(`[` = 0x5B가 `[@-Z\\-_]`에 없다) —
-/// 안 그러면 아직 안 끝난 CSI의 머리를 두 글자로 먹어 버린다.
+/// `\x1b[` is **deliberately left out** of the two-character branch (`[` = 0x5B is not in
+/// `[@-Z\\-_]`) — otherwise the head of an unfinished CSI gets eaten as two characters.
 static ESCAPES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
-        .expect("정적 정규식")
+        .expect("static regex")
 });
 
-/// 터미널 출력을 **에이전트가 읽을 수 있는 글자로** 바꾼다.
+/// Turns terminal output into **text an agent can read**.
 ///
-/// zyris-caps의 주석이 이유를 적어 두었다: *"a tool result carrying a raw `U+001B` is
-/// rejected outright by at least one agent runtime."* cargo 출력에는 색이 붙는다.
-/// 상류의 `strip_controls`는 `pub(crate)`라 여기서 쓸 수 없다.
+/// The comment in zyris-caps records why: *"a tool result carrying a raw `U+001B` is
+/// rejected outright by at least one agent runtime."* cargo output comes coloured, and
+/// upstream's `strip_controls` is `pub(crate)`, so it cannot be used from here.
 ///
-/// 셋을 한다: 이스케이프를 벗기고, 캐리지 리턴이 다시 쓰는 줄을 접고, `\n`·`\t` 밖의
-/// C0를 지운다. **청크 경계에서 잘린 것은 다음 청크까지 들고 있는다** — 문자도,
-/// 이스케이프도, 줄 끝의 `\r`도.
+/// It does three things: strips escapes, folds the lines a carriage return rewrites, and
+/// removes C0 other than `\n` and `\t`. **Anything cut at a chunk boundary is held until
+/// the next chunk** — characters, escapes, and a trailing `\r` alike.
 #[derive(Debug, Default)]
 pub struct Stripper {
-    /// 아직 문자로 못 읽은 바이트, 또는 안 끝난 이스케이프.
+    /// Bytes not yet readable as characters, or an unfinished escape.
     carry: Vec<u8>,
-    /// 아직 `\n`을 못 만난 줄. 캐리지 리턴이 오면 이걸 버린다.
+    /// The line that has not met a `\n` yet. A carriage return throws this away.
     line: String,
-    /// 앞 청크가 `\r`로 끝났다. **다음 글자가 `\n`이면 CRLF라 줄을 버리면 안 된다.**
+    /// The previous chunk ended with `\r`. **If the next character is `\n` it is CRLF, so
+    /// the line must not be thrown away.**
     pending_cr: bool,
 }
 
 impl Stripper {
-    /// 새로 온 바이트를 넣고, 지금 확정된 글자를 준다. 줄이 끝나야 확정된다.
+    /// Feeds in new bytes and gives back the text settled so far. Text settles per line.
     pub fn push(&mut self, bytes: &[u8]) -> String {
         self.carry.extend_from_slice(bytes);
-        // 문자로 못 읽는 꼬리는 다음 청크까지 들고 있는다.
+        // A tail that is not readable as characters is held until the next chunk.
         let valid = match std::str::from_utf8(&self.carry) {
             Ok(_) => self.carry.len(),
             Err(e) if e.error_len().is_none() => e.valid_up_to(),
-            // 진짜 깨진 바이트는 버린다. 들고 있어 봐야 영영 안 읽힌다.
+            // Truly broken bytes go. Holding them only means they are never read.
             Err(e) => e.valid_up_to() + e.error_len().unwrap_or(1),
         };
         let text = String::from_utf8_lossy(&self.carry[..valid]).into_owned();
         self.carry.drain(..valid);
 
-        // 안 끝난 이스케이프는 되돌려 놓는다 — 다음 청크와 이어야 벗겨진다.
+        // An unfinished escape goes back — it is stripped only once joined to the next chunk.
         let (ready, held) = split_incomplete_escape(&text);
         if !held.is_empty() {
             let mut back = held.as_bytes().to_vec();
@@ -75,10 +78,10 @@ impl Stripper {
         self.feed(&stripped)
     }
 
-    /// 프로세스가 끝났을 때 남은 것을 마저 낸다.
+    /// Emits whatever is left once the process has finished.
     ///
-    /// **끝에 걸린 `\r`은 줄을 지우지 않는다.** 터미널에서도 마지막 진행 표시는
-    /// 화면에 남아 있고, 사람이 마지막으로 본 것이 그것이다.
+    /// **A trailing `\r` does not erase the line.** In a terminal the last progress line
+    /// stays on screen too, and that is what the reader last saw.
     pub fn flush(&mut self) -> String {
         let rest = String::from_utf8_lossy(&std::mem::take(&mut self.carry)).into_owned();
         self.pending_cr = false;
@@ -89,11 +92,12 @@ impl Stripper {
         out
     }
 
-    /// 줄 단위로 확정한다. **`\r`은 그 줄을 다시 쓰는 것**이라 앞의 것을 버린다.
+    /// Settles text line by line. **`\r` rewrites that line**, so what came before is gone.
     fn feed(&mut self, text: &str) -> String {
         let mut out = String::new();
         let mut chars = text.chars().peekable();
-        // 앞 청크가 `\r`로 끝났다. 이 청크의 첫 글자가 `\n`이면 CRLF이므로 줄은 살린다.
+        // The previous chunk ended with `\r`. If this chunk starts with `\n` it is CRLF, so
+        // the line lives.
         if std::mem::take(&mut self.pending_cr) && chars.peek() != Some(&'\n') {
             self.line.clear();
         }
@@ -103,7 +107,8 @@ impl Stripper {
                     out.push_str(&std::mem::take(&mut self.line));
                     out.push('\n');
                 }
-                // CRLF는 그냥 줄바꿈이다. 여기서 줄을 버리면 윈도우 출력이 통째로 사라진다.
+                // CRLF is just a newline. Throwing the line away here loses Windows output
+                // entirely.
                 '\r' => match chars.peek() {
                     Some('\n') => {}
                     Some(_) => self.line.clear(),
@@ -118,19 +123,19 @@ impl Stripper {
     }
 }
 
-/// 배경에 걸 것.
+/// What to put in the background.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
-    /// 셸 한 줄. `argv`와 **정확히 하나만** 준다.
+    /// One shell line. Give **exactly one** of this and `argv`.
     pub command: Option<String>,
-    /// 셸 없이 그대로 띄울 프로그램과 인자.
+    /// Program and arguments to spawn as they are, without a shell.
     pub argv: Option<Vec<String>>,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub label: Option<String>,
 }
 
-/// 사람과 에이전트가 보는 한 줄.
+/// The one line a person and an agent see.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     pub id: String,
@@ -147,14 +152,14 @@ struct Job {
     exit_code: Option<i32>,
     running: bool,
     out: Ring,
-    /// 끝났음을 기다리는 쪽에게 알린다. `wait.until`이 이것을 기다린다.
+    /// Tells whoever is waiting that it ended. `wait.until` waits on this.
     ended: watch::Sender<bool>,
 }
 
-/// 이 앱이 배경에 걸어 둔 것 전부.
+/// Everything this app has put in the background.
 ///
-/// **레지스트리는 하나다.** 도구·화면·`/jobs`가 같은 것을 봐야 한다 — 두 벌이 되면
-/// 한쪽만 고쳤을 때 조용히 갈라진다. `Bridge::set_undo`와 같은 배선이다.
+/// **There is one registry.** The tools, the screen and `/jobs` must all see the same one —
+/// with two copies, fixing one side silently forks them. Same wiring as `Bridge::set_undo`.
 #[derive(Clone)]
 pub struct Jobs {
     root: PathBuf,
@@ -172,13 +177,13 @@ impl Jobs {
         Jobs { root, inner: Arc::new(Mutex::new(Inner::default())) }
     }
 
-    /// 상대경로가 풀리는 자리. 되묻기도 여기서 돈다 — **작업과 질문이 같은 곳을 봐야
-    /// 한다.** 다르면 `ls`의 결과가 도구마다 달라진다.
+    /// Where relative paths resolve. The probe runs here too — **a job and a probe have to
+    /// look at the same place.** Otherwise `ls` answers differently from tool to tool.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// 배경에 걸고 즉시 돌아온다. **실행을 기다리지 않는다.**
+    /// Puts it in the background and returns at once. **It does not wait for the run.**
     pub fn start(&self, spec: Spec) -> Result<String, String> {
         let mut cmd = build(&spec, &self.root)?;
         let label = spec
@@ -211,7 +216,7 @@ impl Jobs {
                     ended,
                 },
             ));
-            // **끝난 것부터 버린다.** 도는 것을 버리면 죽일 손잡이를 잃는다.
+            // **Finished ones go first.** Dropping a running one loses the handle to kill it.
             while inner.jobs.len() > KEEP {
                 let Some(at) = inner.jobs.iter().position(|(_, j)| !j.running) else { break };
                 inner.jobs.remove(at);
@@ -222,7 +227,8 @@ impl Jobs {
         let this = self.clone();
         let for_task = id.clone();
         tokio::spawn(async move {
-            // stdout·stderr를 **한 버퍼로** 모은다. 순서가 곧 읽는 사람의 이해다.
+            // stdout and stderr go into **one buffer**. The order is what the reader
+            // understands by.
             let pump = {
                 let (a, b) = (this.clone(), this.clone());
                 let (ia, ib) = (for_task.clone(), for_task.clone());
@@ -262,19 +268,20 @@ impl Jobs {
         inner.jobs.iter().find(|(k, _)| k == id).map(|(_, j)| j.out.tail(bytes)).unwrap_or_default()
     }
 
-    /// 끝났음을 기다릴 손잡이. **이미 끝났으면 처음부터 참이다.**
+    /// A handle to wait on for the end. **If it already ended, it is true from the start.**
     pub fn ended(&self, id: &str) -> Option<watch::Receiver<bool>> {
         let inner = self.inner.lock().unwrap();
         inner.jobs.iter().find(|(k, _)| k == id).map(|(_, j)| j.ended.subscribe())
     }
 
-    /// 도는 작업을 그룹째 죽인다. 이미 끝났으면 거짓이다 — 오류는 아니다.
+    /// Kills a running job by the whole group. False if it already ended — not an error.
     pub fn stop(&self, id: &str) -> bool {
         let Some(pid) = self.running_pid(id) else { return false };
         if !term_tree(pid) {
             return true;
         }
-        // 유예를 준 뒤 확실히 끝낸다. **나가는 길을 붙들지 않으려고** 따로 돈다.
+        // After the grace, finish it for sure. On its own thread **so the way out is not
+        // held up**.
         std::thread::spawn(move || {
             std::thread::sleep(GRACE);
             kill_tree(pid);
@@ -282,10 +289,10 @@ impl Jobs {
         true
     }
 
-    /// 앱을 끄기 전에 부른다. **고아를 남기지 않는다.**
+    /// Called before quitting the app. **Leaves no orphans.**
     ///
-    /// 여기서는 유예가 짧다(`QUIT_GRACE`). 끝나기를 2초씩 기다리면 사람은 앱이 안
-    /// 닫힌 줄 안다. 그래도 TERM을 먼저 보내는 이유는 정리할 틈을 주기 위해서다.
+    /// The grace is short here (`QUIT_GRACE`). Waiting two seconds for each one to end reads
+    /// as an app that will not close. TERM still goes first, to leave room to clean up.
     pub fn stop_all(&self) {
         let pids: Vec<u32> = {
             let inner = self.inner.lock().unwrap();
@@ -329,7 +336,7 @@ fn snap(id: &str, j: &Job) -> Snapshot {
     }
 }
 
-/// 한 스트림을 끝까지 읽어 링에 넣는다.
+/// Reads one stream to the end and puts it in the ring.
 async fn drain<R: tokio::io::AsyncRead + Unpin>(jobs: Jobs, id: String, stream: Option<R>) {
     let Some(mut stream) = stream else { return };
     let mut strip = Stripper::default();
@@ -351,7 +358,8 @@ async fn drain<R: tokio::io::AsyncRead + Unpin>(jobs: Jobs, id: String, stream: 
     }
 }
 
-/// 명령을 만든다. **색이 덜 나오게** 환경을 미리 깔고, 사람이 준 것이 이긴다.
+/// Builds the command. Lays down an environment that **discourages colour**, and what the
+/// caller gave wins.
 fn build(spec: &Spec, root: &Path) -> Result<tokio::process::Command, String> {
     let mut cmd = match (&spec.command, &spec.argv) {
         (Some(_), Some(_)) | (None, None) => {
@@ -384,28 +392,29 @@ fn build(spec: &Spec, root: &Path) -> Result<tokio::process::Command, String> {
         .stderr(std::process::Stdio::piped());
     #[cfg(unix)]
     {
-        // **새 그룹의 리더로 만든다.** 그래야 셸이 남긴 손자까지 한 번에 죽는다.
-        // 빼고 재 보면 `stopping_a_job_kills_the_whole_process_tree`가 문다 — 실제로
-        // 빼서 확인해 뒀다. tokio의 `Command`가 이것을 직접 준다(`CommandExt` 불필요).
+        // **Make it the leader of a new group.** Only then do the grandchildren a shell
+        // leaves behind die in one go. Take it out and
+        // `stopping_a_job_kills_the_whole_process_tree` bites — that was checked by actually
+        // taking it out. tokio's `Command` gives this directly (no `CommandExt` needed).
         cmd.process_group(0);
     }
     Ok(cmd)
 }
 
-/// 프로세스 그룹에 SIGTERM. 보냈으면 참이다.
+/// SIGTERM to the process group. True if it was sent.
 ///
-/// **setpgid 경합을 넘긴다** — 자식이 아직 그룹을 만들기 전이면 신호가 실패한다.
-/// capkit의 `kill_tree`가 하는 것과 같은 재시도이고, 없으면 방금 건 작업을 곧바로
-/// 멈출 때 조용히 안 죽는다.
+/// **Rides out the setpgid race** — the signal fails while the child has not made its group
+/// yet. Same retry capkit's `kill_tree` does, and without it a job stopped right after it
+/// was started silently fails to die.
 #[cfg(unix)]
 fn term_tree(pid: u32) -> bool {
     let group = -(pid as i32);
     for _ in 0..50 {
-        // SAFETY: 음수 pid는 프로세스 그룹이다. 우리가 방금 만든 그룹이고 우리는 그 안에 없다.
+        // SAFETY: a negative pid is a process group. We just made this group and are not in it.
         if unsafe { libc::kill(group, libc::SIGTERM) } == 0 {
             return true;
         }
-        // 리더가 이미 죽었으면 그룹은 앞으로 안 생긴다.
+        // If the leader is already dead the group will never come to be.
         if unsafe { libc::kill(pid as i32, 0) } != 0 {
             return false;
         }
@@ -416,11 +425,11 @@ fn term_tree(pid: u32) -> bool {
 
 #[cfg(unix)]
 fn kill_tree(pid: u32) {
-    // SAFETY: 위와 같다.
+    // SAFETY: same as above.
     unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
 }
 
-/// 윈도우: `taskkill /T`가 트리를 죽인다. 부드러운 신호가 따로 없어 한 번에 간다.
+/// Windows: `taskkill /T` kills the tree. There is no gentle signal, so it goes in one shot.
 #[cfg(not(unix))]
 fn term_tree(pid: u32) -> bool {
     kill_tree(pid);
@@ -434,29 +443,30 @@ fn kill_tree(pid: u32) {
         .output();
 }
 
-/// 한 작업의 출력. **stdout과 stderr를 섞어 담는다** — cargo는 진행을 stderr로 내므로
-/// 나눠 담으면 순서가 사라지고, 순서가 곧 읽는 사람의 이해다.
+/// One job's output. **stdout and stderr go in mixed together** — cargo puts progress on
+/// stderr, so keeping them apart loses the order, and the order is what the reader
+/// understands by.
 #[derive(Debug)]
 pub struct Ring {
     buf: Vec<u8>,
     cap: usize,
-    /// 앞에서 버린 바이트 수. **절대 위치(offset)의 기준이다.**
+    /// Bytes thrown away off the front. **The origin absolute offsets are measured from.**
     dropped: u64,
 }
 
-/// `Ring::read`가 주는 것.
+/// What `Ring::read` gives back.
 ///
-/// `more`와 `dropped`를 가르는 이유는 capkit의 `PtyRead`와 같다 — 읽는 쪽에게
-/// **유일하게 중요한 질문은 "다시 불러서 받을 수 있는가"**다. 하나의 "잘림" 깃발로
-/// 뭉개면 그 질문에 답할 수 없다.
+/// `more` and `dropped` are kept apart for the same reason as capkit's `PtyRead` — the
+/// **only question that matters to the reader is "can I get it by calling again"**. Mashed
+/// into one "truncated" flag, that question has no answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     pub text: String,
-    /// 다음에 이 위치를 주면 이어서 받는다.
+    /// Give this offset next time and you carry on from here.
     pub next_offset: u64,
-    /// 아직 버퍼에 남은 것이 있다. **다시 부르면 받는다.**
+    /// There is still something left in the buffer. **Call again and you get it.**
     pub more: bool,
-    /// 넘쳐서 잃은 바이트. **다시 불러도 안 돌아온다.**
+    /// Bytes lost to overflow. **Calling again does not bring them back.**
     pub dropped: u64,
 }
 
@@ -474,10 +484,11 @@ impl Ring {
         }
     }
 
-    /// 절대 위치부터 읽는다. 이미 버려진 자리를 달라고 하면 **남아 있는 앞부터** 준다.
+    /// Reads from an absolute offset. Ask for a place already thrown away and it gives
+    /// **from the front of what is left**.
     ///
-    /// `more`는 늘 거짓이다 — 남은 것을 전부 주기 때문이다. 한 번에 다 주기에 큰 경우는
-    /// 자르는 쪽(`wait.logs`)이 세운다.
+    /// `more` is always false — everything left is handed over. Whether that is too much for
+    /// one go is settled by the side that truncates (`wait.logs`).
     pub fn read(&self, offset: u64) -> Chunk {
         let dropped = self.dropped.saturating_sub(offset);
         let from = offset.max(self.dropped) - self.dropped;
@@ -490,8 +501,8 @@ impl Ring {
         }
     }
 
-    /// 마지막 몇 바이트. **줄 경계에서 시작한다** — 반 토막 줄로 시작하면 읽는 사람이
-    /// 무슨 일인지 알 수 없다. 통째로 들어가면 첫 줄을 버리지 않는다.
+    /// The last few bytes. **Starts at a line boundary** — starting on half a line leaves
+    /// the reader with no idea what is going on. If it all fits, the first line is kept.
     pub fn tail(&self, bytes: usize) -> String {
         let from = self.buf.len().saturating_sub(bytes);
         let slice = &self.buf[from..];
@@ -504,10 +515,10 @@ impl Ring {
     }
 }
 
-/// 꼬리가 안 끝난 이스케이프면 그 앞까지만 확정하고 나머지를 돌려준다.
+/// If the tail is an unfinished escape, settles only up to it and gives the rest back.
 fn split_incomplete_escape(text: &str) -> (&str, &str) {
     let Some(at) = text.rfind('\x1b') else { return (text, "") };
-    // 이미 끝난 이스케이프면 그 자리에서 정규식이 먹는다 — 들고 있을 것이 없다.
+    // A finished escape is eaten by the regex right there — nothing to hold on to.
     if ESCAPES.find_at(text, at).is_some_and(|m| m.start() == at) {
         return (text, "");
     }
@@ -527,9 +538,9 @@ mod jobs_tests {
     }
 
     async fn wait_for(j: &Jobs, id: &str) {
-        let mut ended = j.ended(id).expect("작업이 있어야 한다");
+        let mut ended = j.ended(id).expect("the job must be there");
         while !*ended.borrow() {
-            ended.changed().await.expect("보내는 쪽이 살아 있어야 한다");
+            ended.changed().await.expect("the sender must still be alive");
         }
     }
 
@@ -541,11 +552,11 @@ mod jobs_tests {
         let snap = j.snapshot(&id).unwrap();
         assert!(!snap.running);
         assert_eq!(snap.exit_code, Some(3));
-        // 끝난 뒤에도 읽힌다 — `until`이 done을 준 다음 에이전트가 logs를 부른다.
+        // Still readable after it ends — the agent calls logs after `until` says done.
         assert!(j.read(&id, 0).unwrap().text.contains("안녕"));
     }
 
-    /// stdout과 stderr가 한 버퍼에 온다.
+    /// stdout and stderr arrive in one buffer.
     #[tokio::test]
     async fn both_streams_land_in_one_buffer() {
         let j = jobs();
@@ -556,21 +567,23 @@ mod jobs_tests {
         assert!(text.contains("오류"), "{text}");
     }
 
-    /// **셸만 죽이면 손자가 고아로 남는다.** 이 머신에서 그건 곧 프리즈다.
+    /// **Kill only the shell and the grandchild is left an orphan.** On this machine that
+    /// means a freeze.
     #[tokio::test]
     async fn stopping_a_job_kills_the_whole_process_tree() {
         let j = jobs();
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("grandchild-lived");
-        // 손자는 3초 뒤에 파일을 남긴다. 그룹째 죽으면 파일이 안 생긴다.
+        // The grandchild leaves a file after three seconds. Killed by group, no file appears.
         let id = j.start(shell(&format!("(sleep 3; touch {}) & wait", marker.display()))).unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(j.stop(&id));
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        assert!(!marker.exists(), "손자가 살아남았다");
+        assert!(!marker.exists(), "the grandchild survived");
     }
 
-    /// 앱을 끄면 도는 작업도 같이 죽는다. 고아 cargo가 이 머신에 남으면 안 된다.
+    /// Quitting the app kills the running jobs with it. An orphaned cargo must not be left
+    /// on this machine.
     #[tokio::test]
     async fn quitting_the_app_leaves_no_running_job() {
         let j = jobs();
@@ -580,10 +593,10 @@ mod jobs_tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         j.stop_all();
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-        assert!(!marker.exists(), "앱이 꺼졌는데 작업이 살아남았다");
+        assert!(!marker.exists(), "the app quit but a job survived");
     }
 
-    /// 이미 끝난 것을 멈추라고 하면 거짓이다. 오류는 아니다.
+    /// Asking to stop something already finished is false. Not an error.
     #[tokio::test]
     async fn stopping_a_finished_job_is_false_not_an_error() {
         let j = jobs();
@@ -592,7 +605,7 @@ mod jobs_tests {
         assert!(!j.stop(&id));
     }
 
-    /// 인자는 정확히 하나여야 한다.
+    /// Exactly one of the two arguments is required.
     #[tokio::test]
     async fn a_spec_needs_exactly_one_of_command_or_argv() {
         let j = jobs();
@@ -607,7 +620,7 @@ mod jobs_tests {
         assert!(j.start(Spec { command: Some("   ".into()), ..Default::default() }).is_err());
     }
 
-    /// id는 짧아야 한다 — 에이전트가 확인할 때마다 실어 나르는 글자다.
+    /// ids have to be short — the agent carries them on every check.
     #[tokio::test]
     async fn ids_are_short_and_ordered() {
         let j = jobs();
@@ -616,7 +629,7 @@ mod jobs_tests {
         assert_eq!(j.list().len(), 2);
     }
 
-    /// 색이 애초에 덜 나오게 띄운다. 사람이 준 env가 이긴다.
+    /// Spawned so less colour comes out in the first place. The caller's env wins.
     #[tokio::test]
     async fn the_environment_discourages_colour_but_the_caller_wins() {
         let j = jobs();
@@ -644,11 +657,12 @@ mod ring_tests {
         assert_eq!(c.text, "hello\n");
         assert_eq!(c.next_offset, 6);
         assert_eq!(c.dropped, 0);
-        // 이어 읽으면 빈 것이 온다 — 같은 것을 두 번 주면 안 된다.
+        // Reading on gives nothing — the same text must not be handed over twice.
         assert_eq!(r.read(c.next_offset).text, "");
     }
 
-    /// 넘치면 앞이 사라지고 **사라진 양을 말한다.** 다시 불러도 안 돌아온다.
+    /// Overflow loses the front and **says how much was lost.** Calling again does not bring
+    /// it back.
     #[test]
     fn overflow_drops_the_front_and_says_how_much() {
         let mut r = Ring::new(8);
@@ -659,7 +673,7 @@ mod ring_tests {
         assert_eq!(c.next_offset, 10);
     }
 
-    /// 이미 읽은 자리를 다시 달라고 하면 잃은 것은 없다.
+    /// Asking on from a spot already read loses nothing.
     #[test]
     fn reading_on_from_a_live_offset_loses_nothing() {
         let mut r = Ring::new(8);
@@ -671,8 +685,8 @@ mod ring_tests {
         assert_eq!(next.dropped, 0);
     }
 
-    /// 꼬리는 마지막 몇 바이트다. **줄 가운데서 자르지 않는다** — 반 토막 줄은
-    /// 읽는 사람을 헷갈리게 한다.
+    /// The tail is the last few bytes. **It does not cut in the middle of a line** — half a
+    /// line only confuses whoever reads it.
     #[test]
     fn the_tail_starts_at_a_line_boundary() {
         let mut r = Ring::new(1024);
@@ -682,7 +696,8 @@ mod ring_tests {
         assert!(tail.ends_with('\n'));
     }
 
-    /// 통째로 들어가면 앞부터 다 준다 — 줄 경계를 찾겠다고 첫 줄을 버리면 안 된다.
+    /// If it all fits it gives everything from the front — hunting for a line boundary must
+    /// not throw the first line away.
     #[test]
     fn a_tail_that_covers_everything_keeps_the_first_line() {
         let mut r = Ring::new(1024);
@@ -695,7 +710,7 @@ mod ring_tests {
 mod strip_tests {
     use super::*;
 
-    /// 색 코드는 에이전트에게 도달하면 안 된다 — 런타임 하나가 통째로 거절한다.
+    /// Colour codes must not reach the agent — one runtime rejects the whole result.
     #[test]
     fn control_sequences_never_reach_the_agent() {
         let mut s = Stripper::default();
@@ -704,7 +719,7 @@ mod strip_tests {
         assert!(!out.contains('\x1b'));
     }
 
-    /// 청크 경계에서 잘린 이스케이프를 다음 청크와 이어 붙여야 한다.
+    /// An escape cut at a chunk boundary has to be joined to the next chunk.
     #[test]
     fn an_escape_split_across_chunks_is_still_stripped() {
         let mut s = Stripper::default();
@@ -713,7 +728,7 @@ mod strip_tests {
         assert_eq!(format!("{a}{b}"), "okgreen\n");
     }
 
-    /// 여러 바이트 문자가 청크 경계에서 잘려도 깨지지 않는다.
+    /// A multi-byte character cut at a chunk boundary survives intact.
     #[test]
     fn a_character_split_across_chunks_survives() {
         let mut s = Stripper::default();
@@ -724,7 +739,8 @@ mod strip_tests {
         assert_eq!(format!("{a}{b}{c}"), "한글");
     }
 
-    /// 캐리지 리턴은 그 줄을 다시 쓰는 것이다. 진행 표시가 수천 줄이 되면 안 된다.
+    /// A carriage return rewrites that line. A progress bar must not become thousands of
+    /// lines.
     #[test]
     fn a_progress_line_is_rewritten_not_appended() {
         let mut s = Stripper::default();
@@ -735,19 +751,19 @@ mod strip_tests {
         assert_eq!(out, "Building [=====] 100%\n");
     }
 
-    /// **CRLF는 그냥 줄바꿈이다.** `\r`을 줄 지우기로만 읽으면 윈도우 출력이 사라진다.
+    /// **CRLF is just a newline.** Read `\r` as erase only and Windows output disappears.
     #[test]
     fn a_crlf_is_a_newline_not_an_erase() {
         let mut s = Stripper::default();
         assert_eq!(s.push(b"first\r\nsecond\r\n"), "first\nsecond\n");
-        // 청크가 그 사이에서 갈려도 같아야 한다.
+        // Same result when the chunk splits in between.
         let mut s = Stripper::default();
         let a = s.push(b"first\r");
         let b = s.push(b"\nsecond\n");
         assert_eq!(format!("{a}{b}"), "first\nsecond\n");
     }
 
-    /// 탭과 줄바꿈은 살아남는다. 나머지 C0는 지운다.
+    /// Tabs and newlines survive. The rest of C0 is removed.
     #[test]
     fn tabs_and_newlines_survive_but_other_controls_do_not() {
         let mut s = Stripper::default();
