@@ -232,7 +232,7 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
             ("Esc", "도는 턴 멈추기"),
             ("Ctrl+C", "멈추기 → 한 번 더 누르면 끝내기"),
             ("y n a", "승인 화면에서 허락·거절·이 디렉터리 열기"),
-            ("드래그", "고른 글이 놓는 순간 클립보드로"),
+            ("드래그", "화면 아무 데나 — 놓는 순간 고른 글이 클립보드로"),
         ],
         Lang::En => vec![
             ("Shift+Tab", "Switch mode (normal → plan → work → job)"),
@@ -248,7 +248,7 @@ pub fn keys(lang: crate::lang::Lang) -> Vec<(&'static str, &'static str)> {
             ("Esc", "Stop the running turn"),
             ("Ctrl+C", "Stop, then press again to quit"),
             ("y n a", "On the approval screen: allow, deny, open this directory"),
-            ("drag", "Selected text goes to the clipboard when you let go"),
+            ("drag", "Drag anywhere — the selected text goes to the clipboard when you let go"),
         ],
     }
 }

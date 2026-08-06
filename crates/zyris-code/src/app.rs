@@ -250,12 +250,16 @@ pub struct State {
     pub rows_cache: crate::rows::Cache,
     /// Row index → seq of the card that pressing that row folds and unfolds.
     pub view_cards: std::collections::HashMap<usize, i64>,
-    /// The selected range. **It survives releasing the mouse** — if it vanished on release
-    /// there would be no moment to press Ctrl+C. It follows scrolling because it is in
-    /// content coordinates.
+    /// The selected range, in **screen** coordinates. **It survives releasing the mouse** — if
+    /// it vanished on release there would be no moment to press Ctrl+C. Scrolling drops it
+    /// (`Action::Wheel`): it is anchored to the screen, so the text under it would no longer
+    /// be the text that was copied.
     pub drag: Option<crate::selection::Drag>,
     /// Is the button held down right now? The range only grows while it is.
     pub dragging: bool,
+    /// The visible text of the last drawn frame, one `String` per screen row. Mouse selection
+    /// reads from this — a drag anywhere on the screen extracts what it covers.
+    pub screen: Vec<String>,
     /// The question being answered right now (its seq and state).
     ///
     /// A question lands here on its own when it arrives — the turn is blocked waiting for
@@ -399,6 +403,7 @@ impl Default for State {
             view_cards: std::collections::HashMap::new(),
             drag: None,
             dragging: false,
+            screen: Vec::new(),
             asking: None,
             ask_area: None,
             submit_now: false,
@@ -811,6 +816,9 @@ pub fn apply(state: &mut State, action: &Action) {
         Action::Wheel(notches) => {
             let (total, height) = (state.view_total, state.view_height);
             state.scroll.wheel(*notches, total, height);
+            // The selection is anchored to the screen; scrolling moves the text out from under
+            // it, so the highlight would point at text different from what was copied.
+            state.drag = None;
         }
         Action::ToggleFold => {
             // **Folds and unfolds the last work card** — including a card that arose
@@ -843,26 +851,26 @@ pub fn apply(state: &mut State, action: &Action) {
             }
             // A new press discards the previous selection.
             state.selection = None;
-            state.drag = state.content_at(*x, *y).map(crate::selection::Drag::new);
-            state.dragging = state.drag.is_some();
+            // **The whole screen is selectable — blank space included.** A drag that starts
+            // on empty cells still works; it just selects nothing until it covers text.
+            state.drag = Some(crate::selection::Drag::new((*y as usize, *x as usize)));
+            state.dragging = true;
         }
         Action::DragTo(x, y) => {
             if !state.dragging {
                 return;
             }
-            // Take the coordinate first so the borrows do not overlap.
-            let at = state.content_at(*x, *y);
-            if let (Some(drag), Some(at)) = (state.drag.as_mut(), at) {
-                drag.to = at;
+            if let Some(drag) = state.drag.as_mut() {
+                drag.to = (*y as usize, *x as usize);
             }
             if let Some(drag) = state.drag {
                 if !drag.is_click() {
                     // Plain text is built **only here.** Building it every frame gets
-                    // heavier in proportion to the conversation — a drag runs at hand
-                    // speed, so building it then is enough.
-                    let rows = state.rows_cache.plain();
-                    let text = crate::selection::extract(&rows, &drag);
-                    state.selection = (!text.is_empty()).then_some(text);
+                    // heavier in proportion to the screen — a drag runs at hand speed,
+                    // so building it then is enough. The text comes from the last drawn
+                    // frame, so any visible text — even the enrollment code — is copyable.
+                    let text = crate::selection::extract(&state.screen, &drag);
+                    state.selection = (!text.trim().is_empty()).then_some(text);
                 }
             }
         }
@@ -873,9 +881,11 @@ pub fn apply(state: &mut State, action: &Action) {
             let Some(drag) = state.drag else { return };
             if drag.is_click() {
                 // No movement means a click — if that row is a work card header, fold or
-                // unfold it.
+                // unfold it. The drag holds screen coordinates, so the row is mapped back
+                // to a transcript content row first.
                 state.drag = None;
-                if let Some(&seq) = state.view_cards.get(&drag.from.0) {
+                let content = state.content_at(drag.from.1 as u16, drag.from.0 as u16);
+                if let Some(&seq) = content.and_then(|(r, _)| state.view_cards.get(&r)) {
                     let fold = state.folds.entry(seq).or_default();
                     fold.open = !fold.open;
                 }
@@ -3534,6 +3544,72 @@ mod tests {
         apply(&mut s, &Action::Repaint);
         assert_eq!(s.input.text, "가");
         assert_eq!(s.view_top, 7);
+    }
+
+    /// A press anywhere starts a drag — blank space included. Only the question screen is
+    /// excepted: a click there picks an option instead.
+    #[test]
+    fn pressing_anywhere_starts_a_drag() {
+        let mut s = state();
+        apply(&mut s, &Action::Press(5, 3));
+        assert_eq!(s.drag, Some(crate::selection::Drag::new((3, 5))));
+        assert!(s.dragging, "the drag must be live even over empty cells");
+    }
+
+    /// The drag extracts from the last drawn screen, not from the conversation alone — the
+    /// enrollment code, the sidebar and the status line are selectable too.
+    #[test]
+    fn dragging_extracts_what_is_on_the_screen() {
+        let mut s = state();
+        s.screen =
+            vec!["first row".to_string(), "second row".to_string(), "세 번째 줄".to_string()];
+        apply(&mut s, &Action::Press(0, 0));
+        apply(&mut s, &Action::DragTo(4, 2));
+        assert_eq!(s.selection.as_deref(), Some("first row\nsecond row\n세 번"));
+    }
+
+    /// A drag that covers only blank space selects nothing — the range exists, the text is empty.
+    #[test]
+    fn dragging_blank_space_selects_nothing() {
+        let mut s = state();
+        s.screen = vec!["     ".to_string(), "     ".to_string()];
+        apply(&mut s, &Action::Press(0, 0));
+        apply(&mut s, &Action::DragTo(4, 1));
+        assert_eq!(s.selection, None);
+    }
+
+    /// A click on empty space folds nothing and leaves no range behind.
+    #[test]
+    fn clicking_blank_space_does_nothing() {
+        let mut s = state();
+        apply(&mut s, &Action::Press(30, 12));
+        apply(&mut s, &Action::Release);
+        assert!(s.drag.is_none());
+        assert!(s.selection.is_none());
+    }
+
+    /// A click on a work card header still folds it. The drag is in screen coordinates now,
+    /// so the row is mapped back to a transcript content row on release.
+    #[test]
+    fn clicking_a_card_header_folds_it() {
+        let mut s = state();
+        s.view_origin = (0, 0);
+        s.view_top = 0;
+        s.view_height = 10;
+        s.view_cards.insert(2, 5);
+        apply(&mut s, &Action::Press(1, 2));
+        apply(&mut s, &Action::Release);
+        assert_eq!(s.folds.get(&5).map(|f| f.open), Some(true));
+    }
+
+    /// The selection is anchored to the screen; scrolling moves the text out from under it.
+    /// Keeping the highlight would point at text different from what was copied.
+    #[test]
+    fn scrolling_drops_the_drag() {
+        let mut s = state();
+        s.drag = Some(crate::selection::Drag::new((0, 0)));
+        apply(&mut s, &Action::Wheel(-1));
+        assert!(s.drag.is_none());
     }
 
     /// The title is written by the server — text we did not write. A control character mixed

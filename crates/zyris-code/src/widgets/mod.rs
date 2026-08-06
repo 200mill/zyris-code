@@ -34,6 +34,7 @@ mod status;
 mod transcript;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::Frame;
 
 /// One column keeping text off the sidebar edge. Unlike the left margin (`rows::PAD`), no marker
@@ -41,6 +42,8 @@ use ratatui::Frame;
 const SIDE_GAP: u16 = 1;
 
 use crate::app::State;
+use crate::markdown::display_width;
+use crate::selection;
 
 pub fn draw(frame: &mut Frame, state: &mut State) {
     let full = frame.area();
@@ -162,6 +165,56 @@ pub fn draw(frame: &mut Frame, state: &mut State) {
             cell.set_diff_option(CellDiffOption::AlwaysUpdate);
         }
     }
+
+    // **Mouse selection covers the whole screen — blank space included.** Invert every cell
+    // under the drag so the selection is visible everywhere: the transcript, the sidebar, the
+    // status line, the enrollment window. This runs after every widget drew and before the
+    // frame is flushed, so the highlight rides the same diff as the content.
+    if let Some(drag) = state.drag.filter(|d| !d.is_click()) {
+        if let Some((r0, c0, r1, c1)) =
+            selection::rect(&drag, frame.area().width, frame.area().height)
+        {
+            let width = frame.area().width as usize;
+            let cells = frame.buffer_mut().content.as_mut_slice();
+            for y in r0..=r1 {
+                for x in c0..=c1 {
+                    let idx = y as usize * width + x as usize;
+                    if let Some(cell) = cells.get_mut(idx) {
+                        cell.modifier.insert(Modifier::REVERSED);
+                    }
+                }
+            }
+        }
+    }
+
+    // **Snapshot the visible text for mouse selection.** A drag extracts from this, so it
+    // must always match the frame that is about to be shown. Cheap: a few thousand string
+    // appends per frame against a full terminal redraw.
+    state.screen = screen_rows(frame.buffer_mut());
+}
+
+/// The visible text of the frame, one row per screen line. Mouse selection reads from this —
+/// dragging anywhere extracts what the cursor covers.
+fn screen_rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    let width = buffer.area.width as usize;
+    let mut rows = vec![String::new(); buffer.area.height as usize];
+    for (y, row) in rows.iter_mut().enumerate() {
+        let cells = &buffer.content[y * width..(y + 1) * width];
+        let mut i = 0;
+        while i < cells.len() {
+            let sym = cells[i].symbol();
+            row.push_str(sym);
+            // A full-width glyph occupies two cells; the second is a placeholder with an
+            // empty symbol, which `symbol()` reports as a space. Consuming it by position
+            // keeps the glyph whole — extraction measures columns with `display_width` anyway.
+            if display_width(sym) >= 2 {
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+    }
+    rows
 }
 
 /// What appears on the activity line. It takes a time so tests can pin the elapsed time and inspect.

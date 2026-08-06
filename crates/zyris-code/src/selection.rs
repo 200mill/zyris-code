@@ -1,4 +1,4 @@
-//! Text selection in the conversation area.
+//! Text selection anywhere on the screen.
 //!
 //! Coordinates are **(row, screen column)**. A column is cells, not characters, so a full-width
 //! glyph takes 2 — because the mouse reports in cells. Handling characters instead would skew
@@ -54,24 +54,18 @@ pub fn extract(rows: &[String], drag: &Drag) -> String {
     out.join("\n")
 }
 
-/// The column span `[from, to)` to invert on this row. `None` if outside the range.
-///
-/// The first row runs from its start column to the end, middle rows are whole, and the last row runs from 0 to its end column.
-pub fn highlight_span(drag: &Drag, row: usize) -> Option<(usize, usize)> {
-    let ((r0, c0), (r1, c1)) = drag.ordered();
-    if row < r0 || row > r1 {
+/// The screen rectangle `(top, left, bottom, right)` the drag covers, clipped to the
+/// terminal size. `None` when the drag never moved — that is a click, not a selection.
+pub fn rect(drag: &Drag, width: u16, height: u16) -> Option<(u16, u16, u16, u16)> {
+    if drag.is_click() {
         return None;
     }
-    if r0 == r1 {
-        return Some((c0.min(c1), c0.max(c1)));
-    }
-    if row == r0 {
-        Some((c0, usize::MAX))
-    } else if row == r1 {
-        Some((0, c1))
-    } else {
-        Some((0, usize::MAX))
-    }
+    let ((r0, c0), (r1, c1)) = drag.ordered();
+    let h = height as usize;
+    let w = width as usize;
+    let (r0, r1) = (r0.min(h.saturating_sub(1)), r1.min(h.saturating_sub(1)));
+    let (c0, c1) = (c0.min(w.saturating_sub(1)), c1.min(w.saturating_sub(1)));
+    Some((r0 as u16, c0 as u16, r1 as u16, c1 as u16))
 }
 
 /// The characters in screen columns `[from, to)`. Full-width glyphs count as 2 cells.
@@ -145,26 +139,26 @@ mod tests {
         assert!(got.ends_with("세 번째 줄"), "{got:?}");
     }
 
-    /// The highlight span must follow the same rules as extraction. If they drift apart, what is selected differs from what is shown.
+    /// A drag that moved covers the rectangle between the two points, in either direction.
     #[test]
-    fn the_highlight_span_matches_what_gets_extracted() {
-        let d = Drag { from: (1, 3), to: (3, 5) };
-        assert_eq!(highlight_span(&d, 0), None, "above the range is not inverted");
-        assert_eq!(
-            highlight_span(&d, 1),
-            Some((3, usize::MAX)),
-            "the first row runs from the start column to the end"
-        );
-        assert_eq!(highlight_span(&d, 2), Some((0, usize::MAX)), "a middle row goes whole");
-        assert_eq!(highlight_span(&d, 3), Some((0, 5)), "the last row runs to the end column");
-        assert_eq!(highlight_span(&d, 4), None, "below the range is not inverted either");
+    fn rect_covers_the_drag_either_way_around() {
+        let down = Drag { from: (1, 3), to: (3, 7) };
+        let up = Drag { from: (3, 7), to: (1, 3) };
+        assert_eq!(rect(&down, 80, 24), Some((1, 3, 3, 7)));
+        assert_eq!(rect(&up, 80, 24), Some((1, 3, 3, 7)));
     }
 
-    /// Selecting within one line inverts only that span of that line — not the whole line.
+    /// A drag that never moved is a click and highlights nothing.
     #[test]
-    fn a_single_line_selection_highlights_only_that_span() {
-        let d = Drag { from: (2, 4), to: (2, 9) };
-        assert_eq!(highlight_span(&d, 2), Some((4, 9)));
+    fn rect_is_none_for_a_click() {
+        assert_eq!(rect(&Drag::new((2, 3)), 80, 24), None);
+    }
+
+    /// The mouse can go past the edge of the terminal; the rectangle is clamped to it.
+    #[test]
+    fn rect_is_clamped_to_the_terminal() {
+        let d = Drag { from: (0, 0), to: (99, 999) };
+        assert_eq!(rect(&d, 80, 24), Some((0, 0, 23, 79)));
     }
 
     #[test]
