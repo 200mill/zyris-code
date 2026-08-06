@@ -252,9 +252,90 @@ fn shorten(path: &str, budget: usize) -> Option<String> {
         .find(|candidate| display_width(candidate) <= budget)
 }
 
+/// How long one `git status` may take before we give up on it.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Asks git what it thinks of `cwd`.
+///
+/// **`--no-optional-locks` is not optional.** A plain `git status` refreshes and relocks the
+/// index; polling that every few seconds would collide with a `git commit` the user is running in
+/// another terminal.
+///
+/// `--porcelain=v2 --branch` is one call for all of it — branch, upstream, ahead/behind, and a
+/// line per changed path. Measured at 8ms on this repository.
+///
+/// **Every way this can fail returns `None`**: no git binary, not a repository, a timeout, or
+/// output we cannot read. The strip then shows the path alone, with nothing where git was.
+/// `kill_on_drop` matters because a `git` wedged on a dead network mount must not outlive the
+/// timeout as a leaked process.
+pub async fn read(cwd: &Path) -> Option<Repo> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(["--no-optional-locks", "-C"])
+        .arg(cwd)
+        .args(["status", "--porcelain=v2", "--branch"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(READ_TIMEOUT, cmd.output()).await.ok()?.ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// How often to ask. `ZYRIS_CODE_GIT_MS`, 0 turns git off.
+pub fn poll_interval() -> Option<std::time::Duration> {
+    interval_from(std::env::var("ZYRIS_CODE_GIT_MS").ok().as_deref())
+}
+
+/// The decision, kept **pure** so tests do not have to shake the environment — the same reason
+/// `theme::page_bg_from` is split out.
+///
+/// An unreadable value falls back to the default rather than turning the feature off: a typo that
+/// silently removes the strip is harder to notice than one that changes nothing.
+pub fn interval_from(given: Option<&str>) -> Option<std::time::Duration> {
+    const DEFAULT_MS: u64 = 3000;
+    /// Below this, git would be running more or less continuously for no gain.
+    const FLOOR_MS: u64 = 250;
+    let ms = match given.map(str::trim).filter(|v| !v.is_empty()) {
+        None => DEFAULT_MS,
+        Some(v) => match v.parse::<u64>() {
+            Ok(0) => return None,
+            Ok(ms) => ms.min(3_600_000),
+            Err(_) => DEFAULT_MS,
+        },
+    };
+    Some(std::time::Duration::from_millis(ms.max(FLOOR_MS)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_poll_interval_is_read_off_the_environment() {
+        use std::time::Duration;
+        assert_eq!(super::interval_from(None), Some(Duration::from_millis(3000)));
+        assert_eq!(super::interval_from(Some("500")), Some(Duration::from_millis(500)));
+        // Zero is the way to turn git off entirely — then the strip is just the path.
+        assert_eq!(super::interval_from(Some("0")), None);
+        // A typo must not silently disable the feature, and must not let git spin either.
+        assert_eq!(super::interval_from(Some("nonsense")), Some(Duration::from_millis(3000)));
+        assert_eq!(super::interval_from(Some("1")), Some(Duration::from_millis(250)));
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_is_not_a_repository_reads_as_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::read(dir.path()).await, None);
+    }
+
+    #[tokio::test]
+    async fn this_repository_reads_back_a_branch() {
+        // The repo the tests run in is a git checkout, so this exercises the real call.
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let got = super::read(here).await.expect("zyris-code is a git checkout");
+        assert!(!got.branch.is_empty());
+    }
 
     /// The strip as plain text, the way a terminal would show it.
     fn strip(width: u16, cwd: &str, home: Option<&str>, repo: Option<&Repo>) -> String {
