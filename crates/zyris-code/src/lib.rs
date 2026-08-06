@@ -23,6 +23,7 @@ pub mod notice;
 pub mod picker;
 pub mod plugin;
 pub mod question;
+pub mod repo;
 pub mod rows;
 pub mod scroll;
 pub mod selection;
