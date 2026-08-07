@@ -15,7 +15,7 @@ use tokio::sync::watch;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use zyris_attacca::AttaccaApiClient;
-use zyris_code::app;
+use zyris_code::{app, lang};
 
 /// The server announces `attacca_api` right after the handshake. A generous margin.
 const CONSUME_WAIT: Duration = Duration::from_secs(5);
@@ -129,8 +129,26 @@ async fn main() -> ExitCode {
     // **The screen is raised first.** Here, not in `on_connect` — the enrollment code window must
     // reach it before the first connection too (`enroll::ScreenEnroll`).
     let mut app_task = tokio::spawn(app::run(api_rx.clone(), bridge.clone(), die_rx));
-    // Wait for the screen to attach before the runner runs — so the first enrollment code can reach the screen.
-    bridge.wait_screen().await;
+    // Wait for the screen to attach before the runner runs — so the first enrollment code can
+    // reach the screen. **Never wait forever.** If the app task dies before the screen attaches
+    // (a terminal that cannot run the TUI, a panic inside `app::run`), the old code sat on the
+    // shell's waiting line ("approve in the browser…") with a frozen cursor — exactly what the
+    // 2026-08-07 Windows report saw. Say why and exit instead of hanging.
+    let died_before_screen = tokio::select! {
+        () = bridge.wait_screen() => None,
+        ended = &mut app_task => Some(ended),
+    };
+    if let Some(ended) = died_before_screen {
+        // The app may have died mid-raw-mode; restore the terminal so the reason is readable.
+        ratatui::restore();
+        let why = match ended {
+            Ok(Ok(())) => "the screen ended before it attached".to_string(),
+            Ok(Err(e)) => e.to_string(),
+            Err(e) => e.to_string(),
+        };
+        notice.fatal_plain(&lang::current().screen_failed(&why));
+        return ExitCode::FAILURE;
+    }
 
     // **From here on, this node hands the computer to agents.**
     //

@@ -608,6 +608,14 @@ impl Lang {
             Lang::En => format!("See the log for details: {path}"),
         }
     }
+    /// The screen never came up — the shell notice is all the person gets. `main` says this and
+    /// exits instead of sitting on the waiting line with a frozen cursor (the 2026-08-07 report).
+    pub fn screen_failed(self, why: &str) -> String {
+        match self {
+            Lang::Ko => format!("화면을 띄우지 못했습니다: {why}"),
+            Lang::En => format!("Could not start the screen: {why}"),
+        }
+    }
     pub fn waiting_for_approval(self) -> &'static str {
         self.pick(
             "브라우저에서 승인하면 저절로 이어집니다. 그만두려면 Ctrl+C를 누르세요.",
@@ -1530,6 +1538,7 @@ mod tests {
             en.agent_list_error("x"),
             en.connect_failed("x"),
             en.previous_error("x"),
+            en.screen_failed("x"),
             en.log_location("/tmp/zyris-code.log"),
             en.server_unreachable(5, "x"),
             en.cwd_text(std::path::Path::new("/home/ruma"), "node", "slug", "cred"),
