@@ -25,6 +25,33 @@ here.
   lines, so the count and the draw can never disagree.
 ```
 
+## Installing
+
+The one-liner for your platform builds the latest `main` from source with
+`cargo` and installs the `zyris-code` binary into your cargo bin directory
+(`~/.cargo/bin` on Linux/macOS, `%USERPROFILE%\.cargo\bin` on Windows), which
+`rustup` already puts on your `PATH`:
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/attacca-cc/zyris-code/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell 5.1+ / 7)
+irm https://raw.githubusercontent.com/attacca-cc/zyris-code/main/install.ps1 | iex
+```
+
+Requirements: a Rust toolchain ([rustup](https://rustup.rs)) and `git` — the
+scripts build from source and stop with install instructions if either is
+missing.
+
+- **Install elsewhere:** `install.sh --prefix ~/my/bin` /
+  `install.ps1 -Prefix C:\tools` — the binary lands in `<prefix>/bin`.
+- **Update:** re-run the same command; it rebuilds the latest `main`.
+- **Uninstall:** `install.sh --uninstall` / `install.ps1 -Uninstall`, or
+  `cargo uninstall zyris-code`.
+
 ## Running
 
 ```bash
