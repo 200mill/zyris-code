@@ -71,7 +71,7 @@ pub enum Frame {
     /// session id as a tag so stale results from before a switch get dropped
     /// (`frame_is_current`).
     Poll {
-        usage: Option<crate::sidebar::Usage>,
+        usage: Option<crate::usage::Usage>,
         title: Option<String>,
     },
     /// **What git says about the working directory.** Same reason as `Poll`: reading it needs
@@ -161,7 +161,6 @@ pub enum Action {
     FormPrev,
     FormConfirm,
     FormCancel,
-    ToggleSidebar,
     CycleMode,
     Approve,
     Deny,
@@ -282,10 +281,9 @@ pub struct State {
     /// Filled when the form takes Enter — (name, description). The I/O side does the
     /// creating.
     pub project_out: Option<(String, String)>,
-    /// Contents of the right sidebar.
-    pub sidebar: crate::sidebar::Sidebar,
-    /// Show the sidebar? On by default.
-    pub sidebar_on: bool,
+    /// Session usage — credits, context, tokens. Polled off the draw loop (`Frame::Poll`) and
+    /// shown on the bottom bar's right edge.
+    pub usage: crate::usage::Usage,
     /// What to use as the terminal window title. Changes once the session gets a title.
     pub title: String,
     /// Frames drawn. Blinking indicators take their phase from this.
@@ -419,8 +417,7 @@ impl Default for State {
             picker: None,
             new_project: None,
             project_out: None,
-            sidebar: crate::sidebar::Sidebar::new(),
-            sidebar_on: true,
+            usage: crate::usage::Usage::default(),
             title: "Zyris Code".into(),
             tick: 0,
             // Must be **the same place** the tools use. `tools::working_dir` is the one
@@ -655,7 +652,6 @@ pub fn on_key(state: &State, key: KeyEvent) -> Vec<Action> {
         // Ctrl+L means "redraw the screen" in shells, vim and less alike. It is the key
         // people press reflexively when the screen breaks, so it gets no other meaning.
         KeyCode::Char('l') if ctrl => vec![Action::Repaint],
-        KeyCode::Char('b') if ctrl => vec![Action::ToggleSidebar],
         KeyCode::Char('o') if ctrl => vec![Action::ToggleFold],
         KeyCode::BackTab => vec![Action::CycleMode],
         KeyCode::Char('w') if ctrl => vec![Action::DeleteWord],
@@ -1025,7 +1021,6 @@ pub fn apply(state: &mut State, action: &Action) {
         // are at the project level, close it" — and back becomes plain close. This actually
         // happened.
         Action::PickBack => {}
-        Action::ToggleSidebar => state.sidebar_on = !state.sidebar_on,
         Action::CycleMode => state.mode = state.mode.next(),
         Action::ClearInput => {
             state.editor().take();
@@ -1129,11 +1124,6 @@ fn apply_frame(state: &mut State, frame: &Frame) {
                         Some((entry.seq, crate::question::Answering::new(steps.clone())));
                 }
             }
-            // Tasks are only knowable from the todo_* tool calls — a todo_change event
-            // carries no body.
-            if let EntryKind::Tool { name, todo: Some((args, result)), .. } = &entry.kind {
-                state.sidebar.apply_tool(name, args, result.as_ref());
-            }
             state.timeline.upsert(entry.clone());
         }
         // **A card never folds or unfolds by itself.**
@@ -1185,8 +1175,8 @@ fn apply_frame(state: &mut State, frame: &Frame) {
         // over it quietly.
         Frame::Poll { usage, title } => {
             if let Some(u) = usage {
-                if u != &state.sidebar.usage {
-                    state.sidebar.usage = u.clone();
+                if u != &state.usage {
+                    state.usage = u.clone();
                 }
             }
             if let Some(t) = title {
@@ -2509,7 +2499,7 @@ async fn pick(
             leave_session(state);
             // A new session has no title yet.
             state.title = "Zyris Code".into();
-            state.sidebar.clear();
+            state.usage.clear();
             state.timeline = Timeline::new();
             state.folds = Folds::new();
             state.asking = None;
@@ -2599,7 +2589,7 @@ async fn switch(
     // previous session for a few seconds after a switch makes it unclear which conversation
     // is in view.
     state.title = crate::conn::session_title(api, &id).await.unwrap_or_else(|| "Zyris Code".into());
-    state.sidebar.clear();
+    state.usage.clear();
     state.picker = None;
     state.scroll = Scroll::new(); // Start from the bottom.
                                   // Listen on from just past what was re-read.
@@ -3631,7 +3621,7 @@ mod tests {
     }
 
     /// The drag extracts from the last drawn screen, not from the conversation alone — the
-    /// enrollment code, the sidebar and the status line are selectable too.
+    /// enrollment code and the status line are selectable too.
     #[test]
     fn dragging_extracts_what_is_on_the_screen() {
         let mut s = state();
@@ -4135,7 +4125,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_and_closing_a_shell_moves_the_sidebar_list() {
+    fn opening_and_closing_a_shell_updates_the_shells_list() {
         let mut s = state();
         apply(&mut s, &Action::Frame(Frame::ShellOpened { id: "p1".into(), name: "zsh".into() }));
         assert_eq!(s.shells.len(), 1);

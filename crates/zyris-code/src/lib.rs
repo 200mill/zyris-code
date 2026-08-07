@@ -27,7 +27,7 @@ pub mod repo;
 pub mod rows;
 pub mod scroll;
 pub mod selection;
-pub mod sidebar;
+pub mod usage;
 pub mod theme;
 pub mod timeline;
 pub mod tools;

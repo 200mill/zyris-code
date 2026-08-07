@@ -439,10 +439,7 @@ impl Lang {
         }
     }
 
-    // ── Sidebar
-    pub fn usage(self) -> &'static str {
-        self.pick("사용량", "Usage")
-    }
+    // ── Usage (bottom bar)
     pub fn credits(self) -> &'static str {
         self.pick("크레딧", "Credits")
     }
@@ -451,15 +448,6 @@ impl Lang {
     }
     pub fn total_tokens(self) -> &'static str {
         self.pick("총 토큰", "Tokens")
-    }
-    pub fn shells(self) -> &'static str {
-        self.pick("셸", "Shells")
-    }
-    pub fn tasks(self) -> &'static str {
-        self.pick("태스크", "Tasks")
-    }
-    pub fn none(self) -> &'static str {
-        self.pick("없음", "None")
     }
 
     // ── Question screen

@@ -89,7 +89,6 @@ pub fn draw(frame: &mut Frame, area: Rect, state: &State) {
     ];
 
     // The hint goes at the right edge. If narrow, drop it entirely — the status comes first.
-    // The sidebar-side margin is not subtracted again here because this area already arrives narrowed.
     let used = 2 + display_width(&label);
     let room = area.width as usize;
     if !hint.is_empty() && used + display_width(hint) + 2 <= room {

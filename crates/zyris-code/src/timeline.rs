@@ -573,7 +573,6 @@ mod tests {
                 summary: "fn main".into(),
                 failed: false,
                 detail: String::new(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -596,7 +595,6 @@ mod tests {
                 summary: "커밋".into(),
                 failed: false,
                 detail: "인자\n{}\n\n출력\nok".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -623,7 +621,6 @@ mod tests {
                 summary: "커밋".into(),
                 failed: false,
                 detail: "인자\n{}\n\n출력\nok".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -671,7 +668,6 @@ mod tests {
                 summary: "viewport".into(),
                 failed: false,
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -683,7 +679,6 @@ mod tests {
                 summary: "rows.rs".into(),
                 failed: false,
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -720,7 +715,6 @@ mod tests {
                 summary: "rows".into(),
                 failed: false,
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -732,7 +726,6 @@ mod tests {
                 summary: "rows.rs".into(),
                 failed: false,
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -774,7 +767,6 @@ mod tests {
                 summary: "rows".into(),
                 failed: false,
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         ));
@@ -870,7 +862,6 @@ mod tests {
                 failed: false,
                 // Use the same shape for the detail to match `step_at`'s expected values.
                 detail: "인자\n{}".into(),
-                todo: None,
                 diff: None,
             },
         )

@@ -309,7 +309,6 @@ Plugins are loaded at startup, so restart to pick up a newly installed one.
 | `Enter` | Send |
 | `Shift+Tab` | Cycle mode: normal → plan → work → job |
 | `Ctrl+O` | Fold / unfold the work card |
-| `Ctrl+B` | Toggle the sidebar |
 | `←` | Project and session picker |
 | `↑` / `↓` | Recall previous messages |
 | `Esc` | Cancel the running turn; close the enrollment-code panel (the only key that does) |

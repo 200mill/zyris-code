@@ -1,12 +1,12 @@
 //! Drawing. Widgets receive state like props and only draw — no logic is run here.
 //!
 //! ```text
-//! │   (conversation)                    │ sidebar
+//! │   (conversation)                    │
 //! │ ● working…                 Esc stop │ what's happening now
 //! ├─ ~/zyris-code · ⎇ main +2 ~1 ───────┤ where tools run, and what git says (`repo::spans`)
 //! │ > input                             │ input box (grows with content)
 //! ├─────────────────────────────────────┤
-//! │ base·Main Agent                     │ bottom bar
+//! │ base·Main Agent  · 크레딧 5% · 컨텍스트 66% (132.8k/200k) · 총 토큰 11.4M │ bottom bar — usage on the right
 //! ```
 //!
 //! **That upper divider carries standing context, and only in the ordinary input state.** The
@@ -29,17 +29,12 @@ mod enroll;
 mod input;
 mod newproject;
 mod picker;
-mod sidebar;
 mod status;
 mod transcript;
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Modifier;
 use ratatui::Frame;
-
-/// One column keeping text off the sidebar edge. Unlike the left margin (`rows::PAD`), no marker
-/// stands here, so one column suffices.
-const SIDE_GAP: u16 = 1;
 
 use crate::app::State;
 use crate::markdown::display_width;
@@ -48,28 +43,8 @@ use crate::selection;
 pub fn draw(frame: &mut Frame, state: &mut State) {
     let full = frame.area();
 
-    // Carve the sidebar off to the right. On narrow screens it folds away — the conversation comes first.
-    let show_side = state.sidebar_on && full.width > sidebar::WIDTH + 40;
-    let (area, side) = if show_side {
-        let cut = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(20), Constraint::Length(sidebar::WIDTH)])
-            .split(full);
-        // **The right margin is given across the whole left column, and only when the sidebar is up.**
-        //
-        // Carving out only the conversation leaves the input box and divider lines touching the sidebar
-        // edge. The margin's purpose is "no text in the left column touches the boundary", so it is
-        // given here in one place — the widgets below just use the narrowed width.
-        // When the sidebar is folded there is nothing to touch, so the screen edge is used.
-        //
-        // **One column suffices.** The left margin (`rows::PAD`) is where the markers (`▌`·`●`·`▸`) stand, so
-        // it needs two columns, but on the right we only need to keep text off the boundary, and one
-        // column is enough. Two columns would narrow the conversation by that much.
-        let body = Rect { width: cut[0].width.saturating_sub(SIDE_GAP), ..cut[0] };
-        (body, Some(cut[1]))
-    } else {
-        (full, None)
-    };
+    // The whole screen is the app's — with the sidebar gone there is no right column to carve out.
+    let area = full;
     // The input box grows with its content. It never exceeds half the screen.
     //
     // **There is only one input slot.** When a question is open the question takes it; when a tool wants to go
@@ -119,11 +94,6 @@ pub fn draw(frame: &mut Frame, state: &mut State) {
     }
     input::rule(frame, chunks[3]);
     status::draw(frame, chunks[4], state);
-
-    if let Some(side) = side {
-        sidebar::draw_divider(frame, Rect { width: 1, ..side });
-        sidebar::draw(frame, side, state);
-    }
 
     // The picker overlaps at the very top — while it is open, that is the current task.
     if let Some(p) = &state.picker {
@@ -179,8 +149,8 @@ pub fn draw(frame: &mut Frame, state: &mut State) {
     }
 
     // **Mouse selection covers the whole screen — blank space included.** Invert every cell
-    // under the drag so the selection is visible everywhere: the transcript, the sidebar, the
-    // status line, the enrollment window. This runs after every widget drew and before the
+    // under the drag so the selection is visible everywhere: the transcript, the status
+    // line, the enrollment window. This runs after every widget drew and before the
     // frame is flushed, so the highlight rides the same diff as the content.
     if let Some(drag) = state.drag.filter(|d| !d.is_click()) {
         if let Some((r0, c0, r1, c1)) =

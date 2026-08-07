@@ -27,9 +27,6 @@ pub enum EntryKind {
         failed: bool,
         /// What to show when expanded — what it received and what it returned. Empty means nothing to expand.
         detail: String,
-        /// Carries arguments and result only for `todo_*` tools — the sidebar tasks come from here.
-        /// Carrying every other tool would make the timeline needlessly heavy.
-        todo: Option<(serde_json::Value, Option<serde_json::Value>)>,
         /// For tools that changed files, what changed and how. The screen draws it in green/red.
         diff: Option<crate::tools::diff::Diff>,
     },
@@ -73,19 +70,12 @@ pub fn entry_from(event: &ZSessionEvent) -> Option<Entry> {
                     });
                 }
             }
-            let todo = name.starts_with("todo_").then(|| {
-                (
-                    p.get("arguments").cloned().unwrap_or(Value::Null),
-                    p.get("result").cloned().filter(|r| !r.is_null()),
-                )
-            });
             EntryKind::Tool {
                 summary: tool_summary(p, &name),
                 detail: tool_detail(p, &name),
                 diff: diff_of(&name, p.get("result")),
                 name,
                 failed,
-                todo,
             }
         }
         // Model-only. Never rendered.

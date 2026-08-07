@@ -31,8 +31,9 @@ use readonly::ReadOnlyFileIo;
 
 /// The base from which tools resolve relative paths — where the process was launched.
 ///
-/// **The screen and the tools must see the same thing.** If the sidebar points at A while the tool
-/// runs in B, you can't tell which file the `src/app.rs` on the approval screen means. So there's one definition here.
+/// **The screen and the tools must see the same thing.** If the strip above the input points at A
+/// while the tool runs in B, you can't tell which file the `src/app.rs` on the approval screen
+/// means. So there's one definition here.
 pub fn working_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }

@@ -859,9 +859,9 @@ pub async fn session_awaiting_answer(api: &AttaccaApiClient) -> Option<String> {
 
 /// Session usage. If the deployment doesn't meter, `capability_not_announced` comes back —
 /// that's not an error but "this deployment lacks the feature", so it's quietly emptied.
-pub async fn usage(api: &AttaccaApiClient, session_id: &str) -> Option<crate::sidebar::Usage> {
+pub async fn usage(api: &AttaccaApiClient, session_id: &str) -> Option<crate::usage::Usage> {
     let u = within(api, api.session_usage(session_id.to_string())).await.ok()?;
-    Some(crate::sidebar::Usage {
+    Some(crate::usage::Usage {
         model: u.model,
         context_tokens: u.context_tokens,
         total_tokens: u.total_tokens,

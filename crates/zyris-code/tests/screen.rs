@@ -147,7 +147,6 @@ fn said(state: &mut State, seq: i64, kind: EntryKind) {
 #[test]
 fn a_user_message_gets_a_band_across_the_full_width() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::User("안녕".into()));
     assert_eq!(
         cell_bg(&mut s, 60, 12, 1, 0),
@@ -165,7 +164,6 @@ fn a_user_message_gets_a_band_across_the_full_width() {
 #[test]
 fn an_agent_answer_has_no_band() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("그렇습니다".into()));
     assert_ne!(cell_bg(&mut s, 60, 12, 3, 0), Some(zyris_code::theme::USER_BG));
 }
@@ -178,7 +176,6 @@ fn an_agent_answer_has_no_band() {
 #[test]
 fn nothing_but_the_user_band_paints_a_background_by_default() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("안녕하세요".into()));
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     let frame = term.draw(|f| widgets::draw(f, &mut s)).unwrap();
@@ -212,7 +209,6 @@ fn the_page_background_can_be_asked_for_by_name_or_by_hex() {
 #[test]
 fn a_heal_frame_forces_every_cell_to_be_resent() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("안녕하세요".into()));
     s.force_update = true;
 
@@ -251,7 +247,6 @@ fn a_heal_frame_forces_every_cell_to_be_resent() {
 #[test]
 fn a_blank_heal_forces_only_blank_cells_to_be_resent() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("안녕하세요".into()));
     s.force_update_blank = true;
 
@@ -286,7 +281,6 @@ fn a_blank_heal_forces_only_blank_cells_to_be_resent() {
 #[test]
 fn a_blank_heal_never_marks_a_wide_char_itself() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("안녕".into()));
     s.force_update_blank = true;
 
@@ -526,7 +520,7 @@ fn the_status_bar_names_the_mode_it_is_in() {
     let mut s = State::new();
     let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
     // **Only look at the very bottom line.** Searching the whole screen could accidentally catch other text in the
-    // sidebar or activity line, letting an empty bottom bar pass as green.
+    // activity line, letting an empty bottom bar pass as green.
     for expected in ["plan", "work", "job", "normal"] {
         for a in on_key(&s, key) {
             apply(&mut s, &a);
@@ -988,13 +982,6 @@ fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
     crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
 }
 
-fn ctrl(c: char) -> crossterm::event::KeyEvent {
-    crossterm::event::KeyEvent::new(
-        crossterm::event::KeyCode::Char(c),
-        crossterm::event::KeyModifiers::CONTROL,
-    )
-}
-
 /// The list opens with ←. → is cursor movement.
 #[test]
 fn left_arrow_opens_the_picker_and_right_does_not() {
@@ -1049,75 +1036,6 @@ fn going_back_from_sessions_never_closes_the_picker_in_apply() {
         matches!(s.picker.as_ref().map(|p| &p.level), Some(Level::Projects)),
         "apply가 picker를 건드리면 뒤로가기가 닫기가 된다"
     );
-}
-
-/// The sidebar is on by default and Ctrl+B toggles it.
-#[test]
-fn the_sidebar_is_on_by_default_and_ctrl_b_toggles_it() {
-    use zyris_code::app::on_key;
-
-    let mut s = State::new();
-    s.lang = zyris_code::lang::Lang::Ko;
-    assert!(s.sidebar_on);
-
-    let screen = dump(&mut s, 90, 16);
-    assert!(screen.contains("사용량"), "\n{screen}");
-    assert!(screen.contains("태스크"), "\n{screen}");
-
-    for a in on_key(&s, ctrl('b')) {
-        apply(&mut s, &a);
-    }
-    assert!(!s.sidebar_on);
-    let screen = dump(&mut s, 90, 16);
-    assert!(!screen.contains("사용량"), "it was folded but is still shown\n{screen}");
-}
-
-/// Tasks are collected from todo_* tool calls — the todo_change event has no body.
-#[test]
-fn tasks_come_from_todo_tool_calls() {
-    let mut s = State::new();
-    let entry = zyris_code::event::entry_from(&zyris_attacca::ZSessionEvent {
-        seq: 1,
-        cursor: 1,
-        kind: "tool_call".into(),
-        payload: serde_json::json!({
-            "kind": "tool_call", "name": "todo_add",
-            "arguments": {"content": "사이드바 만들기"},
-            "result": null, "error": null
-        }),
-        created_at: None,
-    });
-    apply(&mut s, &Action::Frame(AppFrame::Event { cursor: 1, entry }));
-
-    let screen = dump(&mut s, 90, 16);
-    assert!(screen.contains("사이드바 만들기"), "\n{screen}");
-}
-
-/// **No text in the left column touches the sidebar divider.** Not just the chat — the input box too.
-///
-/// If the margin were given only to the chat, wrapped long input would sit right against the divider and the
-/// two columns would read as one block.
-#[test]
-fn nothing_in_the_left_column_touches_the_sidebar_divider() {
-    let mut s = State::new();
-    for c in "가나다라마바사아자차카타파하가나다라마바사아자차카타파하".chars()
-    {
-        apply(&mut s, &Action::Insert(c));
-    }
-    let screen = dump(&mut s, 90, 16);
-    for line in screen.lines() {
-        let Some(at) = line.find('│') else { continue };
-        let before: String = line[..at].chars().rev().take(1).collect();
-        assert!(before.is_empty() || before == " ", "text touches the divider: {line:?}\n{screen}");
-    }
-}
-
-/// On a narrow screen the sidebar is dropped — the conversation comes first.
-#[test]
-fn a_narrow_screen_drops_the_sidebar() {
-    let mut s = State::new();
-    let screen = dump(&mut s, 50, 12);
-    assert!(!screen.contains("사용량"), "it is narrow but the sidebar is still there\n{screen}");
 }
 
 /// Even with the picker open, no line may exceed the screen width — even with wide characters mixed in.
@@ -1271,63 +1189,68 @@ fn an_already_answered_question_from_history_stays_closed() {
     assert!(s.asking.is_none());
 }
 
-/// The usage numbers must **line up in one column on the left.** The label lengths differ (credits 6 cells,
-/// context 8 cells), so just appending them makes a staircase that can't be compared at a glance.
+/// Usage lives on the bottom bar's right edge — the sidebar that used to hold it is gone.
 #[test]
-fn the_usage_numbers_line_up_in_one_column() {
+fn the_bottom_bar_shows_credits_context_and_tokens() {
     let mut s = State::new();
     s.lang = zyris_code::lang::Lang::Ko;
-    s.sidebar.usage = zyris_code::sidebar::Usage {
-        model: Some("claude-opus-5".into()),
+    s.usage = zyris_code::usage::Usage {
+        model: Some("claude-opus-5-200k".into()),
         context_tokens: Some(132_800),
         total_tokens: Some(11_400_000),
         credits_used: Some("5.0%".into()),
     };
     let screen = dump(&mut s, 90, 16);
-    let cols: Vec<usize> = ["크레딧", "컨텍스트", "총 토큰"]
-        .iter()
-        .map(|key| {
-            let line = screen
-                .lines()
-                .find(|l| l.contains(key))
-                .unwrap_or_else(|| panic!("no {key} row:\n{screen}"));
-            // After skipping the spaces after the name = the cell where the value starts. **It's a byte offset** —
-            // slicing by character count would cut through the middle of a Hangul syllable and panic.
-            let at = line.find(key).unwrap() + key.len();
-            display_width(&line[..at]) + line[at..].chars().take_while(|c| *c == ' ').count()
-        })
-        .collect();
-    assert!(
-        cols.windows(2).all(|w| w[0] == w[1]),
-        "the values are not left-aligned: {cols:?}\n{screen}"
-    );
+    let bar = screen.lines().last().unwrap_or_default();
+    assert!(bar.contains("크레딧 5.0%"), "credits missing: {bar:?}");
+    assert!(bar.contains("컨텍스트 66% (132.8k/200k)"), "context missing: {bar:?}");
+    assert!(bar.contains("총 토큰 11.4M"), "tokens missing: {bar:?}");
 }
 
-/// Context is **amount used / amount that fits**. A single number can't tell whether it's roomy or full.
+/// Context is **percent used (used / max)** — a single number can't tell whether it's roomy or full.
 #[test]
-fn the_context_shows_how_much_of_the_window_is_used() {
+fn the_bottom_bar_shows_context_as_percent_used_over_max() {
     let mut s = State::new();
-    s.sidebar.usage = zyris_code::sidebar::Usage {
-        model: Some("claude-opus-5".into()),
-        context_tokens: Some(132_800),
+    s.usage = zyris_code::usage::Usage {
+        model: Some("gpt-4o-128k".into()),
+        context_tokens: Some(64_000),
         ..Default::default()
     };
     let screen = dump(&mut s, 90, 16);
-    assert!(screen.contains("132.8k / 200k"), "it is not used/limit:\n{screen}");
+    let bar = screen.lines().last().unwrap_or_default();
+    assert!(bar.contains("50% (64k/128k)"), "it is not percent (used/max):\n{screen}");
 }
 
 /// **For an unknown model, don't invent a limit.** Showing a guessed number makes it look true.
 #[test]
 fn an_unknown_model_shows_no_limit() {
     let mut s = State::new();
-    s.sidebar.usage = zyris_code::sidebar::Usage {
+    s.usage = zyris_code::usage::Usage {
         model: Some("어느-새-모델".into()),
         context_tokens: Some(1_000),
         ..Default::default()
     };
     let screen = dump(&mut s, 90, 16);
-    assert!(screen.contains("1k"), "\n{screen}");
-    assert!(!screen.contains("1k /"), "it printed a maximum it does not know:\n{screen}");
+    let bar = screen.lines().last().unwrap_or_default();
+    assert!(bar.contains("1k"), "{bar:?}");
+    assert!(!bar.contains("%"), "it printed a percentage for a limit it does not know: {bar:?}");
+}
+
+/// The usage block is dropped when it doesn't fit — mode·agent comes first.
+#[test]
+fn usage_is_dropped_when_the_bottom_bar_is_too_narrow() {
+    let mut s = State::new();
+    s.lang = zyris_code::lang::Lang::Ko;
+    s.usage = zyris_code::usage::Usage {
+        model: Some("claude-opus-5-200k".into()),
+        context_tokens: Some(132_800),
+        total_tokens: Some(11_400_000),
+        credits_used: Some("5.0%".into()),
+    };
+    let screen = dump(&mut s, 40, 12);
+    let bar = screen.lines().last().unwrap_or_default();
+    assert!(bar.contains("기본"), "mode·agent must stay: {bar:?}");
+    assert!(!bar.contains("크레딧"), "usage leaked onto a line too narrow for it: {bar:?}");
 }
 
 /// **The bottom bar says when there are unsent messages.** If it doesn't announce what it's holding, the user believes it was sent.
@@ -1419,7 +1342,6 @@ fn state_with_edit_tool() -> State {
                     summary: "zyris__arch__code_edit__edit · src/app.rs".into(),
                     failed: false,
                     detail: "인자\n{}".into(),
-                    todo: None,
                     diff: Some(Diff {
                         path: "src/app.rs".into(),
                         added: 12,
@@ -1481,50 +1403,6 @@ fn an_expanded_edit_shows_the_diff_instead_of_the_raw_json() {
     expand_the_tool_row(&mut s);
     let screen = dump(&mut s, 80, 24);
     assert!(!screen.contains("인자"), "the raw JSON came out alongside the diff:\n{screen}");
-}
-
-// ── sidebar: where the tools run ─────────────────────────────────────────
-
-/// Without knowing what directory the tools run in, the relative path on the approval screen can't be read.
-///
-/// **Use a path that doesn't overlap where the tests run.** Since the default is the process's working
-/// directory, using a real path would pass even if the assignment did nothing.
-#[test]
-fn the_sidebar_says_which_directory_the_tools_run_in() {
-    let mut s = State::new();
-    s.cwd = std::path::PathBuf::from("/srv/checkouts/some-repo");
-    let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("some-repo"), "the working directory must be shown:\n{screen}");
-}
-
-/// If it weren't shown, ghost shells would run — shells the agent left open, unknown to the person.
-#[test]
-fn open_shells_are_listed() {
-    let mut s = State::new();
-    s.shells = vec![zyris_code::app::Shell { id: "p1".into(), name: "zsh".into() }];
-    let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("zsh"), "an open shell must be visible:\n{screen}");
-}
-
-/// An empty section must not take up space. The sidebar is narrow.
-#[test]
-fn no_shell_section_when_nothing_is_open() {
-    let mut s = State::new();
-    let screen = dump(&mut s, 100, 24);
-    assert!(
-        !screen.contains("셸"),
-        "with no open shell the section itself must be gone:\n{screen}"
-    );
-}
-
-/// A long path keeps only its last two segments. Beyond the sidebar width it would be truncated and unrecognizable.
-#[test]
-fn a_long_working_directory_keeps_the_part_that_identifies_it() {
-    let mut s = State::new();
-    s.cwd = std::path::PathBuf::from("/home/ruma/very/deeply/nested/place/zyris-code");
-    let screen = dump(&mut s, 100, 24);
-    assert!(screen.contains("place/zyris-code"), "the last two pieces must be visible:\n{screen}");
-    assert!(!screen.contains("/home/ruma/very"), "reaching that far forward overflows:\n{screen}");
 }
 /// While a command runs, **what is running** must be shown. Since `exec` only reports once at completion,
 /// without this the person waits up to 55 seconds in the dark.
@@ -1817,7 +1695,6 @@ fn without_git_the_rule_resumes_right_after_the_path() {
 #[test]
 fn a_link_in_an_answer_is_wrapped_in_osc8() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("[문서](https://example.com/x) 끝".into()));
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     term.draw(|f| widgets::draw(f, &mut s)).unwrap();
@@ -1837,7 +1714,6 @@ fn a_link_in_an_answer_is_wrapped_in_osc8() {
 #[test]
 fn a_bare_url_in_an_answer_is_not_wrapped() {
     let mut s = State::new();
-    s.sidebar_on = false;
     said(&mut s, 1, EntryKind::Agent("가 https://example.com 나".into()));
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     term.draw(|f| widgets::draw(f, &mut s)).unwrap();
